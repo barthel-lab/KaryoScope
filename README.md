@@ -33,7 +33,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 ### Why alignment-free?
 
-- **Pangenome-scale throughput.** Annotate a complete human haplotype in ~8 minutes on a standard workstation, scaling to cohorts of hundreds of phased assemblies.
+- **Pangenome-scale throughput.** Annotates a complete human haplotype in ~8 minutes on a standard workstation, scaling to cohorts of hundreds of phased assemblies.
 - **Base-pair resolution across the entire genome.** Performs well in the satellite-dense centromeres, subtelomeres, and acrocentric short arms where alignment-based pipelines suffer from reference bias and ambiguous mappings.
 - **Multiple feature classes in a single pass.** The same *k*-mer can carry labels across feature sets simultaneously, so a single position can be annotated as belonging to a specific chromosome, satellite family, repeat class, and gene at once.
 - **Extensible.** Any annotation that tiles a reference of interest can serve as a feature set.
@@ -71,7 +71,7 @@ karyoscope annotate --input HG002.maternal.fa.gz --outdir results/
 
 # 4. Render a karyotype
 karyoscope karyotype --annotation results/HG002.maternal.chromosome.smoothed.bed.gz \
-                     --output HG002.maternal.chromosome.smoothed.karyotype.svg
+                     --output HG002.maternal.chromosome.smoothed.genome.karyotype.svg
 ```
 
 ## Commands
@@ -123,4 +123,4 @@ Contributions, bug reports, and feature requests are welcome. See [CONTRIBUTING.
 
 ## Acknowledgments
 
-Developed in the [Barthel Lab](https://www.tgen.org/research/research-faculty/barthel/) at the Translational Genomics Research Institute (TGen), in collaboration with Jarno Alanko, Simon Puglisi, and Camille Marchet.
+Developed in the [Barthel Lab](https://www.barthel-lab.com/) at the Translational Genomics Research Institute (TGen), in collaboration with Jarno Alanko, Simon Puglisi, and Camille Marchet.
