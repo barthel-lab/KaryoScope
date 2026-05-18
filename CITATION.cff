@@ -1,0 +1,72 @@
+cff-version: 1.2.0
+title: "KaryoScope: rapid, alignment-free sequence annotation for the pangenome era"
+message: "If you use KaryoScope in your work, please cite our preprint as below."
+type: software
+authors:
+  - given-names: "T. Rhyker"
+    family-names: "Ranallo-Benavidez"
+    email: "rranallo-benavidez@tgen.org"
+    affiliation: "Translational Genomics Research Institute (TGen)"
+  - given-names: "Floris P."
+    family-names: "Barthel"
+    email: "fbarthel@tgen.org"
+    affiliation: "Translational Genomics Research Institute (TGen)"
+repository-code: "https://github.com/barthel-lab/KaryoScope"
+url: "https://github.com/barthel-lab/KaryoScope"
+license: "GPL-3.0-or-later"
+keywords:
+  - bioinformatics
+  - genomics
+  - karyotype
+  - cytogenetics
+  - k-mer
+  - genome assembly
+  - T2T
+  - pangenome
+  - sequence annotation
+
+preferred-citation:
+  type: article
+  title: "KaryoScope: rapid, alignment-free sequence annotation for the pangenome era"
+  authors:
+    - given-names: "T. Rhyker"
+      family-names: "Ranallo-Benavidez"
+      affiliation: "Translational Genomics Research Institute (TGen)"
+    - given-names: "Yi-An"
+      family-names: "Chen"
+      affiliation: "Translational Genomics Research Institute (TGen)"
+    - given-names: "Tamara"
+      family-names: "Potapova"
+      affiliation: "Stowers Institute for Medical Research"
+    - given-names: "Jarno"
+      family-names: "Alanko"
+      affiliation: "University of Helsinki"
+    - given-names: "Hailey"
+      family-names: "Loucks"
+      affiliation: "UC Santa Cruz"
+    - given-names: "Julian"
+      family-names: "Lucas"
+      affiliation: "UC Santa Cruz"
+    - name: "Human Pangenome Reference Consortium (HPRC)"
+    - given-names: "Andrea"
+      family-names: "Guarracino"
+      affiliation: "Translational Genomics Research Institute (TGen)"
+    - given-names: "Simon J."
+      family-names: "Puglisi"
+      affiliation: "University of Helsinki"
+    - given-names: "Camille"
+      family-names: "Marchet"
+      affiliation: "CNRS, University of Lille"
+    - given-names: "Karen"
+      family-names: "Miga"
+      affiliation: "UC Santa Cruz"
+    - given-names: "Jennifer L."
+      family-names: "Gerton"
+      affiliation: "Stowers Institute for Medical Research"
+    - given-names: "Floris P."
+      family-names: "Barthel"
+      affiliation: "Translational Genomics Research Institute (TGen)"
+  journal: "bioRxiv"
+  year: 2026
+  doi: "10.64898/2026.05.15.725544"
+  url: "https://doi.org/10.64898/2026.05.15.725544"

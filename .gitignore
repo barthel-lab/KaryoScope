@@ -1,0 +1,122 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C/C++ build artifacts
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+.hypothesis/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# Linters
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sphinx / docs build
+docs/_build/
+docs/site/
+
+# Local config / secrets
+.env
+.envrc
+*.local.yaml
+
+# Bioinformatics: large / generated data files that should never be committed
+*.fasta
+*.fa
+*.fna
+*.fastq
+*.fq
+*.fasta.gz
+*.fa.gz
+*.fna.gz
+*.fastq.gz
+*.fq.gz
+*.bam
+*.bam.bai
+*.cram
+*.cram.crai
+*.sam
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.bed
+*.bed.gz
+*.bed.gz.tbi
+*.kmc_pre
+*.kmc_suf
+*.fai
+*.gzi
+*.tbi
+*.csi
+
+# But: keep tiny test fixtures committed (override the above)
+!tests/data/**
+
+# Local results and scratch
+results/
+scratch/
+tmp/
+work/
+
+# Snakemake / Nextflow
+.snakemake/
+.nextflow*
+work/
+
+# C++ generated
+native/*/build/
+native/*/bin/
+
+# Operating system
+Thumbs.db

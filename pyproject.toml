@@ -1,0 +1,154 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "karyoscope"
+dynamic = ["version"]
+description = "Rapid, alignment-free sequencing annotation for the pangenome era."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Timothy Rhyker Ranallo-Benavidez", email = "rranallo-benavidez@tgen.org" },
+  { name = "Floris P. Barthel", email = "fbarthel@tgen.org" },
+]
+maintainers = [
+  { name = "Timothy Rhyker Ranallo-Benavidez", email = "rranallo-benavidez@tgen.org" },
+  { name = "Floris P. Barthel", email = "fbarthel@tgen.org" },
+]
+keywords = [
+  "bioinformatics",
+  "genomics",
+  "karyotype",
+  "cytogenetics",
+  "k-mer",
+  "genome assembly",
+  "T2T",
+  "pangenome",
+  "annotation"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+]
+
+dependencies = [
+  "click>=8.1",
+  "drawsvg>=2.4",
+  "cairosvg>=2.7",
+  "requests>=2.31",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+  "jsonschema>=4.21",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=4.1",
+  "ruff>=0.4",
+]
+docs = [
+  "mkdocs>=1.5",
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/barthel-lab/KaryoScope"
+Documentation = "https://github.com/barthel-lab/KaryoScope#readme"
+Repository = "https://github.com/barthel-lab/KaryoScope"
+Issues = "https://github.com/barthel-lab/KaryoScope/issues"
+Changelog = "https://github.com/barthel-lab/KaryoScope/blob/main/CHANGELOG.md"
+
+[project.scripts]
+karyoscope = "karyoscope.cli:main"
+
+# --- hatchling configuration ---
+
+[tool.hatch.version]
+path = "src/karyoscope/_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/",
+  "tests/",
+  "examples/",
+  "LICENSE",
+  "README.md",
+  "CHANGELOG.md",
+  "pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/karyoscope"]
+
+# --- ruff (linter + formatter) ---
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+  "SIM", # flake8-simplify
+  "PTH", # flake8-use-pathlib
+  "RUF", # ruff-specific
+]
+ignore = [
+  "E501",  # line length handled by formatter
+  "B008",  # function calls in argument defaults (click uses this idiomatically)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # allow `assert` in tests
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# --- pytest ---
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+]
+markers = [
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "integration: marks tests that require external tools (KMC, bgzip, etc.)",
+]
+
+[tool.coverage.run]
+source = ["src/karyoscope"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
