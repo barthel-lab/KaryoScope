@@ -146,10 +146,26 @@ def _split_comma(value: str) -> list[str]:
     help="Threads for auto-run annotate invocations.",
 )
 @click.option(
+    "--mode",
+    type=click.Choice(["fasta", "bed", "both"], case_sensitive=False),
+    default="fasta",
+    show_default=True,
+    help="What to write per input. 'fasta' writes a scaffolded FASTA only; "
+    "'bed' writes per-feature-set scaffolded BEDs only (used by `karyoscope karyotype`); "
+    "'both' writes both. The map and legacy stats files are always written.",
+)
+@click.option(
+    "--keep-unscaffolded/--drop-unscaffolded",
+    default=True,
+    show_default=True,
+    help="In FASTA mode, append contigs that did not get scaffolded (too short, no leaf "
+    "chromosome) at the end of the output under their original names. Disable to drop them entirely.",
+)
+@click.option(
     "--bgzip/--no-bgzip",
     default=True,
     show_default=True,
-    help="bgzip the scaffolded output BEDs.",
+    help="bgzip the scaffolded output BEDs and FASTA.",
 )
 @click.option(
     "--auto/--no-auto",
@@ -175,6 +191,8 @@ def cmd(
     bin_size: int,
     min_scaffold_length: int,
     acrocentrics_raw: tuple[str, ...],
+    mode: str,
+    keep_unscaffolded: bool,
     threads: int,
     bgzip: bool,
     auto: bool,
@@ -248,6 +266,13 @@ def cmd(
 
     feature_sets = list(feature_sets_arg) if feature_sets_arg else None
 
+    mode_normalised = mode.lower()
+    if mode_normalised == "fasta" and feature_sets:
+        raise click.UsageError(
+            "--feature-set has no effect with --mode fasta (no per-feature-set BEDs are written). "
+            "Use --mode bed or --mode both, or drop --feature-set."
+        )
+
     db_root = paths.ensure_db_root(db_root_arg)
     try:
         results = scaffold_run(
@@ -255,12 +280,14 @@ def cmd(
             db_root=db_root,
             db_id=db_id,
             feature_sets=feature_sets,
+            mode=mode_normalised,
             bin_size=bin_size,
             min_scaffold_length=min_scaffold_length,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
             threads=threads,
             bgzip=bgzip,
+            keep_unscaffolded=keep_unscaffolded,
             auto=auto,
             output_dir=output_dir,
         )
@@ -281,5 +308,7 @@ def cmd(
         click.echo(f"  [{result.hap_label}] {input_name}")
         click.echo(f"    map:    {result.map_path}")
         click.echo(f"    stats:  {result.stats_path}")
+        if result.scaffolded_fasta is not None:
+            click.echo(f"    fasta:  {result.scaffolded_fasta}")
         for fs, p in result.scaffolded_beds.items():
             click.echo(f"    {fs}:  {p}")

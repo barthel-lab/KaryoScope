@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from karyoscope.core.io.fasta import read_fasta_records
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.io.telo import TeloFlags
 from karyoscope.core.scaffold import (
@@ -21,6 +22,7 @@ from karyoscope.core.scaffold import (
     half_region_totals,
     need_to_flip,
     rewrite_bed,
+    rewrite_fasta,
     scaffold_region_majority,
 )
 
@@ -448,3 +450,98 @@ class TestRewriteBed:
         ]
         rewrite_bed(src, dst, map_rows=rows)
         assert dst.read_text() == "chr1_hap1_ctgA\t0\t100\tX\n"
+
+
+# --- FASTA rewriter --------------------------------------------------
+
+
+class TestRewriteFasta:
+    def _write_src(self, p: Path, records: dict[str, str]) -> None:
+        p.write_text("".join(f">{n}\n{s}\n" for n, s in records.items()))
+
+    def test_renames_without_flip(self, tmp_path: Path) -> None:
+        src = tmp_path / "in.fa"
+        self._write_src(src, {"ctgA": "ACGT", "ctgB": "GGCC"})
+        dst = tmp_path / "out.fa"
+        rows = [
+            MapRow("chr1_hap1_ctgA", "ctgA", "in.fa", "hap1", "chr1", False, 4, "P"),
+            MapRow("chr1_hap1_ctgB", "ctgB", "in.fa", "hap1", "chr1", False, 4, "P"),
+        ]
+        rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=False)
+        out = read_fasta_records(dst)
+        assert list(out.keys()) == ["chr1_hap1_ctgA", "chr1_hap1_ctgB"]
+        assert out["chr1_hap1_ctgA"] == "ACGT"
+        assert out["chr1_hap1_ctgB"] == "GGCC"
+
+    def test_reverse_complement_when_flipped(self, tmp_path: Path) -> None:
+        src = tmp_path / "in.fa"
+        self._write_src(src, {"ctgA": "AATTCG"})  # RC = CGAATT
+        dst = tmp_path / "out.fa"
+        rows = [
+            MapRow("chr1_hap1_ctgA_rc", "ctgA", "in.fa", "hap1", "chr1", True, 6, "Q"),
+        ]
+        rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=False)
+        assert read_fasta_records(dst)["chr1_hap1_ctgA_rc"] == "CGAATT"
+
+    def test_keep_unscaffolded_appends_originals(self, tmp_path: Path) -> None:
+        # ctgA is scaffolded; tiny is left over.
+        src = tmp_path / "in.fa"
+        self._write_src(src, {"ctgA": "AAAA", "tiny": "TT"})
+        dst = tmp_path / "out.fa"
+        rows = [
+            MapRow("chr1_hap1_ctgA", "ctgA", "in.fa", "hap1", "chr1", False, 4, "P"),
+        ]
+        rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=True)
+        out = read_fasta_records(dst)
+        # Scaffolded contigs come first (in map order), then unscaffolded
+        # under their ORIGINAL names.
+        assert list(out.keys()) == ["chr1_hap1_ctgA", "tiny"]
+        assert out["tiny"] == "TT"
+
+    def test_drop_unscaffolded(self, tmp_path: Path) -> None:
+        src = tmp_path / "in.fa"
+        self._write_src(src, {"ctgA": "AAAA", "tiny": "TT"})
+        dst = tmp_path / "out.fa"
+        rows = [
+            MapRow("chr1_hap1_ctgA", "ctgA", "in.fa", "hap1", "chr1", False, 4, "P"),
+        ]
+        rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=False)
+        out = read_fasta_records(dst)
+        assert list(out.keys()) == ["chr1_hap1_ctgA"]
+        assert "tiny" not in out
+
+    def test_emits_in_map_order_not_source_order(self, tmp_path: Path) -> None:
+        # Source: A, B; map emits B first (e.g. because of chrom ordering).
+        src = tmp_path / "in.fa"
+        self._write_src(src, {"ctgA": "AAAA", "ctgB": "CCCC"})
+        dst = tmp_path / "out.fa"
+        rows = [
+            MapRow("chr1_h1_ctgB", "ctgB", "in.fa", "h1", "chr1", False, 4, "P"),
+            MapRow("chr2_h1_ctgA", "ctgA", "in.fa", "h1", "chr2", False, 4, "P"),
+        ]
+        rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=False)
+        assert list(read_fasta_records(dst).keys()) == ["chr1_h1_ctgB", "chr2_h1_ctgA"]
+
+    def test_map_contig_absent_from_fasta_is_skipped(self, tmp_path: Path) -> None:
+        # ctgB is in the map but not in the source FASTA. Skip silently.
+        src = tmp_path / "in.fa"
+        self._write_src(src, {"ctgA": "AAAA"})
+        dst = tmp_path / "out.fa"
+        rows = [
+            MapRow("chr1_h1_ctgA", "ctgA", "in.fa", "h1", "chr1", False, 4, "P"),
+            MapRow("chr1_h1_ctgGhost", "ctgGhost", "in.fa", "h1", "chr1", False, 4, "P"),
+        ]
+        rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=False)
+        out = read_fasta_records(dst)
+        assert list(out.keys()) == ["chr1_h1_ctgA"]
+
+    def test_gzip_input_and_output(self, tmp_path: Path) -> None:
+        import gzip as _gz
+
+        src = tmp_path / "in.fa.gz"
+        with _gz.open(src, "wt") as h:
+            h.write(">ctgA\nACGT\n")
+        dst = tmp_path / "out.fa.gz"
+        rows = [MapRow("chr1_h1_ctgA", "ctgA", "in.fa.gz", "h1", "chr1", False, 4, "P")]
+        rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=False)
+        assert read_fasta_records(dst)["chr1_h1_ctgA"] == "ACGT"

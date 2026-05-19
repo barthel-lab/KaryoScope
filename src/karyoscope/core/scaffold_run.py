@@ -59,6 +59,7 @@ from karyoscope.core.scaffold import (
     ContigInput,
     classify_and_orient,
     rewrite_bed,
+    rewrite_fasta,
 )
 from karyoscope.exceptions import ScaffoldError
 from karyoscope.manifest import validate_database_layout
@@ -106,6 +107,15 @@ class _ResolvedInput:
     out_dir: Path
 
 
+#: Output modes for :func:`scaffold_run`. ``"fasta"`` writes only the
+#: scaffolded FASTA per input; ``"bed"`` writes only the per-feature-set
+#: scaffolded BEDs (used internally by ``karyoscope karyotype``);
+#: ``"both"`` writes both. The map and legacy stats files are always
+#: written.
+ScaffoldMode = str  # Literal["fasta", "bed", "both"]; loose for back-compat
+_VALID_MODES: tuple[str, ...] = ("fasta", "bed", "both")
+
+
 @dataclass
 class ScaffoldResult:
     """What :func:`scaffold_run` wrote for one input."""
@@ -115,6 +125,7 @@ class ScaffoldResult:
     map_path: Path
     stats_path: Path
     scaffolded_beds: dict[str, Path] = field(default_factory=dict)
+    scaffolded_fasta: Path | None = None
 
 
 # --- helpers --------------------------------------------------------
@@ -302,12 +313,14 @@ def scaffold_run(
     db_root: Path,
     db_id: str | None = None,
     feature_sets: list[str] | None = None,
+    mode: ScaffoldMode = "fasta",
     bin_size: int = 1_000_000,
     min_scaffold_length: int = DEFAULT_MIN_SCAFFOLD_LENGTH,
     acrocentrics: set[str] | None = None,
     split_haps_regex: str | None = None,
     threads: int = 0,
     bgzip: bool = True,
+    keep_unscaffolded: bool = True,
     auto: bool = True,
     output_dir: Path | None = None,
 ) -> dict[str, ScaffoldResult]:
@@ -352,13 +365,20 @@ def scaffold_run(
     """
     if not inputs:
         raise ScaffoldError("at least one --input is required")
+    if mode not in _VALID_MODES:
+        raise ScaffoldError(f"unknown mode {mode!r}; expected one of {_VALID_MODES}")
 
     db_id_resolved, db_dir = resolve_database(db_root, db_id)
     manifest = validate_database_layout(db_dir)
     available = list(manifest.feature_sets)
 
     chromosome_fs, region_fs = _resolve_roles(manifest.roles, available)
-    if feature_sets is None:
+    if mode == "fasta":
+        # FASTA-only mode never writes per-feature-set scaffolded BEDs,
+        # so there's no point requesting them from annotate. The role
+        # sets (used for classify+orient) are still annotated.
+        requested: list[str] = []
+    elif feature_sets is None:
         requested = list(available)
     else:
         unknown = [fs for fs in feature_sets if fs not in available]
@@ -369,8 +389,9 @@ def scaffold_run(
             )
         requested = list(feature_sets)
 
-    # We always need the role sets present in annotate output even if
-    # the user didn't ask for them in --feature-set.
+    # We always need the role sets present in annotate output, even when
+    # the user didn't ask for them in --feature-set (and even in
+    # mode='fasta' -- the role sets drive classify_and_orient).
     annotate_sets = sorted(set(requested) | {chromosome_fs, region_fs})
 
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
@@ -499,20 +520,41 @@ def scaffold_run(
         write_legacy_stats(per_input_rows, stats_path)
 
         scaffolded_beds: dict[str, Path] = {}
-        for fs in requested:
-            src = _smoothed_bed_path(r.out_dir, r.stem, db_id_resolved, fs)
-            if not src.is_file():
-                logger.warning(
-                    "smoothed BED for %s / %s not found at %s; skipping",
-                    r.spec.path.name,
-                    fs,
-                    src,
-                )
-                continue
-            out_plain = r.out_dir / f"{r.stem}.{db_id_resolved}.{fs}.smoothed.scaffolded.bed"
-            rewrite_bed(src, out_plain, map_rows=per_input_rows, gzip_out=False)
-            out_final = _bgzip_file(out_plain) if bgzip else out_plain
-            scaffolded_beds[fs] = out_final
+        if mode in ("bed", "both"):
+            for fs in requested:
+                src = _smoothed_bed_path(r.out_dir, r.stem, db_id_resolved, fs)
+                if not src.is_file():
+                    logger.warning(
+                        "smoothed BED for %s / %s not found at %s; skipping",
+                        r.spec.path.name,
+                        fs,
+                        src,
+                    )
+                    continue
+                out_plain = r.out_dir / f"{r.stem}.{db_id_resolved}.{fs}.smoothed.scaffolded.bed"
+                rewrite_bed(src, out_plain, map_rows=per_input_rows, gzip_out=False)
+                out_final = _bgzip_file(out_plain) if bgzip else out_plain
+                scaffolded_beds[fs] = out_final
+
+        scaffolded_fasta: Path | None = None
+        if mode in ("fasta", "both"):
+            # Write plain .fa first, then bgzip (when requested) so the
+            # output is samtools-faidx compatible -- matching how the
+            # BED outputs are compressed above.
+            fasta_plain = r.out_dir / f"{r.stem}.{db_id_resolved}.scaffolded.fa"
+            logger.info(
+                "writing scaffolded FASTA for %s -> %s",
+                r.spec.path.name,
+                fasta_plain,
+            )
+            rewrite_fasta(
+                r.spec.path,
+                fasta_plain,
+                map_rows=per_input_rows,
+                keep_unscaffolded=keep_unscaffolded,
+                gzip_out=False,
+            )
+            scaffolded_fasta = _bgzip_file(fasta_plain) if bgzip else fasta_plain
 
         results[r.spec.path.name] = ScaffoldResult(
             input_path=r.spec.path,
@@ -520,6 +562,7 @@ def scaffold_run(
             map_path=map_path,
             stats_path=stats_path,
             scaffolded_beds=scaffolded_beds,
+            scaffolded_fasta=scaffolded_fasta,
         )
 
     return results

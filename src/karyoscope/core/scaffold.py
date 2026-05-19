@@ -34,6 +34,11 @@ from itertools import groupby
 from pathlib import Path
 from typing import IO
 
+from karyoscope.core.io.fasta import (
+    read_fasta_records,
+    reverse_complement,
+    write_fasta_records,
+)
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.io.telo import TeloFlags
 from karyoscope.exceptions import ScaffoldError
@@ -686,3 +691,57 @@ def rewrite_bed(
                     out.write(f"{row.new_name}\t{start}\t{end}\t{rest}\n")
                 else:
                     out.write(f"{row.new_name}\t{start}\t{end}\n")
+
+
+# --- FASTA rewriting ------------------------------------------------
+
+
+def rewrite_fasta(
+    input_path: Path,
+    output_path: Path,
+    *,
+    map_rows: list[MapRow],
+    keep_unscaffolded: bool = True,
+    gzip_out: bool | None = None,
+    line_width: int | None = None,
+) -> None:
+    """Write a scaffolded FASTA from ``input_path``.
+
+    Walks ``map_rows`` in order, emitting each scaffolded contig
+    under its encoded name (reverse-complementing when ``flipped`` is
+    True). When ``keep_unscaffolded`` is True (the default), any
+    contig present in the source FASTA but absent from ``map_rows``
+    is appended at the end under its original name. This matches the
+    archive's ``scaffold_hap_assembly.py`` behaviour and keeps the
+    output assembly complete; pass ``False`` to drop unscaffolded
+    contigs entirely.
+
+    ``gzip_out=None`` gzips iff ``output_path`` ends in ``.gz``.
+    ``line_width=None`` writes each sequence on a single line.
+
+    Contigs in ``map_rows`` whose ``original_name`` is missing from
+    the source FASTA are silently skipped -- the same forgiving
+    semantics as :func:`rewrite_bed`.
+    """
+    records = read_fasta_records(input_path)
+
+    placed: set[str] = set()
+    out_records: dict[str, str] = {}
+
+    for row in map_rows:
+        seq = records.get(row.original_name)
+        if seq is None:
+            continue
+        if row.flipped:
+            seq = reverse_complement(seq)
+        out_records[row.new_name] = seq
+        placed.add(row.original_name)
+
+    if keep_unscaffolded:
+        # Preserve source order for the appended contigs.
+        for name, seq in records.items():
+            if name in placed:
+                continue
+            out_records[name] = seq
+
+    write_fasta_records(out_records, output_path, gzip_out=gzip_out, line_width=line_width)

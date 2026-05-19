@@ -355,6 +355,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the full auto-derive cascade (annotate -> seqtk telo -> bin ->
   scaffold) against the dummy database, plus the ``--no-auto`` error
   path and the map-file format round-trip.
+- ``karyoscope scaffold --mode {fasta, bed, both}``. Stage 5d-1
+  shipped only the BED-rewriting path; this stage adds FASTA
+  rewriting and flips the default mode to ``fasta``. Rationale:
+  when a human invokes ``karyoscope scaffold`` directly they want
+  a scaffolded FASTA; the pipeline use (``karyoscope karyotype``
+  driving scaffold under the hood) will explicitly pass
+  ``--mode bed``. Combining ``--mode fasta`` with ``--feature-set``
+  is a clean ``UsageError`` (no per-feature-set BEDs are written
+  in fasta mode, so feature-set filtering would have no effect).
+- FASTA-mode output:
+  ``<input_stem>.<dbid>.scaffolded.fa[.gz]`` per input. The map and
+  legacy stats files are still written in every mode. ``--mode both``
+  produces both the FASTA and the per-feature-set BEDs.
+- ``--keep-unscaffolded / --drop-unscaffolded`` flag (default
+  ``--keep-unscaffolded``): in FASTA mode, contigs that the
+  classify-and-orient step dropped (too short, or no leaf-chromosome
+  hit) are by default appended at the end of the output FASTA under
+  their original names. This matches the archive's
+  ``scaffold_hap_assembly.py`` behaviour and keeps the assembly
+  complete; pass ``--drop-unscaffolded`` to emit only the
+  scaffolded contigs.
+- ``karyoscope.core.io.fasta``: minimal FASTA reader / writer +
+  IUPAC-aware reverse-complement. ``read_fasta_records`` returns
+  an :class:`collections.OrderedDict` so source order can be
+  preserved on round-trips. ``write_fasta_records`` supports plain
+  and gzipped output with optional line wrapping (default:
+  unwrapped, matching the archive). ``reverse_complement`` handles
+  the full IUPAC table (ACGTU + RYSWKMBDHVN) and preserves case so
+  soft-masked sequences round-trip cleanly. The lighter
+  ``read_fasta_contig_names`` lives here too;
+  :mod:`karyoscope.core.hap_inference` re-exports it for back-compat.
+- ``karyoscope.core.scaffold.rewrite_fasta``: walks the per-input
+  map in stats order, reverse-complementing flipped contigs, and
+  optionally appending unscaffolded contigs at the end under their
+  original names.
+- FASTA-mode optimisation in ``scaffold_run``: when
+  ``mode='fasta'``, the auto-derive cascade only requests the role
+  feature sets from ``annotate`` (rather than every set declared
+  in the manifest), since per-feature-set BEDs aren't going to be
+  rewritten anyway. ``mode='bed'`` and ``mode='both'`` request all
+  user-asked-for feature sets as before.
+- Unit tests for the new fasta module
+  (``tests/test_fasta.py``, 21 tests covering reverse-complement
+  including IUPAC ambiguity codes and case preservation, FASTA
+  read/write with plain + gzip + CRLF handling, line wrapping,
+  insertion-order preservation), plus 7 ``rewrite_fasta`` tests
+  added to ``tests/test_scaffold.py`` (no-flip rename, RC on
+  flip, keep-unscaffolded vs drop semantics, map-order emission,
+  map contigs absent from FASTA, gzip in/out).
+- Integration tests in ``tests/test_command_scaffold.py``:
+  ``--mode fasta`` writes the FASTA and no BEDs; ``--mode both``
+  writes both; ``--feature-set`` with ``--mode fasta`` is
+  rejected with a clean ``UsageError``;
+  ``--drop-unscaffolded`` omits leftover contigs from the FASTA.
 
 ### Changed
 - Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.

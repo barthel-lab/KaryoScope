@@ -130,13 +130,13 @@ def dummy_assembly_fasta(tmp_path: Path) -> Path:
 
 @pytestmark_required
 @pytest.mark.integration
-def test_scaffold_auto_derives_everything(
+def test_scaffold_auto_derives_everything_bed_mode(
     cli_runner: CliRunner,
     populated_db_root: Path,
     dummy_assembly_fasta: Path,
     tmp_path: Path,
 ) -> None:
-    """One bare ``-i FA`` invocation should produce a complete output set.
+    """``--mode bed`` should produce per-feature-set scaffolded BEDs.
 
     The dummy db's contigs are far below the default
     ``--min-scaffold-length`` (5 Mb) so we lower the threshold so the
@@ -151,6 +151,8 @@ def test_scaffold_auto_derives_everything(
             f"hap1={dummy_assembly_fasta}",
             "--outdir",
             str(out_dir),
+            "--mode",
+            "bed",
             "--min-scaffold-length",
             "1",
             "--bin-size",
@@ -184,6 +186,9 @@ def test_scaffold_auto_derives_everything(
     # A scaffolded BED exists for each feature set in the manifest.
     scaffolded = sorted(out_dir.glob("assembly.KS_dummy_test_v1.*.smoothed.scaffolded.bed"))
     assert scaffolded, f"no scaffolded BEDs produced; got: {list(out_dir.iterdir())}"
+
+    # In bed mode, no scaffolded FASTA should be written.
+    assert not list(out_dir.glob("assembly.KS_dummy_test_v1.scaffolded.fa*"))
 
 
 @pytestmark_required
@@ -247,3 +252,146 @@ def test_map_file_is_authoritative_format(
         # The encoded name conforms to chrom_hap_contig[_rc].
         suffix = "_rc" if r.flipped else ""
         assert r.new_name == f"{r.chromosome}_{r.hap}_{r.original_name}{suffix}"
+
+
+# --- FASTA mode (Stage 5d-1b) ---------------------------------------
+
+
+def test_feature_set_with_mode_fasta_is_rejected(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    """--feature-set has no effect in FASTA mode and should error cleanly."""
+    fa = tmp_path / "x.fa"
+    fa.write_text(">a\nACGT\n")
+    result = cli_runner.invoke(
+        main,
+        [
+            "scaffold",
+            "-i",
+            f"hap1={fa}",
+            "--mode",
+            "fasta",
+            "--feature-set",
+            "chromosome",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "feature-set" in result.output.lower()
+    assert "fasta" in result.output.lower()
+
+
+@pytestmark_required
+@pytest.mark.integration
+def test_fasta_mode_writes_scaffolded_fasta(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    dummy_assembly_fasta: Path,
+    tmp_path: Path,
+) -> None:
+    """Default (--mode fasta) writes one scaffolded FASTA per input, no BEDs."""
+    from karyoscope.core.io.fasta import read_fasta_records
+
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "scaffold",
+            "-i",
+            f"hap1={dummy_assembly_fasta}",
+            "--outdir",
+            str(out_dir),
+            "--min-scaffold-length",
+            "1",
+            "--bin-size",
+            "10",
+            "--no-bgzip",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    # Map + stats always written.
+    assert (out_dir / "assembly.KS_dummy_test_v1.scaffold_map.tsv").is_file()
+    # Scaffolded FASTA exists.
+    fa_out = out_dir / "assembly.KS_dummy_test_v1.scaffolded.fa"
+    assert fa_out.is_file(), f"missing scaffolded FASTA; got: {list(out_dir.iterdir())}"
+    # No scaffolded BEDs in fasta mode.
+    assert not list(out_dir.glob("*.smoothed.scaffolded.bed*"))
+
+    # Output FASTA names match the map's new_name column for placed contigs.
+    rows = read_map(out_dir / "assembly.KS_dummy_test_v1.scaffold_map.tsv")
+    fa_records = read_fasta_records(fa_out)
+    for r in rows:
+        assert r.new_name in fa_records
+
+
+@pytestmark_required
+@pytest.mark.integration
+def test_both_mode_writes_fasta_and_beds(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    dummy_assembly_fasta: Path,
+    tmp_path: Path,
+) -> None:
+    """--mode both produces both per-feature-set BEDs and the FASTA."""
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "scaffold",
+            "-i",
+            f"hap1={dummy_assembly_fasta}",
+            "--outdir",
+            str(out_dir),
+            "--mode",
+            "both",
+            "--min-scaffold-length",
+            "1",
+            "--bin-size",
+            "10",
+            "--no-bgzip",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (out_dir / "assembly.KS_dummy_test_v1.scaffolded.fa").is_file()
+    assert list(out_dir.glob("*.smoothed.scaffolded.bed"))
+
+
+@pytestmark_required
+@pytest.mark.integration
+def test_drop_unscaffolded_omits_leftover_contigs(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    tmp_path: Path,
+) -> None:
+    """--drop-unscaffolded leaves out contigs that aren't in the map."""
+    from karyoscope.core.io.fasta import read_fasta_records
+
+    # Build a FASTA with one matching contig and one tiny novel decoy.
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"
+    fa = tmp_path / "asm.fa"
+    fa.write_text(
+        f">scaffolded_one\n{seed[:21]}\n"  # featureID 1 -> chr1/rA
+        f">decoy_junk\n{'AAAAA' * 4}\n"  # all-novel, gets dropped
+    )
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "scaffold",
+            "-i",
+            f"hap1={fa}",
+            "--outdir",
+            str(out_dir),
+            "--min-scaffold-length",
+            "1",
+            "--bin-size",
+            "10",
+            "--no-bgzip",
+            "--drop-unscaffolded",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    fa_out = read_fasta_records(out_dir / "asm.KS_dummy_test_v1.scaffolded.fa")
+    # decoy_junk should not appear under its original name.
+    assert "decoy_junk" not in fa_out

@@ -46,11 +46,20 @@ Rule summary (per :class:`InputSpec` in :mod:`karyoscope.core.scaffold`):
 
 from __future__ import annotations
 
-import gzip
 import logging
 import re
 from collections.abc import Iterable
 from pathlib import Path
+
+from karyoscope.core.io.fasta import read_fasta_contig_names
+
+__all__ = [
+    "assign_per_input_labels",
+    "classify_contigs",
+    "infer_hap_from_contig",
+    "infer_hap_from_filename",
+    "read_fasta_contig_names",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -308,20 +317,6 @@ def _strip_fasta_ext(name: str) -> str:
     return Path(name).stem
 
 
-def read_fasta_contig_names(path: Path) -> list[str]:
-    """Return the contig names from a (possibly gzipped) FASTA file.
-
-    Only the names (first whitespace-delimited token of each ``>``
-    header) are returned; no sequence is loaded. The reader handles
-    ``.gz`` transparently.
-    """
-    opener = gzip.open if path.suffix == ".gz" else open
-    names: list[str] = []
-    with opener(path, "rt") as h:
-        for line in h:
-            if line.startswith(">"):
-                # Strip '>' and take the first whitespace-delimited token.
-                head = line[1:].strip().split()
-                if head:
-                    names.append(head[0])
-    return names
+# ``read_fasta_contig_names`` lives in :mod:`karyoscope.core.io.fasta`;
+# re-exported at the top of this module for back-compat with callers
+# imported under the old name.
