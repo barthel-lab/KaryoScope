@@ -72,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   import time, so `$HOME` changes during a process lifetime are honored.
 - `CITATION.cff` and `CODE_OF_CONDUCT.md` normalized to a single trailing
   newline (auto-fixed by the new `end-of-file-fixer` pre-commit hook).
+- Test fixtures (`unpacked_dummy_db`, `populated_db_root`) no longer crash
+  on Python versions older than the `tarfile.TarFile.extractall(filter=...)`
+  backport (3.10.12 / 3.11.4 / 3.12+). A shared `_extractall_compat`
+  helper in `conftest.py` wraps the call in a `try`/`except TypeError`
+  fall-through, mirroring the same pattern that production code in
+  `download.py` already uses.
 
 <!--
 Use the following sections when adding entries:

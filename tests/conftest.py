@@ -48,6 +48,27 @@ DUMMY_SHA256_FILE = DATA_DIR / "dummy_db.sha256"
 DUMMY_DB_ID = "KS_dummy_test_v1"
 
 
+def _extractall_compat(tar: tarfile.TarFile, dest: Path) -> None:
+    """Extract a tar's members to ``dest``, using ``filter='data'`` where available.
+
+    The ``filter`` keyword argument to ``TarFile.extractall`` was added in
+    Python 3.12 (and backported to 3.10.12 / 3.11.4 as a CVE-2007-4559
+    mitigation). Older patch-level releases of 3.10 and 3.11 — including
+    the Python versions that some GitHub Actions runners ship — don't have
+    it and raise ``TypeError``. Production code (``download.py``) has the
+    same try/except; this helper exists so the test fixtures don't need
+    to repeat it.
+
+    Test fixtures extract from tarballs we built ourselves, so the
+    ``filter='data'`` is for forward-compatibility (Python 3.14 will
+    require a filter) rather than for security per se.
+    """
+    try:
+        tar.extractall(dest, filter="data")  # type: ignore[arg-type]
+    except TypeError:  # pragma: no cover — exercised only on older Pythons
+        tar.extractall(dest)
+
+
 @pytest.fixture
 def cli_runner() -> CliRunner:
     """A click CliRunner for invoking subcommands in tests."""
@@ -89,7 +110,7 @@ def unpacked_dummy_db(tmp_path: Path, dummy_db_tarball: Path) -> Path:
     target_root = tmp_path / "unpacked"
     target_root.mkdir()
     with tarfile.open(dummy_db_tarball, "r:gz") as tar:
-        tar.extractall(target_root, filter="data")  # type: ignore[arg-type]
+        _extractall_compat(tar, target_root)
     return target_root / DUMMY_DB_ID
 
 
@@ -146,7 +167,7 @@ def populated_db_root(
 
     # Extract the dummy db directly into db_root.
     with tarfile.open(dummy_db_tarball, "r:gz") as tar:
-        tar.extractall(db_root, filter="data")  # type: ignore[arg-type]
+        _extractall_compat(tar, db_root)
     assert (db_root / DUMMY_DB_ID).is_dir()
 
     # Pretend it was installed.
