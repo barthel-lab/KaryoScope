@@ -3,9 +3,31 @@
 This module wires the eight v0.1 subcommands into a single ``karyoscope``
 entry point. Each subcommand lives in its own module under
 ``karyoscope.commands`` so that they can grow independently.
+
+Logging vs. program output
+==========================
+
+Two channels coexist deliberately:
+
+* **Program output** — what a command is doing for the user. Emitted via
+  ``click.echo``. Always visible regardless of verbosity. Examples:
+  "Installing KS_human_CHM13_v2 v2.0.0...", a listing table, a help
+  message.
+* **Logging / diagnostics** — behind-the-scenes information for
+  developers and power users debugging issues. Emitted via the standard
+  ``logging`` module. Hidden by default; opt in with ``-v`` or ``-vv``.
+  Examples: which URL was fetched, cache hits, SHA-256 verifications,
+  subprocess invocations.
+
+The verbosity flags only affect the logging channel. Program output is
+unaffected; if you want to suppress that, use command-specific flags
+like ``--quiet`` on ``download``.
 """
 
 from __future__ import annotations
+
+import logging
+import sys
 
 import click
 
@@ -26,6 +48,37 @@ CONTEXT_SETTINGS = {
     "max_content_width": 100,
 }
 
+#: Maps a verbosity integer (negative for quiet, 0 default, positive for verbose)
+#: to a stdlib logging level. Anything beyond ``2`` is clamped to DEBUG.
+_VERBOSITY_TO_LEVEL = {
+    -1: logging.ERROR,
+    0: logging.WARNING,
+    1: logging.INFO,
+    2: logging.DEBUG,
+}
+
+
+def _configure_logging(verbosity: int) -> None:
+    """Install a stderr log handler with a format suited to a CLI tool.
+
+    Replaces any pre-existing handlers on the root logger so that repeated
+    calls (e.g., from tests) don't compound output.
+    """
+    level = _VERBOSITY_TO_LEVEL.get(verbosity, logging.DEBUG if verbosity > 0 else logging.ERROR)
+    handler = logging.StreamHandler(stream=sys.stderr)
+    if level <= logging.DEBUG:
+        # In DEBUG mode include the module name so users can see which
+        # subsystem emitted each line.
+        fmt = "%(levelname)s [%(name)s] %(message)s"
+    else:
+        # Otherwise keep it minimal — looks more like a CLI tool, less like
+        # an application server log.
+        fmt = "%(levelname)s: %(message)s"
+    handler.setFormatter(logging.Formatter(fmt))
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(level)
+
 
 @click.group(context_settings=CONTEXT_SETTINGS)
 @click.version_option(
@@ -34,7 +87,19 @@ CONTEXT_SETTINGS = {
     "--version",
     message="karyoscope %(version)s",
 )
-def main() -> None:
+@click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="Increase logging verbosity. Repeat for more (-v=info, -vv=debug).",
+)
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    help="Decrease logging verbosity to errors only. Conflicts with -v.",
+)
+def main(verbose: int, quiet: bool) -> None:
     """KaryoScope: rapid, alignment-free sequence annotation for the pangenome era.
 
     Run a subcommand with ``--help`` to see its options, e.g.:
@@ -44,6 +109,10 @@ def main() -> None:
 
     For more information, see https://github.com/barthel-lab/KaryoScope.
     """
+    if quiet and verbose:
+        raise click.UsageError("--quiet and --verbose cannot be combined.")
+    verbosity = -1 if quiet else verbose
+    _configure_logging(verbosity)
 
 
 # Register subcommands. The order here determines the order in `--help`.

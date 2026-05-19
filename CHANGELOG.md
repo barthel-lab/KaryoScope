@@ -36,6 +36,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   atomic writes and recovery from corrupted files.
 - Test fixtures: a 22 KB dummy database tarball containing a real (tiny) KMC
   index, plus a build script for regenerating it.
+- Top-level verbosity flags ``-v`` / ``-vv`` (raise log level to INFO / DEBUG)
+  and ``-q`` (lower to ERROR-only). Logging is reserved for diagnostics
+  (URL fetches, cache hits, SHA-256 verifications, subprocess invocations);
+  program output remains visible regardless of verbosity. Default is WARNING.
+- ``karyoscope.core.external``: small wrapper around :mod:`subprocess`
+  with consistent error reporting (:class:`ExternalToolError` includes the
+  command, exit code, and a tail of stderr) and a :func:`require_tool`
+  helper for "binary not found on PATH" cases with actionable error messages.
+- ``karyoscope.core.io.hierarchy``: parser for the ``hierarchy.tsv``
+  format used inside KaryoScope databases.
+- The ``karyoscope info`` command now provides a real implementation
+  rather than a stub. With no argument it lists installed databases
+  with version, install date, size, and source. Given a database id, it
+  prints the parsed manifest plus feature-set counts derived from the
+  database's ``hierarchy.tsv``. Given a filesystem path, it probes
+  whether the path is a KaryoScope database directory.
 
 ### Changed
 - Lint and format tooling is now managed by [`pre-commit`](https://pre-commit.com).

@@ -14,6 +14,7 @@ CLI command itself, since it's mostly presentation logic.
 
 from __future__ import annotations
 
+import logging
 import tarfile
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from karyoscope.exceptions import (
 from karyoscope.installed import InstalledRecord, load, now_iso, record_install
 from karyoscope.manifest import validate_database_layout
 from karyoscope.registry import DatabaseEntry
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_version(s: str) -> tuple[int, ...]:
@@ -174,6 +177,7 @@ def install_database(
     target_dir = db_root / entry.id
 
     if not force and target_dir.is_dir() and is_installed(db_root, entry.id):
+        logger.debug("%s already installed at %s; skipping", entry.id, target_dir)
         return target_dir
 
     # If the directory exists but isn't recorded (or force=True), clean it up
@@ -188,30 +192,39 @@ def install_database(
         # the target directory.
         import shutil
 
+        logger.debug("removing existing directory %s", target_dir)
         shutil.rmtree(target_dir)
 
     # Stage the download to a temp file inside db_root.
     archive_path = db_root / f".{entry.id}.tar.gz"
     try:
+        logger.info("fetching %s from %s", entry.id, entry.url)
         fetch(
             entry.url,
             archive_path,
             expected_sha256=entry.sha256 if verify_checksum else None,
             show_progress=show_progress,
         )
+        if verify_checksum:
+            logger.debug("SHA-256 verified: %s", entry.sha256)
+        else:
+            logger.warning("SHA-256 verification skipped for %s", entry.id)
 
+        logger.debug("extracting %s into %s", archive_path.name, db_root)
         _safe_extract_tar(archive_path, db_root, expected_top_level=entry.id)
     finally:
         archive_path.unlink(missing_ok=True)
 
     # Validate the extracted layout. If this fails, leave the broken directory
     # on disk so the user can inspect; just don't record the install.
+    logger.debug("validating database layout at %s", target_dir)
     try:
         validate_database_layout(target_dir)
     except DatabaseLayoutError:
         raise
 
     # Record the install.
+    logger.debug("recording install of %s in installed.json", entry.id)
     record_install(
         db_root,
         entry.id,
@@ -224,4 +237,5 @@ def install_database(
             registry_doi=entry.doi,
         ),
     )
+    logger.info("installed %s to %s", entry.id, target_dir)
     return target_dir

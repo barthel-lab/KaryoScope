@@ -17,6 +17,7 @@ pointing at a fixture) to exercise the parsing logic offline.
 
 from __future__ import annotations
 
+import logging
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ import yaml
 
 from karyoscope._fetch import fetch
 from karyoscope.exceptions import RegistryError
+
+logger = logging.getLogger(__name__)
 
 #: Default canonical registry URL.
 DEFAULT_REGISTRY_URL = (
@@ -162,7 +165,7 @@ def _parse_database_entry(raw: dict, source_category: str) -> DatabaseEntry:
     sha256 = _str("sha256")
 
     size_gb_raw = _require(raw, "size_gb", where)
-    if not isinstance(size_gb_raw, (int, float)):
+    if not isinstance(size_gb_raw, int | float):
         raise RegistryError(f"'size_gb' in {where} must be a number")
     size_gb = float(size_gb_raw)
 
@@ -335,7 +338,11 @@ def load_registry(
     cache_file = _cache_path(db_root)
 
     if not refresh and _cache_is_fresh(cache_file, cache_ttl_seconds):
+        age = time.time() - cache_file.stat().st_mtime
+        logger.debug("registry cache hit (age %.0fs, TTL %.0fs)", age, cache_ttl_seconds)
         return parse_registry(cache_file.read_text())
+
+    logger.info("fetching registry from %s", registry_url)
 
     # Fetch fresh.
     with tempfile.NamedTemporaryFile(
@@ -351,10 +358,15 @@ def load_registry(
         # Validate before atomically replacing the cache.
         registry = parse_registry(tmp_path.read_text())
         tmp_path.replace(cache_file)
+        logger.debug("registry cache updated at %s", cache_file)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         # If we have a stale cache, fall back to it on network errors.
         if not refresh and cache_file.is_file():
+            logger.warning(
+                "failed to fetch fresh registry; falling back to stale cache at %s",
+                cache_file,
+            )
             return parse_registry(cache_file.read_text())
         raise
 
