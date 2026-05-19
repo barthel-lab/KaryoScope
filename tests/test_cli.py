@@ -56,7 +56,6 @@ def test_subcommand_help_succeeds(cli_runner: CliRunner, subcommand: str) -> Non
     "subcommand",
     [
         "scaffold",
-        "bin",
         "centromeres",
         "karyotype",
     ],

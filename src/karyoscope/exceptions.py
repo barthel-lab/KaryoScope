@@ -43,3 +43,7 @@ class UnsupportedSchemeError(FetchError):
 
 class IncompatibleVersionError(KaryoscopeError):
     """A database requires a newer KaryoScope version than the one installed."""
+
+
+class BinError(KaryoscopeError):
+    """Problems aggregating annotation BED records into fixed-size bins."""

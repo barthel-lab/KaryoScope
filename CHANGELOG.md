@@ -197,6 +197,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   smoothing of a constructed ``rA → novel → rB`` query produces a
   region BED where the novel run has been promoted to ``aSat`` (the
   LCA of ``rA`` and ``rB`` in the dummy db's hierarchy).
+- ``karyoscope bin`` command, replacing the previous stub. Aggregates
+  a sorted per-base-pair (or run-length-encoded) BED into
+  fixed-bin-size windows, labelling each bin with the feature that
+  wins a deterministic three-rule selection: (1) sum bp of overlap per
+  feature within the bin, (2) if a leaf-feature set is in play, leaf
+  features compete first (fall back to all features when no leaf is
+  present), (3) the ``novel`` sentinel only wins if it covers a strict
+  majority of the bin — otherwise the best non-novel feature wins.
+  Adjacent bins with the same winning feature are coalesced in a
+  streaming pass, so output is coordinate-sorted and free of
+  same-label neighbours.
+- ``karyoscope.core.bin`` — the binner as a library. Public API:
+  :func:`bin_records` (pure in-memory binning, useful for tests and
+  in-process callers), :func:`bin_features` (file-to-file with
+  transparent ``.gz`` in/out and ``-`` for stdin/stdout), and
+  :func:`leaves_for` (compute the leaf set of a feature set from a
+  parsed :class:`Hierarchy`). Importable in-process by
+  :mod:`karyoscope.commands.scaffold` (next stage), which avoids
+  shelling out to bin its own intermediate BEDs.
+- ``BinError(KaryoscopeError)`` for malformed-input / malformed-flag
+  conditions surfaced by the binner.
+- ``bin`` CLI flags: ``-i/--input``, ``-o/--output``, ``-b/--bin-size``
+  (required), and optionally ``--db ID`` plus ``--feature-set NAME``
+  for leaf prioritisation. Passing ``--db`` without ``--feature-set``
+  is an error (the leaf set is per-feature-set; one without the other
+  is ambiguous). Bare invocation (no ``--db`` / ``--feature-set``) is
+  supported and skips leaf prioritisation entirely.
+- :func:`karyoscope.core.annotate.resolve_database` promoted from the
+  underscore-private ``_resolve_database`` so the same db-id
+  resolution logic is available to :mod:`karyoscope.commands.bin_cmd`
+  and (next stage) :mod:`karyoscope.commands.scaffold` without
+  duplicating it.
+- Unit + integration tests for the binner in ``tests/test_bin.py``:
+  the selection-rule ladder (overlap-largest-wins, novel-majority,
+  novel-minority-falls-back, equal-half-novel-loses, alphabetic
+  tie-break, all-novel-keeps-novel), leaf-prioritisation
+  (leaf-beats-internal, fall-back-when-no-leaf-present,
+  competition-between-leaves), pure binning (single record, coalescing,
+  no-coalesce-across-chroms, trailing-bin truncation), file I/O (plain
+  and gzip in/out, malformed-row error), and CLI invocation against
+  the dummy database for the leaf-prioritisation path.
+- Deliberate diff from the archive's ``bin_features.py``: the
+  ``--specific`` suffix path is dropped. v0.1's ``hierarchy.tsv``
+  makes leaf detection structural (a child that is never a parent),
+  so the old "feature name ending in ``_specific``" hack is no
+  longer needed. Callers that want leaf prioritisation pass an
+  explicit ``leaf_set`` (in-process) or ``--feature-set`` (CLI).
 
 ### Changed
 - Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.

@@ -118,7 +118,7 @@ def _derive_input_basename(input_path: Path) -> str:
     return input_path.stem
 
 
-def _resolve_database(
+def resolve_database(
     db_root: Path,
     db_id: str | None,
 ) -> tuple[str, Path]:
@@ -126,6 +126,10 @@ def _resolve_database(
 
     Returns ``(database_id, database_directory)``. Raises a clean error
     if the user requested an unknown id or if the layout is invalid.
+
+    Shared across :mod:`karyoscope.commands.annotate`,
+    :mod:`karyoscope.commands.bin_cmd`, and (eventually)
+    :mod:`karyoscope.commands.scaffold`.
     """
     state = _installed.load(db_root)
 
@@ -388,7 +392,7 @@ def annotate(
     if not input_path.is_file():
         raise KaryoscopeError(f"input file not found: {input_path}")
 
-    db_id_resolved, db_dir = _resolve_database(db_root, db_id)
+    db_id_resolved, db_dir = resolve_database(db_root, db_id)
     manifest = validate_database_layout(db_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
