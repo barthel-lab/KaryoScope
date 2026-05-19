@@ -50,7 +50,7 @@ cd KaryoScope
 
 # Create a dedicated environment with Python and the bioinformatics tools
 conda create -n karyoscope -c conda-forge -c bioconda \
-    python=3.12 pip kmc htslib seqtk
+    python=3.12 pip kmc htslib seqtk zlib compilers
 conda activate karyoscope
 
 # Install KaryoScope
