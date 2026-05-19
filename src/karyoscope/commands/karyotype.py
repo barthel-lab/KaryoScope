@@ -1,19 +1,307 @@
-"""``karyoscope karyotype`` — render karyotype visualizations.
+"""``karyoscope karyotype`` -- render karyotype SVG visualisations.
 
-This command is not yet implemented in v0.1.0.dev.
+Top of the cascade. Given one or more FASTA inputs, this command runs
+the whole pipeline through to a karyotype SVG: annotate -> seqtk telo
+-> bin -> scaffold (mode='bed') -> (centromere mode only) centromeres
+-> render. Existing intermediate files are reused; ``--no-auto``
+turns missing inputs into hard errors.
+
+Three render modes:
+
+* ``full`` (default): whole-chromosome view, 1 Mb bins, 10 Mb scale bar.
+* ``subtelomere``: zoomed view of p/q-arm telomeric ends, 100 bp
+  bins, 10 kb scale bar. Only contigs flagged with at least one
+  telomere appear.
+* ``centromere``: zoomed view of each contig's centromere, 100 kb
+  bins, 1 Mb scale bar. Only contigs with centromere coordinates
+  appear.
+
+One SVG is rendered per requested feature set (``--feature-set``,
+repeatable; default: every feature set declared in the manifest).
 """
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import click
+
+from karyoscope import paths
+from karyoscope.commands.scaffold import _parse_named_path, _split_comma
+from karyoscope.core.external import ExternalToolError, ToolNotFoundError
+from karyoscope.core.karyotype_run import karyotype_run
+from karyoscope.core.scaffold import DEFAULT_HUMAN_ACROCENTRICS
+from karyoscope.core.scaffold_run import InputSpec
+from karyoscope.exceptions import (
+    CentromereError,
+    DatabaseLayoutError,
+    DatabaseNotFoundError,
+    KaryoscopeError,
+    KaryotypeError,
+    ManifestError,
+    ScaffoldError,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @click.command(
-    help="Render karyotype visualizations (SVG/PNG/PDF) from feature annotations.",
-    no_args_is_help=False,
+    help="Render karyotype SVG from per-input scaffolded annotations.",
+    no_args_is_help=True,
 )
-def cmd() -> None:
-    """Stub. Will port KaryoScope_assembly.py logic."""
-    raise click.ClickException(
-        "`karyoscope karyotype` is not yet implemented in this development build."
-    )
+@click.option(
+    "--input",
+    "-i",
+    "inputs_raw",
+    multiple=True,
+    required=True,
+    help="FASTA input. Repeat per haplotype. Form: 'NAME=PATH' or bare 'PATH'.",
+)
+@click.option(
+    "--telo",
+    "telo_raw",
+    multiple=True,
+    help="Optional precomputed seqtk telo output. Form: 'NAME=PATH'.",
+)
+@click.option(
+    "--split-haps",
+    "split_haps_regex",
+    type=str,
+    default=None,
+    help="Optional regex applied per contig name; capture group 1 is the hap label.",
+)
+@click.option(
+    "--db",
+    "db_id",
+    type=str,
+    default=None,
+    help="Database id. Default: the unique installed database if exactly one is installed.",
+)
+@click.option(
+    "--db-root",
+    "db_root_arg",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Override the database root directory.",
+)
+@click.option(
+    "--feature-set",
+    "feature_sets_arg",
+    multiple=True,
+    help="Feature set to render. Repeatable. Default: every feature set in the manifest "
+    "(one SVG per set).",
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["full", "subtelomere", "centromere"], case_sensitive=False),
+    default="full",
+    show_default=True,
+    help="Which view to render.",
+)
+@click.option(
+    "--sex",
+    type=click.Choice(["male", "female", "reference", "unknown"], case_sensitive=False),
+    default="unknown",
+    show_default=True,
+    help="Sample sex. 'unknown' draws sex-chromosome haps only where data is present.",
+)
+@click.option(
+    "--sex-determination-system",
+    type=click.Choice(["XY", "X0", "ZW", "ZO"], case_sensitive=False),
+    default="XY",
+    show_default=True,
+    help="Sex-determination system.",
+)
+@click.option(
+    "--background-color",
+    type=click.Choice(["white", "black"], case_sensitive=False),
+    default="white",
+    show_default=True,
+    help="Background colour. 'white' draws sequence outlines; 'black' uses light text.",
+)
+@click.option(
+    "--bin-size",
+    type=int,
+    default=None,
+    help="Bin size (bp) for the SVG. Default depends on --mode: 1Mb for full, "
+    "100Kb for centromere, 100bp for subtelomere.",
+)
+@click.option(
+    "--subtelomere-boundary",
+    type=int,
+    default=250_000,
+    show_default=True,
+    help="Subtelomere window size (bp). Only used in --mode subtelomere.",
+)
+@click.option(
+    "--min-scaffold-length",
+    type=int,
+    default=5_000_000,
+    show_default=True,
+    help="Drop contigs shorter than this (no telomere) during the scaffold step.",
+)
+@click.option(
+    "--acrocentric",
+    "acrocentrics_raw",
+    multiple=True,
+    help="Chromosome name to treat as acrocentric during scaffold's flip decision. "
+    "Repeatable; accepts comma-separated lists. Default: human acrocentrics with a warning.",
+)
+@click.option(
+    "--no-human-chroms",
+    "no_human_chroms",
+    is_flag=True,
+    default=False,
+    help="Don't seed the chromosome list with the standard human set "
+    "(chr1..chr22, chrX, chrY). Use for non-human assemblies so the SVG "
+    "shows only the chromosomes actually in the data.",
+)
+@click.option(
+    "--threads",
+    "-t",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Threads for auto-run annotate invocations.",
+)
+@click.option(
+    "--auto/--no-auto",
+    default=True,
+    show_default=True,
+    help="Auto-derive missing inputs. Disable to require everything upfront.",
+)
+@click.option(
+    "--outdir",
+    "-o",
+    "output_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Where to write the SVGs. Default: same directory as the first --input.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Explicit output path base. The mode and feature_set will be appended; "
+    "with --output foo.svg you get foo.<dbid>.<mode>.<fs>.karyotype.svg. "
+    "Conflicts with --outdir when both are set.",
+)
+def cmd(
+    inputs_raw: tuple[str, ...],
+    telo_raw: tuple[str, ...],
+    split_haps_regex: str | None,
+    db_id: str | None,
+    db_root_arg: Path | None,
+    feature_sets_arg: tuple[str, ...],
+    mode: str,
+    sex: str,
+    sex_determination_system: str,
+    background_color: str,
+    bin_size: int | None,
+    subtelomere_boundary: int,
+    min_scaffold_length: int,
+    acrocentrics_raw: tuple[str, ...],
+    no_human_chroms: bool,
+    threads: int,
+    auto: bool,
+    output_dir: Path | None,
+    output_path: Path | None,
+) -> None:
+    """Render karyotype SVGs.
+
+    \b
+    Examples:
+        # Diploid male, full karyotype
+        karyoscope karyotype -i hap1=HG002.hap1.fa.gz -i hap2=HG002.hap2.fa.gz \\
+                              --sex male
+
+        # Centromere zoom for HG002
+        karyoscope karyotype -i hap1=HG002.hap1.fa.gz -i hap2=HG002.hap2.fa.gz \\
+                              --mode centromere --sex male
+    """
+    # --- parse named-pair options -----------------------------------
+    parsed_inputs: list[tuple[str | None, Path]] = [_parse_named_path(raw) for raw in inputs_raw]
+    parsed_telos: dict[str, Path] = {}
+    for raw in telo_raw:
+        name, path = _parse_named_path(raw)
+        if name is None:
+            raise click.UsageError(f"--telo requires NAME=PATH form (got {raw!r})")
+        if name in parsed_telos:
+            raise click.UsageError(f"duplicate --telo for name {name!r}")
+        parsed_telos[name] = path
+
+    explicit_names = {name for name, _ in parsed_inputs if name is not None}
+    inputs: list[InputSpec] = []
+    for name, path in parsed_inputs:
+        telo_path = None
+        if name is not None and name in parsed_telos:
+            telo_path = parsed_telos.pop(name)
+        inputs.append(InputSpec(name=name, path=path, telo_path=telo_path))
+    if parsed_telos:
+        raise click.UsageError(
+            f"--telo entries had no matching --input: {sorted(parsed_telos)} "
+            f"(known input names: {sorted(explicit_names)})"
+        )
+
+    # --- acrocentrics flag ------------------------------------------
+    acrocentrics: set[str] | None
+    if acrocentrics_raw:
+        flattened: list[str] = []
+        for entry in acrocentrics_raw:
+            flattened.extend(_split_comma(entry))
+        if not flattened:
+            raise click.UsageError("--acrocentric was given but produced no chromosome names")
+        acrocentrics = set(flattened)
+    else:
+        acrocentrics = None
+        logger.warning(
+            "no --acrocentric given; falling back to human acrocentrics %s.",
+            sorted(DEFAULT_HUMAN_ACROCENTRICS),
+        )
+
+    if output_dir is not None and output_path is not None:
+        raise click.UsageError("--outdir and --output cannot both be set")
+
+    sex_resolved: str | None = None if sex.lower() == "unknown" else sex.lower()
+    feature_sets = list(feature_sets_arg) if feature_sets_arg else None
+
+    db_root = paths.ensure_db_root(db_root_arg)
+    try:
+        results = karyotype_run(
+            inputs,
+            db_root=db_root,
+            db_id=db_id,
+            feature_sets=feature_sets,
+            mode=mode.lower(),
+            sex=sex_resolved,
+            sex_determination_system=sex_determination_system.upper(),
+            background_color=background_color.lower(),
+            bin_size=bin_size,
+            subtelomere_boundary=subtelomere_boundary,
+            min_scaffold_length=min_scaffold_length,
+            acrocentrics=acrocentrics,
+            split_haps_regex=split_haps_regex,
+            threads=threads,
+            auto=auto,
+            output_dir=output_dir,
+            output_path=output_path,
+            seed_human_chromosomes=not no_human_chroms,
+        )
+    except (
+        KaryotypeError,
+        CentromereError,
+        ScaffoldError,
+        DatabaseNotFoundError,
+        DatabaseLayoutError,
+        ManifestError,
+        ToolNotFoundError,
+        ExternalToolError,
+        KaryoscopeError,
+    ) as e:
+        raise click.ClickException(str(e)) from e
+
+    click.echo("Wrote:")
+    for r in results:
+        click.echo(f"  [{r.mode}/{r.feature_set}] {r.svg_path}")

@@ -460,6 +460,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ``@pytest.mark.integration`` exercise the full
   FASTA -> scaffold -> bin -> centromeres cascade against the
   dummy database and the ``--no-auto`` error path.
+- ``karyoscope karyotype`` command, replacing the previous stub.
+  Top of the cascade: given one or more FASTA inputs, runs the
+  full pipeline through to a karyotype SVG (annotate -> seqtk
+  telo -> bin -> scaffold mode='bed' -> centromeres for the
+  centromere mode -> render). Existing intermediate files are
+  reused; ``--no-auto`` turns missing inputs into hard errors.
+- Three render modes:
+
+  * ``full`` (default): whole-chromosome view, 1 Mb bin size,
+    10 Mb scale bar.
+  * ``subtelomere``: zoomed p/q-arm telomere view, 100 bp bin
+    size, 10 kb scale bar. Only contigs flagged with at least
+    one telomere appear.
+  * ``centromere``: zoomed per-contig centromere view, 100 kb
+    bin size, 1 Mb scale bar. Only contigs with centromere
+    coordinates appear.
+- One SVG written per requested feature set
+  (``--feature-set``, repeatable; default: every feature set in
+  the manifest). Output naming:
+  ``<base>.<dbid>.<mode>.<feature_set>.karyotype.svg``, where
+  ``<base>`` is ``"karyotype"`` by default or the basename of
+  ``--output PATH`` when given.
+- Sex-determination support (port of the archive's logic):
+  ``--sex {male, female, reference, unknown}`` and
+  ``--sex-determination-system {XY, X0, ZW, ZO}``. Per chromosome,
+  decides which (chrom, hap) cells get rendered, drawn empty, or
+  skipped. ``unknown`` draws sex-chromosome cells only where data
+  is present (no expectations imposed).
+- ``--background-color {white, black}``: white draws sequence
+  outlines, black omits them and uses light text + scale bar for
+  contrast.
+- ``--subtelomere-boundary`` flag for the subtelomere window
+  size; ``--bin-size`` to override the mode-appropriate default.
+- ``--no-human-chroms`` to skip seeding the chromosome list with
+  the standard human set (chr1..chr22, chrX, chrY) -- for
+  non-human assemblies where the chromosomes come entirely from
+  the data.
+- ``karyoscope.core.io.colors``: parser for ``colors.txt`` (3-column:
+  feature_set / feature / color). Returns a nested
+  ``{feature_set: {feature: hex}}`` mapping; ``colors_for_set``
+  flattens it for one feature set and pre-populates the
+  ``novel -> #ffffff`` sentinel. Missing colours render as white
+  with a one-time warning per feature so a single bad colour
+  entry doesn't break the whole render.
+- ``karyoscope.core.karyotype``: the renderer. Faithful port of
+  ``KaryoScope_assembly.py`` adapted for v0.1's per-input + map-file
+  topology. ``render_karyotype(inputs, *, colors, mode, sex, ...)``
+  takes :class:`RenderInput` records (each carrying per-input
+  ``map_rows``, binned BED, and optional centromere coordinates)
+  and writes the SVG using ``drawsvg``. Pure-ish: no subprocess,
+  no in-place mutation of arguments.
+- ``karyoscope.core.karyotype_run``: the orchestrator that the
+  CLI sits on top of. Cascades through ``scaffold_run`` (for
+  scaffolded BEDs), ``bin_features`` (for the per-mode binned
+  scaffolded BEDs), and ``centromeres_run`` (for centromere
+  mode). One SVG written per requested feature set.
+- ``KaryotypeError(KaryoscopeError)`` for render-time problems
+  (unknown mode, missing centromere ranges, etc.).
+- Unit tests in ``tests/test_karyotype.py`` (19 tests):
+  ``get_expected_haps`` across every (sex, sex-system, chromosome)
+  branch including custom dict systems and the unknown-system
+  error path, ``render_karyotype`` smoke tests per mode
+  (full / subtelomere skips non-telomere contigs / centromere
+  requires ranges), unknown-feature-renders-white, CLI parse
+  errors (missing input, --outdir/--output conflict). Two
+  integration tests marked ``@pytest.mark.integration`` exercise
+  the full FASTA -> render cascade against the dummy database
+  for ``--mode full`` and ``--mode centromere``.
+- Unit tests for the colors parser
+  (``tests/test_colors.py``, 10 tests): basic parsing,
+  same-feature-different-sets, missing/empty/bad-header files,
+  wrong column count, blank values rejected, novel-sentinel
+  pre-population, user-override of novel, unknown feature set
+  yields novel-only.
+- ``test_cli.py`` no longer has the ``test_stub_subcommands_exit_cleanly``
+  test -- every subcommand is now a real implementation. The
+  Stage 5d series is complete.
 
 ### Changed
 - Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.

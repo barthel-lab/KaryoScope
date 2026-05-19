@@ -52,20 +52,9 @@ def test_subcommand_help_succeeds(cli_runner: CliRunner, subcommand: str) -> Non
     assert result.exit_code == 0, f"`karyoscope {subcommand} --help` failed: {result.output}"
 
 
-@pytest.mark.parametrize(
-    "subcommand",
-    [
-        "karyotype",
-    ],
-)
-def test_stub_subcommands_exit_cleanly(cli_runner: CliRunner, subcommand: str) -> None:
-    """Stubbed subcommands should exit non-zero with a clear message,
-    not raise an unhandled exception."""
-    result = cli_runner.invoke(main, [subcommand])
-    assert result.exit_code != 0
-    assert "not yet implemented" in result.output.lower()
-    # No traceback should leak to the user (click.ClickException is clean).
-    assert "Traceback" not in result.output
+# (The Stage 5d series turned every subcommand into a real
+# implementation; the old test_stub_subcommands_exit_cleanly check
+# has been removed because there are no stubs left.)
 
 
 def test_version_command_runs(cli_runner: CliRunner) -> None:

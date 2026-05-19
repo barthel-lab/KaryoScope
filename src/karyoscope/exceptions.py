@@ -55,3 +55,7 @@ class ScaffoldError(KaryoscopeError):
 
 class CentromereError(KaryoscopeError):
     """Problems extracting centromere coordinates from binned scaffolded BEDs."""
+
+
+class KaryotypeError(KaryoscopeError):
+    """Problems rendering a karyotype SVG."""
