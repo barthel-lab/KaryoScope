@@ -19,6 +19,16 @@
 default_language_version:
   python: python3
 
+# Vendored upstream sources live under native/external/ (currently KMC and
+# cxxopts). We intentionally do not run lint or whitespace-cleanup hooks
+# against them so the committed copies stay byte-identical to their
+# upstream sources, modulo our documented patches. This makes future
+# version bumps trivially clean.
+exclude: |
+  (?x)^(
+    native/external/.*
+  )$
+
 repos:
   # Generic file hygiene: trailing whitespace, missing final newlines,
   # malformed YAML/TOML/JSON, accidentally committed huge files, etc.

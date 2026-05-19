@@ -86,6 +86,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cpp_build_and_integration` job and runs `pytest -m integration`.
 - `native/README.md` documenting the layout, vendored code, build
   prerequisites, and the binary-lookup logic.
+- The `karyoscope annotate` command, replacing the previous stub. Takes
+  a FASTA (plain or gzipped) and produces one BED per feature set,
+  named `<input>.<dbid>.<feature_set>.presmoothed.bed[.gz]`. Each
+  record's 4th column is the human-readable feature name in that set,
+  obtained by translating ``get_featureIDs``' integer ids through
+  ``features.tsv``. Feature id 0 (k-mer not in the KMC index) renders
+  as ``"novel"``; any other id absent from features.tsv is a hard
+  error rather than a silent fallback (real KaryoScope feature sets
+  can include ``"Unknown"`` as a legitimate name, so mapping missing
+  ids to a placeholder string would be ambiguous and would hide
+  database / index mismatches). Adjacent records that translate to
+  the same feature name in a given set are merged in a streaming pass
+  — important because two different ids can collapse to the same name
+  (e.g., ids for ``(chr1, rA)`` and ``(chr1, rB)`` both have ``chr1``
+  in the chromosome BED).
+- Flags: ``-i/--input`` (required), ``-o/--outdir``, ``--db ID``,
+  ``--feature-set NAME`` (repeatable; default: all sets in the
+  manifest), ``-t/--threads``, ``--keep-intermediates`` (default: off
+  — the combined BED from the C++ step is deleted after splitting),
+  and ``--bgzip/--no-bgzip`` (default: ``--bgzip``).
+- ``karyoscope.core.io.features`` — parser for ``features.tsv`` in the
+  one-row-per-id, one-column-per-feature-set schema. Validates header,
+  rejects featureID 0 in the file (reserved sentinel) and duplicate ids.
+  Exposes :func:`render_feature` which raises :class:`FeaturesError`
+  on positive ids absent from the table.
+- ``karyoscope.core.annotate`` — orchestration module for the annotate
+  pipeline (resolve db → validate layout → run get_featureIDs → split
+  combined BED → bgzip). Importable for callers other than the CLI.
+- Integration tests for the annotate command exercising the default
+  path, ``--no-bgzip``, ``--keep-intermediates``, feature-set
+  filtering, and error paths (unknown set, no database installed,
+  featureID present in BED but absent from features.tsv).
+  Marked ``@pytest.mark.integration``.
+
+### Changed
+- Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.
+  ``features.tsv`` now uses the correct one-row-per-id schema
+  (``featureID`` plus one column per feature set), and the KMC index
+  was regenerated using a deliberately-designed three-sequence FASTA
+  whose 21-mer occurrence counts are exactly 1, 2, and 3 — so the
+  KMC counters themselves become the featureIDs in ``features.tsv``.
+  See the docstrings of ``DUMMY_SEED`` and ``_run_kmc`` in
+  ``tests/data/build_dummy_db.py`` for the construction. SHA-256
+  updated in ``tests/data/dummy_db.sha256`` and
+  ``tests/data/dummy_registry.yaml``.
 
 ### Changed
 - Lint and format tooling is now managed by [`pre-commit`](https://pre-commit.com).

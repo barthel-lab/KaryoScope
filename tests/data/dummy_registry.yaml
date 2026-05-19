@@ -31,7 +31,7 @@ databases:
       chromosome_assignment: chromosome
     source: synthetic
     url: PLACEHOLDER_WILL_BE_REWRITTEN_BY_TEST_FIXTURE
-    sha256: 3543691ab0eb2649ca4daf15224c4ff8d5d463614347aa339016ed9c85ce70f8
+    sha256: faae89693afd0788be1380aeeb60808496c6bd5f5936437e3ec1994a16801509
     maintained_by: KaryoScope test suite
     tags:
       - test

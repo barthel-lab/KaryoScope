@@ -48,16 +48,44 @@ DUMMY_DB_ID = "KS_dummy_test_v1"
 
 # Fake DNA sequences. The point is to give KMC something to index that
 # yields a real, valid .kmc_pre / .kmc_suf pair. The biology is meaningless.
-DUMMY_FASTA = """\
+#: A 23 bp seed sequence chosen so that:
+#:
+#: * its three overlapping 21-mers (call them m1, m2, m3) are pairwise
+#:   distinct, and
+#: * none of m1/m2/m3 is the reverse complement of any other.
+#:
+#: The second condition matters because KMC stores canonical k-mers
+#: (min of forward and revcomp), so if any pair were revcomps their
+#: counts would merge into a single bucket and break the
+#: count-equals-featureID property. If you change this seed, regenerate
+#: the fixture and verify the dump still shows exactly three k-mers
+#: with counts 1, 2, 3.
+#:
+#: Together with the three-sequence layout below this yields a KMC index
+#: whose counters are exactly 1, 2, and 3 — which means we can use the
+#: counter values directly as the featureIDs in ``FEATURES_TSV``.
+DUMMY_SEED = "ACGTGCTAGCTAGGCTATCGTAC"  # 23 bp
+
+#: The dummy FASTA. Three sequences that follow the
+#: "subsequence A once, B twice, C three times" pattern (with
+#: A = m1, B = m2, C = m3, each a single 21-mer):
+#:
+#: * ``seq_a`` is the full 23 bp seed and contains all three k-mers
+#:   (m1 at pos 0, m2 at pos 1, m3 at pos 2)
+#: * ``seq_b`` is the seed minus its first base and contains m2, m3
+#: * ``seq_c`` is the seed minus its first two bases and contains only m3
+#:
+#: Total occurrences across the corpus: m1=1, m2=2, m3=3. With canonical
+#: counting (KMC's default), these map to KMC counters of 1, 2, 3
+#: respectively, which then become featureIDs 1, 2, 3 in
+#: :data:`FEATURES_TSV`.
+DUMMY_FASTA = f"""\
 >seq_a
-ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT
-ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT
+{DUMMY_SEED}
 >seq_b
-GGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATT
-GGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATTGGCCAATT
+{DUMMY_SEED[1:]}
 >seq_c
-TTTAAACCCGGGAAATTTCCCGGGAAATTTCCCGGGAAATTTCCCGGGAAATTTCCCGGGAAAT
-TTAAACCCGGGAAATTTCCCGGGAAATTTCCCGGGAAATTTCCCGGGAAATTTCCCGGGAAATT
+{DUMMY_SEED[2:]}
 """
 
 MANIFEST_YAML = """\
@@ -104,12 +132,10 @@ region\trC\tchr2
 """
 
 FEATURES_TSV = """\
-feature_set\tfeature\tfeature_id
-chromosome\tchr1\t1
-chromosome\tchr2\t2
-region\trA\t3
-region\trB\t4
-region\trC\t5
+featureID\tchromosome\tregion
+1\tchr1\trA
+2\tchr1\trB
+3\tchr2\trC
 """
 
 COLORS_TXT = """\
@@ -139,16 +165,33 @@ def _find_kmc() -> str:
 
 
 def _run_kmc(kmc: str, fasta: Path, out_basename: Path, work_dir: Path) -> None:
-    """Run KMC to produce ``out_basename.kmc_pre`` and ``.kmc_suf``."""
-    # k=21 to match our manifest. -ci1 includes singletons (we have very
-    # little data). -fm interprets input as multi-FASTA.
+    """Run KMC to produce ``out_basename.kmc_pre`` and ``.kmc_suf``.
+
+    Flag rationale:
+
+    * ``-k21`` matches the manifest's k-mer size.
+    * ``-ci1`` includes singletons (our smallest count is 1).
+    * ``-cs1000`` raises the counter ceiling well above 3 (the default is
+      255, which is plenty for us, but we set this explicitly so any
+      future fixture changes don't quietly saturate).
+    * ``-fa`` treats input as FASTA.
+    * ``-t1`` for reproducibility (no parallel-merge ordering).
+    * ``-m2`` is KMC's minimum allowed memory budget (2 GB).
+
+    KMC's default canonical-k-mer behaviour (forward and revcomp share a
+    counter) is left on. Real KaryoScope databases are built canonical,
+    and this fixture matches that convention. The :data:`DUMMY_SEED`
+    docstring explains how the seed avoids revcomp collisions among its
+    three k-mers, so canonical counting still yields counts 1, 2, 3.
+    """
     cmd = [
         kmc,
         "-k21",
         "-ci1",
-        "-fm",
-        "-t1",  # single-thread, more reproducible
-        "-m2",  # minimum allowed memory budget (KMC requires >= 2 GB)
+        "-cs1000",
+        "-fa",
+        "-t1",
+        "-m2",
         str(fasta),
         str(out_basename),
         str(work_dir),
