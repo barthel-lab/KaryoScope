@@ -51,3 +51,7 @@ class BinError(KaryoscopeError):
 
 class ScaffoldError(KaryoscopeError):
     """Problems classifying, orienting, or rewriting per-input scaffolded outputs."""
+
+
+class CentromereError(KaryoscopeError):
+    """Problems extracting centromere coordinates from binned scaffolded BEDs."""

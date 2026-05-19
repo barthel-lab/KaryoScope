@@ -409,6 +409,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes both; ``--feature-set`` with ``--mode fasta`` is
   rejected with a clean ``UsageError``;
   ``--drop-unscaffolded`` omits leftover contigs from the FASTA.
+- ``karyoscope centromeres`` command, replacing the previous stub.
+  Per scaffolded contig, identifies the centromere's start/end
+  coordinates from the binned scaffolded region BED produced by
+  ``scaffold``. Coarse-pass (1 Mb bins by default) finds
+  ``min(start)`` / ``max(stop)`` of bins classified as
+  ``"centromere"`` via :func:`karyoscope.core.scaffold.get_simple_region`;
+  an optional fine-refinement pass (100 kb bins by default) tightens
+  the call within a ``+/- 1 Mb`` window around the coarse range.
+- Output: ``<input_stem>.<dbid>.centromeres.bed[.gz]`` per input.
+  3-column BED (contig, start, end) -- coordinate-only, no feature
+  column, so the filename has no ``<feature_set>`` segment (matches
+  the project convention that a feature-set segment in a filename
+  means the file *contains* records from that set). Contigs with no
+  centromeric content are omitted; centromere coordinates are in
+  the scaffolded (post-flip) coordinate system so
+  ``karyoscope karyotype --mode centromere`` can consume them
+  directly.
+- Like ``karyoscope scaffold``, the command auto-derives its
+  prerequisites: missing scaffolded BED triggers ``scaffold_run``
+  with ``mode="bed"`` and only the centromere feature set, which
+  itself cascades through annotate, seqtk telo, and bin; missing
+  binned scaffolded BEDs trigger ``bin_features`` in-process.
+  ``--no-auto`` turns missing inputs into hard errors.
+- ``karyoscope.core.centromeres`` exposes
+  :func:`find_centromere_ranges` (pure algorithm: takes per-contig
+  binned intervals, returns ``OrderedDict[contig, (start, end)]``
+  with insertion order preserved from the input) and
+  :func:`centromeres_run` (the orchestrator).
+- ``CentromereError(KaryoscopeError)`` for problems extracting
+  centromere coordinates.
+- New CLI flag ``--centromere-feature-set`` overrides the manifest
+  role (rather than reusing the ``--feature-set`` name from other
+  commands, which conventionally means "what gets written"; here it
+  means "what drives detection").
+- Manifest role chain: ``roles.centromere_detection`` ->
+  ``roles.region_assignment`` -> the literal name ``"region"``. Each
+  fallback step emits a warning so the user can add the role to
+  ``manifest.yaml`` to silence it.
+- ``--coarse-bin-size`` (default 1 Mb) and ``--fine-bin-size``
+  (default 100 kb; pass 0 to disable the fine pass) flags.
+- Unit tests in ``tests/test_centromeres.py`` (13 tests):
+  ``find_centromere_ranges`` coarse-only (single block, contig
+  without centromere omitted, insertion-order preservation,
+  non-contiguous outer-bounds semantics), coarse + fine
+  refinement (fine narrows coarse, out-of-window fine ignored,
+  no-fine-signal falls back to coarse, missing contig in fine,
+  ``refinement_buffer=0`` strict-inside behaviour), plus CLI
+  parse tests. Two integration tests marked
+  ``@pytest.mark.integration`` exercise the full
+  FASTA -> scaffold -> bin -> centromeres cascade against the
+  dummy database and the ``--no-auto`` error path.
 
 ### Changed
 - Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.
