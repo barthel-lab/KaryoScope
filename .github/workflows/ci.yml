@@ -64,5 +64,63 @@ jobs:
           karyoscope --version
           karyoscope --help
 
-      - name: Run pytest (unit tests only — skip slow and integration)
-        run: pytest -m "not slow and not integration" --cov=karyoscope --cov-report=term-missing
+      - name: Run pytest (unit tests — integration deselected by default)
+        run: pytest --cov=karyoscope --cov-report=term-missing
+
+  # ----------------------------------------------------------------------
+  # Build the C++ get_featureIDs binary and run integration tests against
+  # it. Kept as a separate job from the unit test matrix so:
+  #   1) A failing C++ build doesn't cascade into 8 redundant unit-test
+  #      failures.
+  #   2) We only need to build once per OS — Python version doesn't
+  #      affect the C++ build, so we test against a single Python.
+  #   3) The unit test matrix runs even when the build environment can't
+  #      satisfy the C++ deps, which keeps Python-only contributors
+  #      unblocked.
+  # ----------------------------------------------------------------------
+  cpp_build_and_integration:
+    name: C++ build + integration tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install C++ build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+
+      # macOS Xcode CLT ships zlib; Apple Clang supports C++20 (std::span etc.)
+      # in Xcode 15+. macos-latest currently provides Xcode 15+, so no extra
+      # install is needed.
+
+      - name: Show toolchain
+        run: |
+          echo "OS:       $(uname -a)"
+          echo "make:     $(make --version | head -1)"
+          echo "c++:      $(c++ --version | head -1)"
+
+      - name: Build get_featureIDs
+        run: make -C native/get_featureIDs
+
+      - name: Show built binary
+        run: |
+          ls -la native/get_featureIDs/build/
+          ./native/get_featureIDs/build/get_featureIDs --help
+
+      - name: Install KaryoScope (for integration tests)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run integration tests
+        run: pytest -m integration -v

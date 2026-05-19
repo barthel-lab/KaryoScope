@@ -131,6 +131,9 @@ addopts = [
   "-ra",
   "--strict-markers",
   "--strict-config",
+  # Integration tests need the C++ binary built. Default `pytest` skips them;
+  # CI re-enables with an explicit `pytest -m integration` run after building.
+  "-m", "not integration",
 ]
 markers = [
   "slow: marks tests as slow (deselect with '-m \"not slow\"')",

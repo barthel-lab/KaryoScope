@@ -32,9 +32,17 @@ pip install -e ".[dev]"
 pip install pre-commit
 pre-commit install
 
+# Build the bundled C++ helper (required for the annotate command and
+# its integration tests). Skip this if you're only doing Python work.
+make -C native/get_featureIDs
+
 # Verify the install
 karyoscope --version
 ```
+
+See `native/README.md` for what's in there, why we ship it as a separate
+binary rather than a Python extension, and how the build picks up zlib
+across Linux, macOS, and conda environments.
 
 If you prefer to manage Python separately (e.g., a system `venv` with conda only providing the external tools), that works too, but you'll need to activate both environments. The single-conda-env approach above is simpler.
 
@@ -58,11 +66,16 @@ pre-commit autoupdate
 Tests are run with pytest. Always launch it via `python -m pytest` rather than bare `pytest`:
 
 ```bash
-# Run the full test suite
+# Run the unit-test suite. Integration tests (which need the C++ binary
+# built) are deselected by default — see pyproject.toml's `addopts`.
 python -m pytest
 
-# Skip slow / integration tests during local development
-python -m pytest -m "not slow and not integration"
+# Run integration tests explicitly. Requires `make -C native/get_featureIDs`
+# to have been run.
+python -m pytest -m integration
+
+# Run only "fast" unit tests, excluding slow ones too
+python -m pytest -m "not slow"
 ```
 
 The `python -m` prefix forces pytest to launch in the same Python where you ran `pip install`. On systems with multiple Python installations (very common on macOS), bare `pytest` can resolve to a *different* Python's pytest binary, which won't see your `karyoscope` install and will fail with confusing `ModuleNotFoundError`s. `python -m pytest` sidesteps the problem entirely.
