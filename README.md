@@ -55,7 +55,16 @@ conda activate karyoscope
 
 # Install KaryoScope
 pip install -e .
+
+# Build the bundled C++ helper (`get_featureIDs`).
+# `pip install` is Python-only and does NOT compile the C++ tree.
+cd native/get_featureIDs && make && cd ../..
 ```
+
+The build produces `native/get_featureIDs/build/get_featureIDs`; the
+Python wrapper finds it automatically. See [`native/README.md`](native/README.md)
+for build-system details (CXX selection, `pkg-config`-driven zlib lookup,
+and the macOS + conda `-Wl,-rpath,$CONDA_PREFIX/lib` shim).
 
 ## Quick start
 
