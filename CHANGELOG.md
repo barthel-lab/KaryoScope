@@ -244,6 +244,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the old "feature name ending in ``_specific``" hack is no
   longer needed. Callers that want leaf prioritisation pass an
   explicit ``leaf_set`` (in-process) or ``--feature-set`` (CLI).
+- ``karyoscope scaffold`` command, replacing the previous stub.
+  Takes one or more FASTA inputs (one per haplotype typically) and
+  produces per-input scaffolded outputs: a ``scaffold_map.tsv`` (the
+  authoritative source-of-truth mapping from encoded contig name back
+  to source), a ``scaffold_stats.tsv`` (legacy 2-column format kept
+  for back-compat with archive scripts), and one rewritten BED per
+  feature set
+  (``<input_stem>.<dbid>.<feature_set>.smoothed.scaffolded.bed[.gz]``).
+  The encoded contig-name format is always
+  ``<chrom>_<hap>_<contig>[_rc]``; the map file is the contract that
+  downstream stages parse, so the encoded name can change between
+  releases without breaking the pipeline.
+- Topology-preservation principle: each ``-i`` input produces its own
+  set of outputs (one map file, one stats file, N scaffolded BEDs).
+  The Snakemake pipeline always collapsed everything into one combined
+  per-sample BED; the CLI does not. Joint information that must be
+  considered across files (orientation, category ordering, chromosome
+  cell grouping) is computed in-memory across all inputs at once,
+  but the artefacts on disk mirror what came in. This works cleanly
+  for the pangenome convention (one file per hap), the HG002
+  distributed-as-one-file convention, and the haploid case.
+- ``-i [NAME=]PATH`` form for inputs: explicit names take precedence,
+  otherwise hap labels are inferred from filename stems with a
+  positional ``input1`` / ``input2`` fallback. The reserved label
+  ``unassigned`` is only ever produced by explicit
+  ``-i unassigned=PATH`` — auto-inference never produces it.
+- ``karyoscope.core.hap_inference``: pattern library + per-contig
+  classifier. Case-insensitive built-in regexes match hifiasm
+  (``h[12]tg``), explicit ``hap1`` / ``hap2`` tags, and verkko-style
+  ``maternal`` / ``paternal`` (and short forms ``mat`` / ``pat``)
+  against contig names and filename stems. ``maternal`` and
+  ``paternal`` are kept as distinct labels rather than mapped to
+  ``hap1`` / ``hap2`` (the karyotype renderer can map them at render
+  time). For a single combined-file input the rules split into
+  multiple haps if patterns split the contigs cleanly; otherwise all
+  contigs become ``hap1`` with a warning. ``--split-haps REGEX``
+  overrides the built-in patterns with a user-supplied capture group.
+- ``karyoscope.core.scaffold``: a faithful port of the archive's
+  ``scaffold_stats.py`` (the newer version with the chrY-centroid
+  fix). Public API: pure helpers (``get_simple_region``,
+  ``assign_main_chromosome``, ``find_largest_contiguous_region``,
+  ``half_region_totals``, ``need_to_flip``, ``flip_bins``,
+  ``category_index``), the high-level entry point
+  ``classify_and_orient`` (takes pre-binned BEDs + telomere flags,
+  returns a list of :class:`MapRow` in canonical order), and the BED
+  rewriter ``rewrite_bed`` (uses the explicit map file rather than
+  parsing the encoded name).
+- ``karyoscope.core.scaffold_run``: the high-level orchestrator that
+  the CLI sits on top of. Implements the auto-derive cascade:
+  per-input, missing annotation BEDs trigger ``annotate``, missing
+  telomere files trigger ``seqtk telo``, missing 1 Mb binned BEDs
+  trigger ``bin_features`` in-process. ``--no-auto`` turns missing
+  prerequisites into hard errors. The cascade is structured as a
+  list of independent per-input units so the future move to batched
+  parallel execution is a mechanical loop change rather than a
+  rewrite.
+- ``karyoscope.core.io.scaffold_map``: ``MapRow`` dataclass plus
+  ``write_map`` / ``read_map`` for the 8-column TSV format
+  (``new_name``, ``original_name``, ``input_file``, ``hap``,
+  ``chromosome``, ``flipped``, ``length``, ``stats``) and
+  ``write_legacy_stats`` for the 2-column archive format.
+- ``karyoscope.core.io.telo``: parser for the seqtk-telo 3-column
+  output and ``run_seqtk_telo`` shellout via the existing
+  ``require_tool`` / ``run_tool`` machinery.
+- Manifest-driven role resolution: scaffold reads
+  ``roles.chromosome_assignment`` and ``roles.region_assignment``
+  from ``manifest.yaml`` to pick which feature sets to use for
+  chromosome classification and orientation respectively. Falls back
+  to literal feature-set names ``"chromosome"`` and ``"region"`` with
+  a warning when the manifest omits them. Errors when the resolved
+  set is not declared in the manifest's ``feature_sets``.
+- ``ScaffoldError(KaryoscopeError)`` for problems classifying,
+  orienting, or rewriting per-input outputs.
+- ``--acrocentric CHROM`` flag (repeatable, accepts comma-separated
+  lists) overrides the default human acrocentric set
+  (``chr13``, ``chr14``, ``chr15``, ``chr21``, ``chr22``). The
+  default-set fallback emits a single warning suggesting that
+  non-human assemblies set it explicitly.
+- ``--telo [NAME=]PATH`` flag (repeatable) lets users supply a
+  precomputed ``seqtk telo`` output to skip the auto-run. Telo
+  entries match inputs by name; unmatched ``--telo`` names error
+  cleanly.
+- Deliberate diffs from the archive's ``scaffold_stats.py`` and
+  ``scaffold_features_cli.py``: leaf-chromosome detection is
+  structural (``leaves_for(hierarchy, chromosome_feature_set)`` rather
+  than ``startswith("chr")``), so non-human / non-``chr``-prefixed
+  databases work; the BED rewriter does not round-trip through the
+  encoded contig name (which the archive did via string-parsing,
+  fragile when original contig names contained ``_``); the
+  ``--priority`` file path is gone in favour of ``--acrocentric``.
+- Unit tests for the scaffold algorithm (``tests/test_scaffold.py``):
+  every pure helper (``get_simple_region``, ``chromosome_sort_key``,
+  ``assign_main_chromosome``, ``find_largest_contiguous_region``,
+  ``half_region_totals``, ``scaffold_region_majority``,
+  ``need_to_flip`` across all branches of the boolean ladder,
+  ``flip_bins``, ``category_index``), ``classify_and_orient``
+  end-to-end (basic keep/drop, RC suffix on flips, ordering across
+  chromosomes and haps), and the ``rewrite_bed`` reverse-mirror
+  semantics. 44 tests.
+- Unit tests for the map format (``tests/test_scaffold_map.py``, 9
+  tests), seqtk telo parser (``tests/test_telo.py``, 6 tests), and
+  hap inference (``tests/test_hap_inference.py``, 29 tests including
+  built-in pattern coverage, single-input split inference, and
+  multi-input filename-stem heuristic with collision fall-through).
+- Integration tests for the CLI
+  (``tests/test_command_scaffold.py``): argument-parsing unit tests
+  (named-pair form, telo without name, unmatched telo) plus three
+  end-to-end tests marked ``@pytest.mark.integration`` that exercise
+  the full auto-derive cascade (annotate -> seqtk telo -> bin ->
+  scaffold) against the dummy database, plus the ``--no-auto`` error
+  path and the map-file format round-trip.
 
 ### Changed
 - Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.

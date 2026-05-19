@@ -47,3 +47,7 @@ class IncompatibleVersionError(KaryoscopeError):
 
 class BinError(KaryoscopeError):
     """Problems aggregating annotation BED records into fixed-size bins."""
+
+
+class ScaffoldError(KaryoscopeError):
+    """Problems classifying, orienting, or rewriting per-input scaffolded outputs."""
