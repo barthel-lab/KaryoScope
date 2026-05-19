@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "karyoscope"
 dynamic = ["version"]
-description = "Alignment-free, k-mer-based karyotyping of genome assemblies and sequencing reads."
+description = "KaryoScope: rapid, alignment-free sequence annotation for the pangenome era."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"

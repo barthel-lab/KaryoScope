@@ -5,7 +5,7 @@
 
 # KaryoScope
 
-**Rapid, alignment-free sequence annotation for the pangenome era.**
+**KaryoScope: rapid, alignment-free sequence annotation for the pangenome era.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
