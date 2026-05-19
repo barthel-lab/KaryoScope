@@ -1,22 +1,31 @@
 """``karyoscope annotate`` — annotate a FASTA against a KaryoScope database.
 
-Produces one BED per feature set declared in the database. Each BED has
-the schema ``seq_name TAB start TAB end TAB feature_name``, with feature
-ids translated to their per-set names using the database's
-``features.tsv``. Two sentinels:
+Produces one or two BEDs per feature set declared in the database:
+
+* ``<input>.<dbid>.<feature_set>.presmoothed.bed[.gz]`` — every k-mer
+  translated through ``features.tsv`` to its name in the feature set,
+  with adjacent same-name intervals merged. This is the "raw" output
+  of the annotation.
+* ``<input>.<dbid>.<feature_set>.smoothed.bed[.gz]`` — additionally
+  runs the hierarchy-aware smoothing pass, which promotes noisy short
+  intervals (typically ``novel`` runs flanked by real features) up to
+  the lowest common ancestor of the flankers in the database's
+  ``hierarchy.tsv``.
+
+Default behaviour produces both outputs. ``--no-smooth`` skips the
+smoothing pass and produces only the presmoothed BED.
+``--no-keep-presmoothed`` skips writing the presmoothed BED and
+produces only the smoothed one. Combining both flags is an error
+(would produce no output).
+
+Two sentinel feature names that may appear in the output:
 
 * ``novel`` — k-mer not in the KMC index.
-* ``Unknown`` — k-mer in the index but its feature id has no row in
-  features.tsv. Usually a database / index mismatch, not a user error.
+* ``categorized`` — only seen in the smoothed output, indicates an
+  interval was promoted all the way up to the hierarchy's root.
 
-The output BEDs are bgzipped by default; pass ``--no-bgzip`` to write
-plain ``.bed`` files. The intermediate combined BED produced by the
-C++ helper is deleted by default; pass ``--keep-intermediates`` to keep
-it for debugging.
-
-Smoothing is not applied here — that's a separate stage of the pipeline
-(``karyoscope smooth``, coming in 5c). The output filename includes
-``.presmoothed.`` to make this explicit.
+The intermediate combined BED produced by the C++ helper is deleted by
+default; pass ``--keep-intermediates`` to keep it for debugging.
 """
 
 from __future__ import annotations
@@ -87,7 +96,19 @@ logger = logging.getLogger(__name__)
     type=int,
     default=0,
     show_default=True,
-    help="Threads to use for k-mer querying. 0 means auto-detect.",
+    help="Threads for both k-mer querying and smoothing. 0 means auto-detect.",
+)
+@click.option(
+    "--smooth/--no-smooth",
+    default=True,
+    show_default=True,
+    help="Produce the hierarchy-smoothed BED in addition to the presmoothed BED.",
+)
+@click.option(
+    "--keep-presmoothed/--no-keep-presmoothed",
+    default=True,
+    show_default=True,
+    help="Keep the presmoothed BED. Pass --no-keep-presmoothed to write only the smoothed output.",
 )
 @click.option(
     "--keep-intermediates",
@@ -108,6 +129,8 @@ def cmd(
     db_root_arg: Path | None,
     feature_sets_arg: tuple[str, ...],
     threads: int,
+    smooth: bool,
+    keep_presmoothed: bool,
     keep_intermediates: bool,
     bgzip: bool,
 ) -> None:
@@ -115,8 +138,14 @@ def cmd(
 
     \b
     Examples:
-        # Annotate using the only installed database
+        # Default: produce both presmoothed and smoothed BEDs
         karyoscope annotate -i my_assembly.fa.gz -o results/
+
+        # Only the presmoothed BED (skip smoothing)
+        karyoscope annotate -i reads.fa.gz --no-smooth
+
+        # Only the smoothed BED (don't keep presmoothed on disk)
+        karyoscope annotate -i reads.fa.gz --no-keep-presmoothed
 
         # Pick a specific database and only the chromosome set
         karyoscope annotate -i reads.fa.gz --db KS_human_CHM13_v2 \\
@@ -135,6 +164,8 @@ def cmd(
             db_id=db_id,
             feature_sets=feature_sets,
             threads=threads,
+            smooth=smooth,
+            keep_presmoothed=keep_presmoothed,
             keep_intermediates=keep_intermediates,
             bgzip=bgzip,
         )
@@ -149,7 +180,9 @@ def cmd(
         raise click.ClickException(str(e)) from e
 
     click.echo("Wrote:")
-    for fs, path in result.output_paths.items():
-        click.echo(f"  {fs}: {path}")
+    for fs, path in result.presmoothed_paths.items():
+        click.echo(f"  {fs} (presmoothed): {path}")
+    for fs, path in result.smoothed_paths.items():
+        click.echo(f"  {fs} (smoothed):    {path}")
     if result.combined_intermediate is not None:
         click.echo(f"  (intermediate: {result.combined_intermediate})")

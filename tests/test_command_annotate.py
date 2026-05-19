@@ -171,12 +171,10 @@ def test_annotate_end_to_end_default_flags(
     cli_with_populated_db: tuple[CliRunner, Path, Path],
     tmp_path: Path,
 ) -> None:
-    """`annotate` with all defaults produces bgzipped BEDs for every feature set.
+    """`annotate` with all defaults produces BOTH presmoothed and smoothed BEDs.
 
-    Because the rebuilt dummy db's KMC counters are exactly 1, 2, 3
-    (one per k-mer in the seed sequence), and ``query_fasta``'s
-    seq_with_features is the seed verbatim, we can assert the exact
-    output records here — not just structural validity.
+    Default behaviour is ``--smooth --keep-presmoothed --bgzip``: write
+    bgzipped versions of both outputs for every feature set.
     """
     if not _has_bgzip():
         pytest.skip("bgzip not on PATH; install htslib")
@@ -201,34 +199,43 @@ def test_annotate_end_to_end_default_flags(
     )
     assert result.exit_code == 0, result.output
 
-    chrom_path = outdir / "my_query.KS_dummy_test_v1.chromosome.presmoothed.bed.gz"
-    region_path = outdir / "my_query.KS_dummy_test_v1.region.presmoothed.bed.gz"
-    assert chrom_path.is_file()
-    assert region_path.is_file()
+    # All four files should exist (2 feature sets x 2 output types)
+    for variant in ("presmoothed", "smoothed"):
+        for fs in ("chromosome", "region"):
+            p = outdir / f"my_query.KS_dummy_test_v1.{fs}.{variant}.bed.gz"
+            assert p.is_file(), f"missing {p}"
 
     # The combined intermediate should be deleted by default.
     combined = outdir / "my_query.KS_dummy_test_v1.combined.presmoothed.featureIDs.bed"
     assert not combined.exists(), "intermediate should be deleted without --keep-intermediates"
 
-    # seq_with_features is the 23 bp seed → 3 k-mers with featureIDs 1, 2, 3.
-    # In the chromosome BED: featureIDs 1 and 2 both translate to 'chr1' and
-    # should merge across positions 0..2; featureID 3 translates to 'chr2'
-    # at position 2..3. seq_novel is a long homopolymer → all k-mers featureID 0
-    # → a single 'novel' run spanning the full sequence.
-    assert _read_bed(chrom_path) == [
+    # Presmoothed content unchanged from previous stages.
+    chrom_pre = outdir / "my_query.KS_dummy_test_v1.chromosome.presmoothed.bed.gz"
+    assert _read_bed(chrom_pre) == [
         ("seq_with_features", 0, 2, "chr1"),
         ("seq_with_features", 2, 3, "chr2"),
         ("seq_novel", 0, 13, "novel"),
     ]
-
-    # In the region BED, each of the 3 features has a distinct name (rA,
-    # rB, rC), so nothing merges.
-    assert _read_bed(region_path) == [
+    region_pre = outdir / "my_query.KS_dummy_test_v1.region.presmoothed.bed.gz"
+    assert _read_bed(region_pre) == [
         ("seq_with_features", 0, 1, "rA"),
         ("seq_with_features", 1, 2, "rB"),
         ("seq_with_features", 2, 3, "rC"),
         ("seq_novel", 0, 13, "novel"),
     ]
+
+    # Smoothed content: for this query the dummy db has no novel runs
+    # between known features (seq_with_features has no gaps; seq_novel
+    # is entirely novel with no flanking features), so smoothing should
+    # produce essentially the same output as presmoothed. The key thing
+    # to verify is that the file exists and is well-formed.
+    region_smo = outdir / "my_query.KS_dummy_test_v1.region.smoothed.bed.gz"
+    smoothed_records = _read_bed(region_smo)
+    assert smoothed_records, "smoothed BED should not be empty"
+    # Every record should be a valid 4-column row (already enforced by _read_bed).
+    # Each sequence should appear at least once.
+    seqs = {r[0] for r in smoothed_records}
+    assert seqs == {"seq_with_features", "seq_novel"}
 
 
 def test_annotate_with_no_bgzip(
@@ -252,6 +259,7 @@ def test_annotate_with_no_bgzip(
             "-t",
             "1",
             "--no-bgzip",
+            "--no-smooth",
         ],
         catch_exceptions=False,
     )
@@ -286,6 +294,7 @@ def test_annotate_with_keep_intermediates(
             "-t",
             "1",
             "--no-bgzip",
+            "--no-smooth",
             "--keep-intermediates",
         ],
         catch_exceptions=False,
@@ -300,7 +309,7 @@ def test_annotate_filters_by_feature_set(
     cli_with_populated_db: tuple[CliRunner, Path, Path],
     tmp_path: Path,
 ) -> None:
-    """--feature-set restricts which BEDs are produced."""
+    """--feature-set restricts which BEDs are produced (both variants)."""
     runner, db_root, query_fasta = cli_with_populated_db
     outdir = tmp_path / "out"
 
@@ -325,7 +334,10 @@ def test_annotate_filters_by_feature_set(
     assert result.exit_code == 0, result.output
 
     assert (outdir / "my_query.KS_dummy_test_v1.chromosome.presmoothed.bed").is_file()
+    assert (outdir / "my_query.KS_dummy_test_v1.chromosome.smoothed.bed").is_file()
+    # The 'region' set was not requested.
     assert not (outdir / "my_query.KS_dummy_test_v1.region.presmoothed.bed").exists()
+    assert not (outdir / "my_query.KS_dummy_test_v1.region.smoothed.bed").exists()
 
 
 def test_annotate_unknown_feature_set_fails(
@@ -378,3 +390,177 @@ def test_annotate_no_database_installed_fails(
         "no databases installed" in result.output.lower()
         or "not installed" in result.output.lower()
     )
+
+
+# --- Stage 5c: smoothing-specific flag combinations ---------------------
+
+
+def test_annotate_no_smooth_skips_smoothed_output(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """--no-smooth produces only the presmoothed BED, no smoothed one."""
+    runner, db_root, query_fasta = cli_with_populated_db
+    outdir = tmp_path / "out"
+
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(query_fasta),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+            "--no-smooth",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    for fs in ("chromosome", "region"):
+        assert (outdir / f"my_query.KS_dummy_test_v1.{fs}.presmoothed.bed").is_file()
+        assert not (outdir / f"my_query.KS_dummy_test_v1.{fs}.smoothed.bed").exists()
+
+
+def test_annotate_no_keep_presmoothed_writes_only_smoothed(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """--no-keep-presmoothed produces only the smoothed BED, no presmoothed."""
+    runner, db_root, query_fasta = cli_with_populated_db
+    outdir = tmp_path / "out"
+
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(query_fasta),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+            "--no-keep-presmoothed",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    for fs in ("chromosome", "region"):
+        assert (outdir / f"my_query.KS_dummy_test_v1.{fs}.smoothed.bed").is_file()
+        assert not (outdir / f"my_query.KS_dummy_test_v1.{fs}.presmoothed.bed").exists()
+
+
+def test_annotate_no_smooth_no_keep_presmoothed_is_error(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """Combining --no-smooth and --no-keep-presmoothed errors cleanly.
+
+    There'd be no output to write, so the CLI should refuse rather than
+    silently produce nothing.
+    """
+    runner, db_root, query_fasta = cli_with_populated_db
+    outdir = tmp_path / "out"
+
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(query_fasta),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-smooth",
+            "--no-keep-presmoothed",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "no output would be produced" in result.output.lower()
+
+
+def test_annotate_smoothing_promotes_novel_gap_to_lca(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """End-to-end smoothing test that actually exercises LCA promotion.
+
+    Build a query FASTA that starts with the dummy db's seed (so the
+    first k-mers resolve to featureID 1 → region=rA), then a stretch
+    of homopolymer (no k-mers in the index → featureID 0 → novel),
+    then the seed shifted by 1 base (so the next k-mer resolves to
+    featureID 2 → region=rB).
+
+    The presmoothed region BED should show: rA, novel, rB.
+    The smoothed region BED should promote the novel run to aSat,
+    which is the LCA of rA and rB in the dummy db's hierarchy.
+
+    We use a short novel gap (under the smoothing max_gap of 1000)
+    to ensure the smoothing window actually spans it.
+    """
+    runner, db_root, _ = cli_with_populated_db
+    outdir = tmp_path / "out"
+
+    # Build a custom query FASTA for this scenario
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"  # 23 bp
+    spacer = "TTTTTTTTTTTTTTTTTTTTTTTTTT"  # 26 bp homopolymer → 6 novel 21-mers
+    # Layout: [k-mer m1][spacer][k-mer m2 starting position]
+    # The seed's first 21-mer is m1 (featureID 1, region=rA)
+    # The seed's second 21-mer is m2 (featureID 2, region=rB)
+    # We want m1 to appear, then novel k-mers, then m2 to appear.
+    # m1 ends at position 21 of the seed. m2 starts at position 1 of the
+    # seed. Construct: seed[0:21] + spacer + seed[1:22] → m1, novels, m2
+    constructed = seed[0:21] + spacer + seed[1:22]
+    query_fa = tmp_path / "smoothing_query.fa"
+    query_fa.write_text(f">smoothing_test\n{constructed}\n")
+
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(query_fa),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+            "--feature-set",
+            "region",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    pre = _read_bed(outdir / "smoothing_query.KS_dummy_test_v1.region.presmoothed.bed")
+    smo = _read_bed(outdir / "smoothing_query.KS_dummy_test_v1.region.smoothed.bed")
+
+    # Presmoothed: rA at the start, novel run in the middle, rB at the end.
+    pre_features = [r[3] for r in pre]
+    assert "rA" in pre_features
+    assert "novel" in pre_features
+    assert "rB" in pre_features
+
+    # Smoothed: the novel run should be promoted to aSat (LCA of rA, rB).
+    smo_features = [r[3] for r in smo]
+    assert "rA" in smo_features
+    assert "rB" in smo_features
+    assert "aSat" in smo_features, (
+        f"expected 'aSat' (LCA of rA, rB) in smoothed output, got: {smo_features}"
+    )
+    # The novel run should be gone after smoothing.
+    assert "novel" not in smo_features

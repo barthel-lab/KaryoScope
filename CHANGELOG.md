@@ -119,6 +119,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filtering, and error paths (unknown set, no database installed,
   featureID present in BED but absent from features.tsv).
   Marked ``@pytest.mark.integration``.
+- Hierarchy-aware smoothing of per-feature-set BED tracks: the
+  ``karyoscope annotate`` command now produces a second BED per
+  feature set (``<input>.<dbid>.<feature_set>.smoothed.bed[.gz]``)
+  alongside the existing ``.presmoothed`` BED. Smoothing promotes
+  noisy intermediate intervals (especially short ``novel`` runs
+  flanked by specific features) to the lowest common ancestor of
+  their flankers in the feature set's hierarchy, generalising from
+  "I don't know exactly what this is" to "I know it's at least
+  this".
+- Two new flags on ``annotate``: ``--smooth/--no-smooth`` (default
+  ``--smooth``) and ``--keep-presmoothed/--no-keep-presmoothed``
+  (default ``--keep-presmoothed``). The combination
+  ``--no-smooth --no-keep-presmoothed`` would produce no output and
+  is rejected with a clean error.
+- ``karyoscope.core.smooth`` — a faithful port of the archive's
+  ``smooth_features.py``. Public API: :class:`HierarchyIndex`
+  (ancestor / LCA queries memoised per feature set),
+  :func:`smooth_intervals` (the LCA-promotion + fixed-point algorithm,
+  with ``max_gap = 1000``), :func:`merge_adjacent` (interval
+  coalescing that preserves the novelty boundary at the root),
+  :func:`process_seq_chunk` (per-worker entry point for
+  ``multiprocessing.Pool``), and :func:`chunked_seq_reader` (yields
+  chunks of BED lines flushed only at sequence boundaries, so
+  workers always see complete sequences). Workers are initialised
+  via :func:`worker_initializer` with the shared :class:`HierarchyIndex`
+  and id-to-name table. The archive's ``_specific``-suffix stripping
+  has been removed (it was a leftover from an older implementation),
+  and the ``Phylogeny`` class has been renamed to :class:`HierarchyIndex`
+  to reflect the more general terminology.
+- Sequence chunking respects sequence boundaries: ``chunked_seq_reader``
+  holds back the current sequence's lines until the chunk has at
+  least ``chunk_size`` lines AND the next line is from a new
+  sequence. This guarantees that :func:`smooth_intervals` always
+  sees the complete flanking context for each sequence.
+- ``karyoscope.core.io.hierarchy`` rewritten for the production
+  schema: three columns (``feature_set``, ``child``, ``parent``)
+  with each feature set forming an independent rooted tree.
+  Required root name is ``"categorized"`` for v0.1 (documented
+  restriction). Each feature set's rows are interpreted only against
+  that feature set's own rows — parent names must refer to nodes
+  within the same set, not cross-set ancestors.
+- :func:`karyoscope.core.io.hierarchy.validate_hierarchy` — a
+  validation pass separate from the structural parser. Per feature
+  set independently, it checks (1) no child has multiple parent
+  rows, (2) exactly one root exists and is named ``"categorized"``,
+  (3) parent-pointer walks terminate (no cycles, all connected),
+  and (4) every name in features.tsv's columns has a corresponding
+  hierarchy node (optional, opt-in via ``feature_columns=``).
+  Returns a list of human-readable issue strings.
+- ``karyoscope info`` runs hierarchy validation when inspecting a
+  database and prints any issues as warnings (does not exit
+  non-zero). When ``annotate`` (or any command that actually
+  consumes the hierarchy) encounters the same issues, it raises a
+  hard error instead.
+- Multiprocessing: smoothing uses ``multiprocessing.Pool`` sized by
+  the ``-t/--threads`` flag (same flag that's passed to the C++
+  k-mer-query step). The pool initializer pickles the
+  :class:`HierarchyIndex` and feature table once per worker rather
+  than once per chunk.
+- Comprehensive unit tests for the smoothing algorithm
+  (``tests/test_smooth.py``): :class:`HierarchyIndex` correctness
+  (ancestors, LCA on siblings / across subtrees / for the root /
+  for unknown nodes, caching, malformed-hierarchy rejection),
+  :func:`merge_adjacent` cases (same-feature coalescing, gap
+  preservation, root + novelty boundary, non-root novelty ignored),
+  :func:`smooth_intervals` (promotion to sibling LCA, deeper LCA
+  promotion, no-op when flankers are missing, ``max_gap``
+  enforcement, no-demotion guarantee, empty input), and
+  :func:`chunked_seq_reader` (flushing only at sequence
+  boundaries).
+- Integration tests for the smoothed-output paths in
+  ``tests/test_command_annotate.py``: default flags produce both
+  variants; ``--no-smooth`` produces only presmoothed;
+  ``--no-keep-presmoothed`` produces only smoothed;
+  ``--no-smooth --no-keep-presmoothed`` errors cleanly; end-to-end
+  smoothing of a constructed ``rA → novel → rB`` query produces a
+  region BED where the novel run has been promoted to ``aSat`` (the
+  LCA of ``rA`` and ``rB`` in the dummy db's hierarchy).
 
 ### Changed
 - Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.
@@ -128,11 +206,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose 21-mer occurrence counts are exactly 1, 2, and 3 — so the
   KMC counters themselves become the featureIDs in ``features.tsv``.
   See the docstrings of ``DUMMY_SEED`` and ``_run_kmc`` in
-  ``tests/data/build_dummy_db.py`` for the construction. SHA-256
-  updated in ``tests/data/dummy_db.sha256`` and
-  ``tests/data/dummy_registry.yaml``.
-
-### Changed
+  ``tests/data/build_dummy_db.py`` for the construction. The
+  ``hierarchy.tsv`` was subsequently rewritten in the new
+  ``(feature_set, child, parent)`` schema with a three-level region
+  hierarchy (``rA → aSat → centromeric → categorized``,
+  ``rC → HSat → centromeric → categorized``) so smoothing tests can
+  exercise non-trivial LCA promotion. SHA-256 updated in
+  ``tests/data/dummy_db.sha256`` and ``tests/data/dummy_registry.yaml``.
+- Terminology standardisation: smoothing code uses ``sequence``,
+  ``seq_name``, ``seq_id`` throughout rather than ``read`` /
+  ``contig`` / ``scaffold``. Domain terms are kept where they're
+  domain-correct (e.g., the ``scaffold`` subcommand operates on
+  contigs).
 - Lint and format tooling is now managed by [`pre-commit`](https://pre-commit.com).
   Tool versions are pinned in `.pre-commit-config.yaml` (currently ruff 0.15.13
   and pre-commit-hooks v6.0.0); CI runs `pre-commit run --all-files`, so

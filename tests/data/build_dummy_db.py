@@ -122,13 +122,33 @@ smoothing:
   recommended_window_bp: 1000
 """
 
+#: Dummy hierarchy in the real (feature_set, child, parent) schema.
+#:
+#: Both feature sets have a three-level structure rooted at
+#: ``categorized``, which is enough depth to exercise non-trivial LCA
+#: computation in smoothing tests:
+#:
+#: chromosome
+#:   chr1, chr2 → autosome → categorized
+#:
+#: region
+#:   rA, rB → aSat → centromeric → categorized
+#:   rC     → HSat → centromeric → categorized
+#:
+#: With this structure, LCA(rA, rB) = aSat (one level up) and
+#: LCA(rA, rC) = centromeric (two levels up), so tests can verify both
+#: the "promote to immediate ancestor" and "promote farther up" cases.
 HIERARCHY_TSV = """\
-feature_set\tfeature\tparent
-chromosome\tchr1\t.
-chromosome\tchr2\t.
-region\trA\tchr1
-region\trB\tchr1
-region\trC\tchr2
+feature_set\tchild\tparent
+chromosome\tautosome\tcategorized
+chromosome\tchr1\tautosome
+chromosome\tchr2\tautosome
+region\tcentromeric\tcategorized
+region\taSat\tcentromeric
+region\tHSat\tcentromeric
+region\trA\taSat
+region\trB\taSat
+region\trC\tHSat
 """
 
 FEATURES_TSV = """\

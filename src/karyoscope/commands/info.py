@@ -26,7 +26,11 @@ import click
 
 from karyoscope import installed as _installed
 from karyoscope import paths
-from karyoscope.core.io.hierarchy import HierarchyError, parse_hierarchy
+from karyoscope.core.io.hierarchy import (
+    HierarchyError,
+    parse_hierarchy,
+    validate_hierarchy,
+)
 from karyoscope.exceptions import (
     DatabaseLayoutError,
     DatabaseNotFoundError,
@@ -123,7 +127,14 @@ def _print_manifest_summary(manifest: Manifest, db_dir: Path) -> None:
 
 
 def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
-    """Print feature-set counts derived from hierarchy.tsv."""
+    """Print feature-set counts derived from hierarchy.tsv.
+
+    Also runs :func:`validate_hierarchy` and prints any issues as
+    warnings. ``info`` is read-only inspection — we don't refuse to
+    show what we can just because the hierarchy is malformed. The
+    ``annotate`` command treats the same issues as hard errors when
+    smoothing is requested.
+    """
     hierarchy_path = db_dir / manifest.hierarchy
     try:
         hierarchy = parse_hierarchy(hierarchy_path)
@@ -131,12 +142,33 @@ def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
         click.echo(f"  Hierarchy:              <failed to parse: {e}>")
         return
 
+    # Cross-validate against features.tsv when available — surfaces the
+    # most useful "this database is internally inconsistent" cases.
+    features_columns: dict[str, set[str]] | None = None
+    try:
+        from karyoscope.core.io.features import parse_features
+
+        features = parse_features(db_dir / manifest.features)
+        features_columns = {
+            fs: {row[fs] for row in features.table.values()} for fs in features.feature_sets
+        }
+    except Exception:
+        # If features.tsv is missing or malformed the manifest-validation
+        # step already complained; just skip the cross-check here.
+        features_columns = None
+
+    issues = validate_hierarchy(hierarchy, feature_columns=features_columns)
+
     counts = hierarchy.count_by_feature_set()
     click.echo("  Feature sets:")
     for fs in manifest.feature_sets:
         n = counts.get(fs, 0)
-        roots = len(hierarchy.roots(feature_set=fs))
-        click.echo(f"    {fs}: {n} features ({roots} root{'s' if roots != 1 else ''})")
+        click.echo(f"    {fs}: {n} edges")
+
+    if issues:
+        click.echo("  Hierarchy warnings:")
+        for issue in issues:
+            click.echo(f"    ! {issue}")
 
 
 def _show_database(db_root: Path, db_id: str) -> None:

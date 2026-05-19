@@ -1,29 +1,43 @@
 """Parser for KaryoScope ``hierarchy.tsv`` files.
 
-A hierarchy file is a 3-column tab-separated file with a header row:
+A hierarchy file declares the directed tree of feature relationships
+within each feature set. Each feature set has its own independent
+hierarchy; the file format is::
 
-    feature_set	feature	parent
+    feature_set	child	parent
+    chromosome	autosome	categorized
+    chromosome	chr1	autosome
+    chromosome	chr2	autosome
+    region	centromeric	categorized
+    region	aSat	centromeric
+    region	HSat	centromeric
 
-* ``feature_set`` is the named partition the feature belongs to
-  (e.g., ``chromosome``, ``region``, ``centromere``).
-* ``feature`` is a unique name within its feature set.
-* ``parent`` is either another feature (the parent of this one for
-  smoothing purposes) or ``.`` to indicate "no parent" — i.e., this
-  feature is a root of the hierarchy.
+Rows declare ``child → parent`` edges within the ``feature_set`` named in
+the first column. Each feature set must form a single connected tree
+whose root is named ``"categorized"`` (the v0.1 convention; we may
+relax this in a later version). Node names can repeat across feature
+sets — those are different nodes living in different trees — but
+within a single feature set every node has at most one parent.
 
-Example::
+The same name can appear as both a child and a parent within one
+feature set, on different rows (e.g., the acrocentric set has rows
+declaring ``acrocentric → categorized`` and ``array → acrocentric``).
+That's fine; the parser doesn't treat the visual repetition specially.
 
-    feature_set	feature	parent
-    chromosome	chr1	.
-    chromosome	chr2	.
-    region	1p	chr1
-    region	1q	chr1
-    region	2p	chr2
+Two layers:
+
+* :func:`parse_hierarchy` is a pure structural parser. It validates the
+  file format (header, column counts) but does *not* validate tree
+  shape — connectedness, cycles, root naming, etc.
+* :func:`validate_hierarchy` is a separate validation pass. It takes a
+  parsed :class:`Hierarchy` and (optionally) a feature-name index, and
+  reports a list of issues. Callers decide what to do with the
+  issues: ``info`` prints them as warnings, ``annotate`` raises.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from karyoscope.exceptions import KaryoscopeError
@@ -33,24 +47,32 @@ class HierarchyError(KaryoscopeError):
     """Problems parsing a ``hierarchy.tsv`` file."""
 
 
-#: Sentinel used in the parent column to mean "no parent" (this row is a root).
-NO_PARENT = "."
+#: The required root node name (v0.1 convention).
+REQUIRED_ROOT = "categorized"
+
+_REQUIRED_HEADER = ("feature_set", "child", "parent")
 
 
 @dataclass(frozen=True)
 class HierarchyRow:
-    """One row in a hierarchy file."""
+    """One edge in a hierarchy file: ``child → parent`` within ``feature_set``."""
 
     feature_set: str
-    feature: str
-    parent: str | None  # ``None`` when the parent column was ``.``
+    child: str
+    parent: str
 
 
 @dataclass
 class Hierarchy:
-    """The parsed contents of a ``hierarchy.tsv`` file."""
+    """The parsed contents of a ``hierarchy.tsv`` file.
 
-    rows: list[HierarchyRow]
+    Provides per-feature-set lookups. The heavier algorithmic queries
+    (ancestors, LCA, depth) live on
+    :class:`karyoscope.core.smooth.HierarchyIndex`, which is built from
+    a :class:`Hierarchy` on demand.
+    """
+
+    rows: list[HierarchyRow] = field(default_factory=list)
 
     def feature_sets(self) -> list[str]:
         """Return all feature-set names, in the order they first appear."""
@@ -60,41 +82,58 @@ class Hierarchy:
                 seen.append(row.feature_set)
         return seen
 
-    def features_in(self, feature_set: str) -> list[str]:
-        """Return all features that belong to ``feature_set``, in input order."""
-        return [r.feature for r in self.rows if r.feature_set == feature_set]
+    def rows_in(self, feature_set: str) -> list[HierarchyRow]:
+        """Return all rows whose first column is ``feature_set``."""
+        return [r for r in self.rows if r.feature_set == feature_set]
+
+    def parent_map(self, feature_set: str) -> dict[str, str]:
+        """Return ``{child: parent}`` for one feature set.
+
+        The root node (which has no parent edge) does not appear as a
+        key. Raises :class:`HierarchyError` if a child appears twice
+        within this feature set (would silently lose data otherwise).
+        """
+        out: dict[str, str] = {}
+        for row in self.rows_in(feature_set):
+            if row.child in out:
+                raise HierarchyError(
+                    f"feature set {feature_set!r} has duplicate child {row.child!r}"
+                )
+            out[row.child] = row.parent
+        return out
+
+    def nodes(self, feature_set: str) -> set[str]:
+        """Return the set of all node names referenced in ``feature_set``.
+
+        Includes both child and parent names (so the root, which appears
+        only as a parent, is included).
+        """
+        out: set[str] = set()
+        for row in self.rows_in(feature_set):
+            out.add(row.child)
+            out.add(row.parent)
+        return out
 
     def count_by_feature_set(self) -> dict[str, int]:
-        """Return ``{feature_set: count}`` for every feature set."""
+        """Return ``{feature_set: row_count}`` for every feature set."""
         counts: dict[str, int] = {}
         for row in self.rows:
             counts[row.feature_set] = counts.get(row.feature_set, 0) + 1
         return counts
 
-    def roots(self, feature_set: str | None = None) -> list[HierarchyRow]:
-        """Return all rows with no parent.
-
-        If ``feature_set`` is given, restrict to that feature set.
-        """
-        return [
-            r
-            for r in self.rows
-            if r.parent is None and (feature_set is None or r.feature_set == feature_set)
-        ]
-
-
-_REQUIRED_HEADER = ("feature_set", "feature", "parent")
-
 
 def parse_hierarchy(path: Path) -> Hierarchy:
     """Parse ``hierarchy.tsv`` at ``path`` and return a :class:`Hierarchy`.
 
-    Raises :class:`HierarchyError` on:
+    Structural validation only — column count, header. Tree-shape
+    validation (single root, connectedness, no cycles) is performed by
+    :func:`validate_hierarchy`.
 
-    * missing file
-    * empty file or missing header
-    * wrong column count on any line
-    * unexpected header columns
+    Raises
+    ------
+    HierarchyError
+        On missing file, empty file, malformed header, wrong column
+        count on any row, or blank values in any column.
     """
     if not path.is_file():
         raise HierarchyError(f"hierarchy file not found: {path}")
@@ -117,7 +156,6 @@ def parse_hierarchy(path: Path) -> Hierarchy:
 
     rows: list[HierarchyRow] = []
     for i, raw in enumerate(lines[1:], start=2):
-        # Skip blank lines (tolerate trailing newlines and stray empties).
         if not raw.strip():
             continue
         parts = raw.split("\t")
@@ -125,13 +163,141 @@ def parse_hierarchy(path: Path) -> Hierarchy:
             raise HierarchyError(
                 f"{path}:{i}: expected 3 tab-separated columns, got {len(parts)}: {raw!r}"
             )
-        feature_set, feature, parent_raw = parts
-        parent: str | None = None if parent_raw == NO_PARENT else parent_raw
-        rows.append(
-            HierarchyRow(
-                feature_set=feature_set,
-                feature=feature,
-                parent=parent,
+        feature_set, child, parent = (p.strip() for p in parts)
+        if not feature_set or not child or not parent:
+            raise HierarchyError(f"{path}:{i}: all three columns must be non-empty: {raw!r}")
+        rows.append(HierarchyRow(feature_set=feature_set, child=child, parent=parent))
+    return Hierarchy(rows=rows)
+
+
+# --- validation ------------------------------------------------------
+
+
+def validate_hierarchy(
+    hierarchy: Hierarchy,
+    *,
+    feature_columns: dict[str, set[str]] | None = None,
+) -> list[str]:
+    """Validate a parsed hierarchy and return a list of issues.
+
+    Checks performed (per feature set, independently):
+
+    1. **Single parent**: no child appears as the left-hand side of two
+       rows within one feature set.
+    2. **Single root**: exactly one node has no parent within the set,
+       and that node is named :data:`REQUIRED_ROOT`.
+    3. **Connectedness / no cycles**: walking parent pointers from any
+       node reaches the root in a bounded number of steps.
+    4. **features.tsv consistency (optional)**: if ``feature_columns``
+       is given, every feature name appearing in features.tsv's column
+       for this set must be a node in the hierarchy. Pass
+       ``{feature_set: {name, name, ...}}`` for the sets you want
+       checked.
+
+    Returns
+    -------
+    list[str]
+        Human-readable issue messages. An empty list means the
+        hierarchy is well-formed. Each issue is self-contained and
+        suitable for printing as a warning or assembling into an error
+        message.
+    """
+    issues: list[str] = []
+    for feature_set in hierarchy.feature_sets():
+        issues.extend(
+            _validate_one_set(
+                hierarchy,
+                feature_set,
+                feature_columns=feature_columns,
             )
         )
-    return Hierarchy(rows=rows)
+    return issues
+
+
+def _validate_one_set(
+    hierarchy: Hierarchy,
+    feature_set: str,
+    *,
+    feature_columns: dict[str, set[str]] | None,
+) -> list[str]:
+    """Run validation checks for a single feature set's subtree."""
+    issues: list[str] = []
+    rows = hierarchy.rows_in(feature_set)
+    if not rows:
+        # Vacuously valid — caller probably shouldn't have asked.
+        return issues
+
+    # Check 1: single parent per child
+    parent_of: dict[str, str] = {}
+    seen_children: set[str] = set()
+    for row in rows:
+        if row.child in seen_children:
+            issues.append(
+                f"feature set {feature_set!r}: child {row.child!r} has multiple "
+                "parent rows (each node must have at most one parent)"
+            )
+            continue
+        seen_children.add(row.child)
+        parent_of[row.child] = row.parent
+
+    # All node names referenced (children + parents)
+    all_nodes: set[str] = set(parent_of.keys()) | set(parent_of.values())
+
+    # Check 2: single root, named REQUIRED_ROOT
+    children = set(parent_of.keys())
+    roots = all_nodes - children
+    if len(roots) == 0:
+        issues.append(
+            f"feature set {feature_set!r}: no root found (every node has a "
+            "parent — this indicates a cycle)"
+        )
+    elif len(roots) > 1:
+        issues.append(
+            f"feature set {feature_set!r}: multiple roots found "
+            f"{sorted(roots)!r}; exactly one is required"
+        )
+    else:
+        only_root = next(iter(roots))
+        if only_root != REQUIRED_ROOT:
+            issues.append(
+                f"feature set {feature_set!r}: root is {only_root!r}, must be {REQUIRED_ROOT!r}"
+            )
+
+    # Check 3: no cycles / all nodes reachable from root.
+    # Walk parent pointers from every child, with a bound to detect
+    # cycles. If we walk more than (n_nodes) steps without reaching a
+    # node with no parent, there's a cycle.
+    bound = len(all_nodes) + 1
+    for child in parent_of:
+        node = child
+        seen_on_walk: set[str] = set()
+        cycle_found = False
+        for _ in range(bound):
+            if node not in parent_of:
+                break
+            if node in seen_on_walk:
+                issues.append(
+                    f"feature set {feature_set!r}: cycle detected involving node {node!r}"
+                )
+                cycle_found = True
+                break
+            seen_on_walk.add(node)
+            node = parent_of[node]
+        else:
+            if not cycle_found:
+                issues.append(
+                    f"feature set {feature_set!r}: walk from {child!r} did not "
+                    "terminate within bounded steps (likely cycle)"
+                )
+
+    # Check 4: features.tsv consistency
+    if feature_columns is not None and feature_set in feature_columns:
+        missing = sorted(feature_columns[feature_set] - all_nodes)
+        if missing:
+            shown = missing if len(missing) <= 5 else [*missing[:5], "..."]
+            issues.append(
+                f"feature set {feature_set!r}: {len(missing)} feature name(s) "
+                f"in features.tsv have no row in hierarchy.tsv: {shown}"
+            )
+
+    return issues
