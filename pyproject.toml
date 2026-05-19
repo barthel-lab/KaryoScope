@@ -5,11 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "karyoscope"
 dynamic = ["version"]
-description = "Rapid, alignment-free sequencing annotation for the pangenome era."
+description = "Alignment-free, k-mer-based karyotyping of genome assemblies and sequencing reads."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
 authors = [
   { name = "Timothy Rhyker Ranallo-Benavidez", email = "rranallo-benavidez@tgen.org" },
   { name = "Floris P. Barthel", email = "fbarthel@tgen.org" },
@@ -26,8 +25,6 @@ keywords = [
   "k-mer",
   "genome assembly",
   "T2T",
-  "pangenome",
-  "annotation"
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -56,7 +53,6 @@ dependencies = [
 dev = [
   "pytest>=8.0",
   "pytest-cov>=4.1",
-  "ruff>=0.4",
 ]
 docs = [
   "mkdocs>=1.5",

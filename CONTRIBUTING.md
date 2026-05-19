@@ -28,6 +28,10 @@ conda activate karyoscope-dev
 # Install KaryoScope in editable mode with dev dependencies
 pip install -e ".[dev]"
 
+# Install pre-commit and set it up as a git hook
+pip install pre-commit
+pre-commit install
+
 # Verify the install
 karyoscope --version
 ```
@@ -38,21 +42,32 @@ If you prefer to manage Python separately (e.g., a system `venv` with conda only
 
 ## Running tests and linters
 
+Linting and formatting are managed by [`pre-commit`](https://pre-commit.com). After running `pre-commit install` once, hooks run automatically on every `git commit`. You can also run them manually:
+
+```bash
+# Run all linters and formatters on the whole repo
+pre-commit run --all-files
+
+# Run a single hook (e.g., just ruff)
+pre-commit run ruff --all-files
+
+# Update all pinned tool versions to the latest releases
+pre-commit autoupdate
+```
+
+Tests are run with pytest. Always launch it via `python -m pytest` rather than bare `pytest`:
+
 ```bash
 # Run the full test suite
-pytest
+python -m pytest
 
 # Skip slow / integration tests during local development
-pytest -m "not slow and not integration"
-
-# Lint and format
-ruff check .
-ruff format --check .
-
-# Auto-fix what can be auto-fixed
-ruff check --fix .
-ruff format .
+python -m pytest -m "not slow and not integration"
 ```
+
+The `python -m` prefix forces pytest to launch in the same Python where you ran `pip install`. On systems with multiple Python installations (very common on macOS), bare `pytest` can resolve to a *different* Python's pytest binary, which won't see your `karyoscope` install and will fail with confusing `ModuleNotFoundError`s. `python -m pytest` sidesteps the problem entirely.
+
+Tool versions for lint and format are pinned in `.pre-commit-config.yaml`. This is the single source of truth: CI installs `pre-commit` and runs `pre-commit run --all-files`, so it uses exactly the same versions you do locally. If you ever need to bump a version, edit that file (or run `pre-commit autoupdate`) — no other coordination required.
 
 CI runs all of the above on every push and pull request.
 
@@ -74,8 +89,8 @@ For non-trivial changes (anything more than a small bug fix or doc tweak), pleas
 
 ### Style
 
-- Code is formatted by `ruff format` (Black-compatible style, 100-char lines). CI enforces this.
-- Lint with `ruff check`. Configured rules are in `pyproject.toml`.
+- Code is formatted by `ruff format` (Black-compatible style, 100-char lines). Pre-commit enforces this; CI rejects PRs with unformatted code.
+- Lint with `ruff check`. Configured rules are in `pyproject.toml`. Ruff's version is pinned in `.pre-commit-config.yaml`.
 - Type annotations are encouraged on public APIs but not currently required throughout.
 - Docstrings: short and direct. Document the *why* in comments; let function signatures and names communicate the *what*.
 

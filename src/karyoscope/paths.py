@@ -15,11 +15,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-#: The fallback database root used when nothing else is set.
-_DEFAULT_DB_ROOT = Path.home() / ".karyoscope" / "db"
-
 #: The environment variable users can set to override the default db root.
 DB_ENV_VAR = "KARYOSCOPE_DB"
+
+
+def _fallback_db_root() -> Path:
+    """The fallback database root, computed lazily so $HOME changes apply."""
+    return Path.home() / ".karyoscope" / "db"
 
 
 def default_db_root(explicit: Path | str | None = None) -> Path:
@@ -42,7 +44,7 @@ def default_db_root(explicit: Path | str | None = None) -> Path:
     if env_value:
         return Path(env_value).expanduser().resolve()
 
-    return _DEFAULT_DB_ROOT
+    return _fallback_db_root()
 
 
 def ensure_db_root(explicit: Path | str | None = None) -> Path:

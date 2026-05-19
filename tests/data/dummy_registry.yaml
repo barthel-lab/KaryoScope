@@ -1,0 +1,39 @@
+# Test registry for the KaryoScope test suite.
+#
+# The 'url' below is a placeholder. Tests rewrite this file at runtime to
+# point at a file:// URL for the local dummy_db.tar.gz fixture (the path
+# differs per checkout / per CI runner). See tests/conftest.py for the
+# rewriting logic.
+schema_version: 1
+
+databases:
+  - id: KS_dummy_test_v1
+    title: Dummy KaryoScope test database
+    description: >
+      Dummy database used by the KaryoScope test suite. Not for biological use.
+    version: "1.0.0"
+    release_date: "2026-05-18"
+    karyoscope_min_version: "0.1.0"
+    default: true
+    taxonomy:
+      - genus: Synthetic
+        species: testus
+        common_name: dummy
+    size_gb: 0.0001
+    feature_sets:
+      - chromosome
+      - region
+    kmer:
+      size: 21
+      type: fixed
+      max_size: 21
+    roles:
+      chromosome_assignment: chromosome
+    source: synthetic
+    url: PLACEHOLDER_WILL_BE_REWRITTEN_BY_TEST_FIXTURE
+    sha256: 3543691ab0eb2649ca4daf15224c4ff8d5d463614347aa339016ed9c85ce70f8
+    maintained_by: KaryoScope test suite
+    tags:
+      - test
+
+community_databases: []

@@ -1,0 +1,54 @@
+# Pre-commit hooks for KaryoScope.
+#
+# This file is the single source of truth for lint/format tool versions.
+# Both developers and CI use the versions pinned here, ensuring identical
+# behavior everywhere.
+#
+# To set up locally:
+#     pip install pre-commit
+#     pre-commit install
+#
+# To run manually on the whole repo:
+#     pre-commit run --all-files
+#
+# To update all hook versions to their latest releases:
+#     pre-commit autoupdate
+#
+# https://pre-commit.com
+
+default_language_version:
+  python: python3
+
+repos:
+  # Generic file hygiene: trailing whitespace, missing final newlines,
+  # malformed YAML/TOML/JSON, accidentally committed huge files, etc.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Don't trim the trailing two-space "hard break" Markdown convention.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        # 1 MB. The committed test fixtures are well under this (the
+        # dummy_db.tar.gz is ~22 KB).
+        args: [--maxkb=1000]
+
+  # Ruff: lint + format. The `rev` here is the SINGLE place ruff's version
+  # is pinned for the entire project. CI uses pre-commit too, so this
+  # version applies everywhere.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      # Lint and apply safe auto-fixes.
+      - id: ruff-check
+        args: [--fix]
+      # Format.
+      - id: ruff-format

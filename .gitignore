@@ -103,6 +103,10 @@ docs/site/
 # But: keep tiny test fixtures committed (override the above)
 !tests/data/**
 
+# The unpacked dummy db is regenerated from tests/data/dummy_db.tar.gz at
+# test-suite startup. Only the tarball + its SHA-256 are committed.
+tests/data/dummy_db/
+
 # Local results and scratch
 results/
 scratch/
