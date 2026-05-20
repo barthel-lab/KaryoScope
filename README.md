@@ -114,6 +114,18 @@ karyoscope download --list
 
 Building your own database is supported via `karyoscope build` (coming in v1.0).
 
+## Pre-computed annotations
+
+KaryoScope outputs for the [HPRC Release 2](https://humanpangenome.org/) pangenome samples are hosted by the Human Pangenome Reference Consortium at the [`TGen_HPRCv2_KaryoScope` S3 bucket](https://s3-us-west-2.amazonaws.com/human-pangenomics/index.html?prefix=submissions/B5FC8EB1-5B2A-49FE-8421-6D938943DFC9--TGen_HPRCv2_KaryoScope/). Use these to explore HPRC karyotypes without running the pipeline yourself, or as references for downstream analysis.
+
+Per sample, the bucket contains:
+
+| Path | Contents |
+|---|---|
+| `<sample>/bed/` | Per-feature-set presmoothed annotations (`<sample>.KaryoScope.v2.0.<feature_set>.bed.gz`) |
+| `<sample>/igv/` | Per-feature-set, per-haplotype IGV-ready BEDs with tabix index (`<sample>.KaryoScope.v2.0.<feature_set>.hap<i>.IGV.bed.gz` + `.tbi`) |
+| `<sample>/plots/` | Karyotype SVGs: genome view (chromosome feature set), centromere view (region), subtelomere view (subtelomeric) |
+
 ## Citation
 
 If you use KaryoScope in your work, please cite our preprint:
