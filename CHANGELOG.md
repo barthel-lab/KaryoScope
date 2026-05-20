@@ -694,6 +694,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Fixed
+- ``karyoscope annotate`` no longer hangs silently for hours when a
+  smoothing worker is killed by an external signal (most commonly
+  SIGKILL from the kernel OOM-killer on memory-constrained nodes).
+  ``multiprocessing.Pool`` does not reassign tasks whose worker died,
+  so ``pool.imap_unordered`` would block forever waiting on results
+  that will never arrive -- observed on whole-genome HG002 runs
+  against a 50 GB SLURM allocation, where ``-t 16`` blew through the
+  memory ceiling on chr1/chr2 ``region`` tasks. A daemon watchdog
+  thread now polls the pool every 2 s; on detecting a dead or
+  pool-replaced worker it writes an actionable stderr message
+  (likely cause + remediation: reduce ``--threads`` or increase RAM)
+  and ``os._exit``s the process with code 137. The hang turns into
+  a loud, immediate failure within seconds. Uses ``pool._pool`` (a
+  documented-private attribute stable since Python 3.4) for worker
+  inspection.
 - `paths.default_db_root()` now resolves `~` at call time rather than module
   import time, so `$HOME` changes during a process lifetime are honored.
 - `CITATION.cff` and `CODE_OF_CONDUCT.md` normalized to a single trailing

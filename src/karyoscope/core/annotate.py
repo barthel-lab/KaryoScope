@@ -29,6 +29,8 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import os
+import sys
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -251,6 +253,102 @@ def _split_combined_bed(
             h.close()
 
 
+# --- dead-worker watchdog -------------------------------------------
+#
+# Background: ``multiprocessing.Pool`` does NOT reassign tasks whose
+# worker was killed by an external signal (most commonly SIGKILL from
+# the kernel OOM-killer on a memory-constrained node). The main thread
+# blocks forever in ``pool.imap_unordered`` waiting for results that
+# will never arrive — observed in practice as multi-hour silent hangs
+# on whole-genome HG002 runs against the 50 GB SLURM allocation.
+#
+# This watchdog runs in a daemon thread, polls the pool's worker list
+# every couple of seconds, and on detecting a dead or pool-replaced
+# worker, writes an actionable stderr message and calls os._exit(137).
+# os._exit bypasses Python cleanup (atexit, TemporaryDirectory) —
+# acceptable because the user is already in a failure state, and the
+# alternative (signalling the main thread while it's blocked deep in
+# C code) is unreliable.
+
+
+def _detect_worker_death(
+    pool: mp.pool.Pool,
+    initial_pids: set[int],
+) -> tuple[list[int], list[int]] | None:
+    """Inspect a Pool for worker death; return diagnostic info or ``None``.
+
+    Two failure modes are detected:
+
+    * A current worker has a non-``None`` exitcode -- it died and the
+      pool's ``_handle_workers`` thread hasn't replaced it yet.
+    * A current worker's PID is not in ``initial_pids`` -- the pool
+      already replaced a dead worker, so the new PID is evidence the
+      original died.
+
+    Returns ``(died_pids, exitcodes)`` on detection (either list may
+    be empty if all dead workers had already been cleaned up by the
+    time we looked), or ``None`` when all workers are accounted for.
+
+    Pure function. Reads ``pool._pool`` (documented-private since
+    Python 3.4) and each worker's ``pid`` / ``exitcode`` attributes
+    -- no thread state, safe to call from anywhere.
+    """
+    current = pool._pool
+    current_pids = {w.pid for w in current if w.pid is not None}
+    dead = [w for w in current if w.exitcode is not None]
+    new_pids = current_pids - initial_pids
+    if not dead and not new_pids:
+        return None
+    died = sorted({w.pid for w in dead if w.pid is not None})
+    if not died:
+        died = sorted(initial_pids - current_pids)
+    exitcodes = sorted({w.exitcode for w in dead if w.exitcode is not None})
+    return died, exitcodes
+
+
+def _spawn_pool_watchdog(
+    pool: mp.pool.Pool,
+    *,
+    check_interval_s: float = 2.0,
+) -> threading.Event:
+    """Start a daemon thread that ``os._exit``s if a pool worker dies.
+
+    Returns a ``threading.Event``; the caller must ``set()`` it before
+    the pool is legitimately closed (in a ``finally`` block immediately
+    around the ``imap_unordered`` loop), so the watchdog stops checking
+    before pool teardown intentionally exits the workers and triggers
+    false positives.
+    """
+    stop_event = threading.Event()
+    initial_pids = {w.pid for w in pool._pool if w.pid is not None}
+
+    def _watch() -> None:
+        while not stop_event.wait(check_interval_s):
+            detection = _detect_worker_death(pool, initial_pids)
+            if detection is None or stop_event.is_set():
+                continue
+            died, exitcodes = detection
+            msg = (
+                "\nFATAL: smoothing worker process(es) died unexpectedly "
+                f"(pid(s)={died}, exitcode(s)={exitcodes}).\n"
+                "  Most likely cause: the kernel OOM-killer reaped a "
+                "worker under memory pressure.\n"
+                "  Each smoothing worker holds the full per-sequence "
+                "interval list in memory (~0.5 GB per million intervals; "
+                "the longest contigs of a human assembly are 5-6 GB each).\n"
+                "  Resolve by reducing --threads (e.g. -t 8 for typical "
+                "human inputs on 50 GB nodes) or increasing the job's "
+                "RAM allocation.\n"
+            )
+            sys.stderr.write(msg)
+            sys.stderr.flush()
+            os._exit(137)
+
+    t = threading.Thread(target=_watch, daemon=True, name="ks-pool-watchdog")
+    t.start()
+    return stop_event
+
+
 def _smooth_one_feature_set(
     *,
     combined_bed: Path,
@@ -361,16 +459,20 @@ def _smooth_streaming_unordered(
             initializer=worker_initializer,
             initargs=(index, features_for_worker, worker_log_level),
         ) as pool:
-            for chunk_result in pool.imap_unordered(
-                process_seq_chunk,
-                chunked_seq_reader(combined_bed, chunk_size),
-            ):
-                # chunk_result: {seq_name: (smoothed_lines, presmoothed_lines)}
-                for _seq, (smo_lines, pre_lines) in chunk_result.items():
-                    if pre_handle is not None:
-                        pre_handle.writelines(pre_lines)
-                    if smo_handle is not None:
-                        smo_handle.writelines(smo_lines)
+            stop_event = _spawn_pool_watchdog(pool)
+            try:
+                for chunk_result in pool.imap_unordered(
+                    process_seq_chunk,
+                    chunked_seq_reader(combined_bed, chunk_size),
+                ):
+                    # chunk_result: {seq_name: (smoothed_lines, presmoothed_lines)}
+                    for _seq, (smo_lines, pre_lines) in chunk_result.items():
+                        if pre_handle is not None:
+                            pre_handle.writelines(pre_lines)
+                        if smo_handle is not None:
+                            smo_handle.writelines(smo_lines)
+            finally:
+                stop_event.set()
     finally:
         if pre_handle is not None:
             pre_handle.close()
@@ -438,21 +540,25 @@ def _smooth_with_per_sequence_tempfiles(
             initializer=worker_initializer,
             initargs=(index, features_for_worker, worker_log_level),
         ) as pool:
-            for chunk_result in pool.imap_unordered(
-                process_seq_chunk,
-                _record_and_yield(),
-            ):
-                for seq, (smo_lines, pre_lines) in chunk_result.items():
-                    if smoothed_path is not None and smo_lines:
-                        if seq not in smo_temps:
-                            smo_temps[seq] = tmpdir / f"{len(smo_temps):08d}.smo"
-                        with smo_temps[seq].open("a") as f:
-                            f.writelines(smo_lines)
-                    if presmoothed_path is not None and pre_lines:
-                        if seq not in pre_temps:
-                            pre_temps[seq] = tmpdir / f"{len(pre_temps):08d}.pre"
-                        with pre_temps[seq].open("a") as f:
-                            f.writelines(pre_lines)
+            stop_event = _spawn_pool_watchdog(pool)
+            try:
+                for chunk_result in pool.imap_unordered(
+                    process_seq_chunk,
+                    _record_and_yield(),
+                ):
+                    for seq, (smo_lines, pre_lines) in chunk_result.items():
+                        if smoothed_path is not None and smo_lines:
+                            if seq not in smo_temps:
+                                smo_temps[seq] = tmpdir / f"{len(smo_temps):08d}.smo"
+                            with smo_temps[seq].open("a") as f:
+                                f.writelines(smo_lines)
+                        if presmoothed_path is not None and pre_lines:
+                            if seq not in pre_temps:
+                                pre_temps[seq] = tmpdir / f"{len(pre_temps):08d}.pre"
+                            with pre_temps[seq].open("a") as f:
+                                f.writelines(pre_lines)
+            finally:
+                stop_event.set()
 
         # Concatenate temp files in input sequence order.
         if smoothed_path is not None:
