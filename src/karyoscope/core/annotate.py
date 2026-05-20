@@ -261,11 +261,12 @@ def _smooth_one_feature_set(
     smoothed_path: Path | None,
     threads: int,
     chunk_size: int = 50000,
+    preserve_input_order: bool = True,
 ) -> None:
     """Stream ``combined_bed`` through a worker pool, writing per-set BEDs.
 
     ``presmoothed_path`` and ``smoothed_path`` are independently
-    optional — pass ``None`` for either to skip writing it. At least
+    optional -- pass ``None`` for either to skip writing it. At least
     one must be set; the caller is responsible for not calling this
     function with both ``None``.
 
@@ -274,7 +275,26 @@ def _smooth_one_feature_set(
     once with the shared :class:`HierarchyIndex` and a per-set
     :class:`FeaturesForWorker` projection; each chunk arrives as a
     list of combined-BED lines that the worker translates, smooths,
-    and returns as ``(smoothed_lines, presmoothed_lines)``.
+    and returns keyed per-sequence.
+
+    Two output codepaths, selected by ``preserve_input_order``:
+
+    * **True (default)** -- *assembly mode*. Each worker's
+      per-sequence results stream into a per-sequence temp file in a
+      :class:`tempfile.TemporaryDirectory`. After the pool drains,
+      the temp files are concatenated in input-sequence order to
+      produce the final BED. ``pool.imap_unordered`` is used so the
+      slowest chunk (chr1, typically) doesn't queue up GB-scale
+      results from finished chunks in the IPC pipe. Output is
+      byte-identical to the old ``pool.imap`` codepath; memory peak
+      drops to ~ workers x one chunk's worth.
+
+    * **False** -- *reads mode*. ``pool.imap_unordered`` straight
+      through to the output file, no temp files. Use for inputs
+      with millions of small sequences (long-read FASTA, future
+      FASTQ/BAM) where per-sequence temp files aren't feasible
+      (file-descriptor limits, syscall overhead) and the user
+      doesn't care about input order in the output BED.
     """
     if presmoothed_path is None and smoothed_path is None:
         raise KaryoscopeError("internal error: _smooth_one_feature_set called with no output paths")
@@ -282,35 +302,176 @@ def _smooth_one_feature_set(
     pool_size = threads if threads > 0 else (os.cpu_count() or 1)
     features_for_worker = make_features_for_worker(features, feature_set)
 
-    # Open output handles (or None) up front so we don't have to keep
-    # checking inside the write loop.
-    pre_handle = presmoothed_path.open("w") if presmoothed_path is not None else None
-    smo_handle = smoothed_path.open("w") if smoothed_path is not None else None
-
     ctx = mp.get_context("spawn")
     # Inherit the main process's root log level so worker INFO lines
     # (per-sequence smoothing progress) appear when the user passed
     # -v, but stay silent at the default WARNING level.
     worker_log_level = logging.getLogger().level
+
+    if preserve_input_order:
+        _smooth_with_per_sequence_tempfiles(
+            combined_bed=combined_bed,
+            presmoothed_path=presmoothed_path,
+            smoothed_path=smoothed_path,
+            ctx=ctx,
+            pool_size=pool_size,
+            index=index,
+            features_for_worker=features_for_worker,
+            worker_log_level=worker_log_level,
+            chunk_size=chunk_size,
+        )
+    else:
+        _smooth_streaming_unordered(
+            combined_bed=combined_bed,
+            presmoothed_path=presmoothed_path,
+            smoothed_path=smoothed_path,
+            ctx=ctx,
+            pool_size=pool_size,
+            index=index,
+            features_for_worker=features_for_worker,
+            worker_log_level=worker_log_level,
+            chunk_size=chunk_size,
+        )
+
+
+def _smooth_streaming_unordered(
+    *,
+    combined_bed: Path,
+    presmoothed_path: Path | None,
+    smoothed_path: Path | None,
+    ctx,
+    pool_size: int,
+    index: HierarchyIndex,
+    features_for_worker,
+    worker_log_level: int,
+    chunk_size: int,
+) -> None:
+    """Reads-mode smoothing: ``imap_unordered`` direct to output files.
+
+    Sequences appear in the output BED in the order their workers
+    finished, not input order. Acceptable when the caller has set
+    ``preserve_input_order=False`` (i.e. input is sequencing reads,
+    not an assembly, and order is irrelevant downstream).
+    """
+    pre_handle = presmoothed_path.open("w") if presmoothed_path is not None else None
+    smo_handle = smoothed_path.open("w") if smoothed_path is not None else None
     try:
         with ctx.Pool(
             processes=pool_size,
             initializer=worker_initializer,
             initargs=(index, features_for_worker, worker_log_level),
         ) as pool:
-            for smoothed_lines, presmoothed_lines in pool.imap(
+            for chunk_result in pool.imap_unordered(
                 process_seq_chunk,
                 chunked_seq_reader(combined_bed, chunk_size),
             ):
-                if pre_handle is not None:
-                    pre_handle.writelines(presmoothed_lines)
-                if smo_handle is not None:
-                    smo_handle.writelines(smoothed_lines)
+                # chunk_result: {seq_name: (smoothed_lines, presmoothed_lines)}
+                for _seq, (smo_lines, pre_lines) in chunk_result.items():
+                    if pre_handle is not None:
+                        pre_handle.writelines(pre_lines)
+                    if smo_handle is not None:
+                        smo_handle.writelines(smo_lines)
     finally:
         if pre_handle is not None:
             pre_handle.close()
         if smo_handle is not None:
             smo_handle.close()
+
+
+def _smooth_with_per_sequence_tempfiles(
+    *,
+    combined_bed: Path,
+    presmoothed_path: Path | None,
+    smoothed_path: Path | None,
+    ctx,
+    pool_size: int,
+    index: HierarchyIndex,
+    features_for_worker,
+    worker_log_level: int,
+    chunk_size: int,
+) -> None:
+    """Assembly-mode smoothing: per-sequence temp files + concat in input order.
+
+    ``pool.imap_unordered`` keeps memory bounded (no GB-scale result
+    queue waiting on the slowest chunk to finish). Per-sequence
+    output streams to its own temp file; at the end we concatenate
+    the temp files in input-sequence order. Output is byte-identical
+    to the legacy ``pool.imap`` codepath.
+
+    Input sequence order is captured at dispatch time: we wrap
+    :func:`chunked_seq_reader` with a peek-and-yield generator that
+    records each chunk's sequence names before yielding the chunk
+    to the pool.
+    """
+    import shutil
+    import tempfile
+
+    # Temp dir lives next to the output so cleanup happens on the
+    # same filesystem (no cross-device shutil.copy cost) and so the
+    # temp dir is on /scratch when the output is.
+    anchor = smoothed_path if smoothed_path is not None else presmoothed_path
+    assert anchor is not None  # guarded by the caller check above
+    out_dir = anchor.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    input_seq_order: list[str] = []
+    seen_seqs: set[str] = set()
+
+    def _record_and_yield():
+        """Peek each chunk for sequence names, record in input order, yield."""
+        for chunk in chunked_seq_reader(combined_bed, chunk_size):
+            for raw in chunk:
+                seq = raw.partition("\t")[0]
+                if seq and seq not in seen_seqs:
+                    seen_seqs.add(seq)
+                    input_seq_order.append(seq)
+            yield chunk
+
+    # Per-sequence temp file paths, opened lazily on first write.
+    with tempfile.TemporaryDirectory(prefix="ks_smooth_", dir=out_dir) as tmpdir_str:
+        tmpdir = Path(tmpdir_str)
+        smo_temps: dict[str, Path] = {}
+        pre_temps: dict[str, Path] = {}
+
+        with ctx.Pool(
+            processes=pool_size,
+            initializer=worker_initializer,
+            initargs=(index, features_for_worker, worker_log_level),
+        ) as pool:
+            for chunk_result in pool.imap_unordered(
+                process_seq_chunk,
+                _record_and_yield(),
+            ):
+                for seq, (smo_lines, pre_lines) in chunk_result.items():
+                    if smoothed_path is not None and smo_lines:
+                        if seq not in smo_temps:
+                            smo_temps[seq] = tmpdir / f"{len(smo_temps):08d}.smo"
+                        with smo_temps[seq].open("a") as f:
+                            f.writelines(smo_lines)
+                    if presmoothed_path is not None and pre_lines:
+                        if seq not in pre_temps:
+                            pre_temps[seq] = tmpdir / f"{len(pre_temps):08d}.pre"
+                        with pre_temps[seq].open("a") as f:
+                            f.writelines(pre_lines)
+
+        # Concatenate temp files in input sequence order.
+        if smoothed_path is not None:
+            with smoothed_path.open("wb") as out_h:
+                for seq in input_seq_order:
+                    p = smo_temps.get(seq)
+                    if p is None:
+                        continue
+                    with p.open("rb") as src:
+                        shutil.copyfileobj(src, out_h)
+        if presmoothed_path is not None:
+            with presmoothed_path.open("wb") as out_h:
+                for seq in input_seq_order:
+                    p = pre_temps.get(seq)
+                    if p is None:
+                        continue
+                    with p.open("rb") as src:
+                        shutil.copyfileobj(src, out_h)
+        # tmpdir cleaned up automatically on context manager exit
 
 
 def _bgzip_file(path: Path) -> Path:
@@ -343,6 +504,7 @@ def annotate(
     keep_presmoothed: bool = True,
     keep_intermediates: bool = False,
     bgzip: bool = True,
+    preserve_input_order: bool = True,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
 
@@ -481,7 +643,11 @@ def annotate(
     # in-process splitter (no need to fork workers for a one-line
     # translation).
     if smooth:
-        logger.debug("smoothing pass with threads=%d", threads)
+        logger.debug(
+            "smoothing pass with threads=%d, preserve_input_order=%s",
+            threads,
+            preserve_input_order,
+        )
         for fs in requested:
             _smooth_one_feature_set(
                 combined_bed=combined_bed,
@@ -491,6 +657,7 @@ def annotate(
                 presmoothed_path=presmoothed_paths.get(fs),
                 smoothed_path=smoothed_paths.get(fs),
                 threads=threads,
+                preserve_input_order=preserve_input_order,
             )
     else:
         # Only presmoothed output, no smoothing.

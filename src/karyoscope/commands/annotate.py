@@ -122,6 +122,17 @@ logger = logging.getLogger(__name__)
     show_default=True,
     help="bgzip the per-feature-set output BEDs. Pass --no-bgzip to write plain .bed files.",
 )
+@click.option(
+    "--preserve-order/--no-preserve-order",
+    "preserve_input_order",
+    default=True,
+    show_default=True,
+    help="Write output BEDs with sequences in the same order as the input FASTA. "
+    "Default is appropriate for assemblies (tens of sequences). Pass "
+    "--no-preserve-order for long-read FASTA / future FASTQ-or-BAM inputs "
+    "(millions of sequences) where input order is irrelevant -- speeds up "
+    "writes and avoids the per-sequence temp-file overhead.",
+)
 def cmd(
     input_path: Path,
     output_dir: Path | None,
@@ -133,6 +144,7 @@ def cmd(
     keep_presmoothed: bool,
     keep_intermediates: bool,
     bgzip: bool,
+    preserve_input_order: bool,
 ) -> None:
     """Run the annotate pipeline for ``--input``.
 
@@ -168,6 +180,7 @@ def cmd(
             keep_presmoothed=keep_presmoothed,
             keep_intermediates=keep_intermediates,
             bgzip=bgzip,
+            preserve_input_order=preserve_input_order,
         )
     except (
         DatabaseNotFoundError,

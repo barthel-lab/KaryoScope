@@ -488,23 +488,21 @@ def worker_initializer(
 
 def process_seq_chunk(
     chunk: list[str],
-) -> tuple[list[str], list[str]]:
+) -> dict[str, tuple[list[str], list[str]]]:
     """Smooth one chunk of combined-BED lines for one feature set.
 
     The chunk must consist of complete sequences (no fragments).
     Input lines are 4-column combined BED records with the integer
     feature id in column 4 (the C++ binary's output format).
 
-    Returns ``(smoothed_lines, presmoothed_lines)`` — two lists of
-    newline-terminated BED records ready for the caller to write to
-    files. The caller chooses which (or both) to write based on the
-    user's ``--smooth`` and ``--keep-presmoothed`` flags.
-
-    Each line is processed once: id translation happens here, the
-    presmoothed track is the result of merging adjacent same-name
-    runs, and the smoothed track adds the hierarchy-aware promotion
-    pass on top. Running both passes in one worker avoids a re-read
-    of the (potentially large) presmoothed BED.
+    Returns ``{seq_name: (smoothed_lines, presmoothed_lines)}`` --
+    one entry per complete sequence in the chunk, each value a pair
+    of newline-terminated BED line lists ready for the caller to
+    write. Keyed per-sequence so the main process can route each
+    sequence's output to a per-sequence temp file (for
+    ``preserve_input_order=True`` in
+    :func:`karyoscope.core.annotate._smooth_one_feature_set`) or to
+    a single combined file regardless of dict-iteration order.
 
     The archive smoothing treats novel intervals (id 0) as the root
     sentinel during the algorithm (``id_map['0'] = root``) and renames
@@ -519,14 +517,13 @@ def process_seq_chunk(
     features = _worker_features
     root = index.root
 
-    smoothed_out: list[str] = []
-    presmoothed_out: list[str] = []
+    out: dict[str, tuple[list[str], list[str]]] = {}
 
     current_seq: str | None = None
     current_intervals: list[Interval] = []
 
     def flush() -> None:
-        if not current_intervals:
+        if not current_intervals or current_seq is None:
             return
         import time as _time
 
@@ -534,25 +531,28 @@ def process_seq_chunk(
         n_in = len(current_intervals)
         # Presmoothed: just merge adjacent same-feature runs.
         merged_pre = merge_adjacent(current_intervals, root)
-        for iv in merged_pre:
-            presmoothed_out.append(_render_for_output(iv, root))
+        pre_lines = [_render_for_output(iv, root) for iv in merged_pre]
         # Smoothed: run the algorithm, then re-merge.
         stats: dict[str, int] = {}
         smoothed = smooth_intervals(current_intervals, index, out_stats=stats)
         merged_post = merge_adjacent(smoothed, root)
-        for iv in merged_post:
-            smoothed_out.append(_render_for_output(iv, root))
+        smo_lines = [_render_for_output(iv, root) for iv in merged_post]
+        out[current_seq] = (smo_lines, pre_lines)
         # Per-sequence progress log. Visible at -v (INFO) and above;
         # critical for diagnosing per-chromosome smoothing perf on
         # whole-genome runs where the pool can otherwise look hung.
+        # The "->" reports the post-merge output line counts (what
+        # actually ends up in the BED) so the compression ratio is
+        # visible (e.g. 11M raw intervals -> 8k merged smoothed lines).
         dt = _time.perf_counter() - t0
         passes = stats.get("passes", 0)
         logger.info(
-            "smoothed %s/%s: %d intervals -> %d in %.1fs (%d pass%s)",
+            "smoothed %s/%s: %d intervals -> %d presmoothed, %d smoothed in %.1fs (%d pass%s)",
             _worker_feature_set,
             current_seq,
             n_in,
-            len(smoothed),
+            len(pre_lines),
+            len(smo_lines),
             dt,
             passes,
             "" if passes == 1 else "es",
@@ -608,7 +608,7 @@ def process_seq_chunk(
         )
 
     flush()
-    return smoothed_out, presmoothed_out
+    return out
 
 
 # --- Chunked reading respecting sequence boundaries ------------------

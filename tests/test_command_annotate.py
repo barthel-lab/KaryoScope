@@ -564,3 +564,110 @@ def test_annotate_smoothing_promotes_novel_gap_to_lca(
     )
     # The novel run should be gone after smoothing.
     assert "novel" not in smo_features
+
+
+def test_annotate_no_preserve_order_matches_preserve_order(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """Reads-mode (``--no-preserve-order``) produces the same per-sequence
+    content as assembly-mode (``--preserve-order``) -- just possibly with
+    sequences in different order in the final BED.
+
+    Verifies the two codepaths (per-sequence temp files vs straight
+    ``imap_unordered``) emit byte-equivalent output when sorted by
+    sequence + position. With a single sequence in the fixture, the
+    sequence order question is moot and the files should be
+    byte-identical.
+    """
+    runner, db_root, _ = cli_with_populated_db
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"
+    query_fa = tmp_path / "single_seq.fa"
+    query_fa.write_text(f">one_seq\n{seed}\n")
+
+    out_preserve = tmp_path / "preserve"
+    out_no_preserve = tmp_path / "no_preserve"
+
+    for outdir, flag in (
+        (out_preserve, "--preserve-order"),
+        (out_no_preserve, "--no-preserve-order"),
+    ):
+        result = runner.invoke(
+            main,
+            [
+                "annotate",
+                "-i",
+                str(query_fa),
+                "-o",
+                str(outdir),
+                "--db-root",
+                str(db_root),
+                "-t",
+                "1",
+                "--no-bgzip",
+                "--feature-set",
+                "region",
+                flag,
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+    pre_a = (out_preserve / "single_seq.KS_dummy_test_v1.region.presmoothed.bed").read_bytes()
+    pre_b = (out_no_preserve / "single_seq.KS_dummy_test_v1.region.presmoothed.bed").read_bytes()
+    assert pre_a == pre_b
+
+    smo_a = (out_preserve / "single_seq.KS_dummy_test_v1.region.smoothed.bed").read_bytes()
+    smo_b = (out_no_preserve / "single_seq.KS_dummy_test_v1.region.smoothed.bed").read_bytes()
+    assert smo_a == smo_b
+
+
+def test_annotate_preserve_order_with_multiple_sequences_keeps_input_order(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """With multiple input sequences, ``--preserve-order`` writes them
+    in input order (the order they appeared in the source FASTA),
+    independent of worker completion order.
+    """
+    runner, db_root, _ = cli_with_populated_db
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"
+    # Three sequences, deliberately named so alphabetical order
+    # (z_first, m_middle, a_last) differs from input order.
+    query_fa = tmp_path / "ordered.fa"
+    query_fa.write_text(f">z_first\n{seed}\n>m_middle\n{seed}\n>a_last\n{seed}\n")
+    outdir = tmp_path / "out"
+
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(query_fa),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "2",  # 2 workers; could finish in any order
+            "--no-bgzip",
+            "--feature-set",
+            "region",
+            "--preserve-order",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    bed = (outdir / "ordered.KS_dummy_test_v1.region.smoothed.bed").read_text()
+    # First column of each line is the sequence name. Extract the
+    # unique sequence names in first-occurrence order from the file
+    # and verify it matches input order.
+    seen: list[str] = []
+    for line in bed.splitlines():
+        if not line:
+            continue
+        seq = line.split("\t", 1)[0]
+        if seq not in seen:
+            seen.append(seq)
+    assert seen == ["z_first", "m_middle", "a_last"]
