@@ -61,20 +61,30 @@ _VERBOSITY_TO_LEVEL = {
 def _configure_logging(verbosity: int) -> None:
     """Install a stderr log handler with a format suited to a CLI tool.
 
+    Format depends on verbosity:
+
+    * Default (WARNING) / quiet (ERROR): no timestamp, no module name.
+      Just ``LEVEL: message``. The few lines you see at this level are
+      mostly user-actionable; a timestamp would be noise.
+    * ``-v`` (INFO): ``HH:MM:SS LEVEL: message``. Timestamps make
+      per-step wall times extractable from the log via diffing
+      consecutive lines -- useful for one-off benchmarks without
+      pulling in a dedicated profiler.
+    * ``-vv`` (DEBUG): same timestamp plus the module name in
+      brackets, so subsystem-level debugging is easier to trace.
+
     Replaces any pre-existing handlers on the root logger so that repeated
     calls (e.g., from tests) don't compound output.
     """
     level = _VERBOSITY_TO_LEVEL.get(verbosity, logging.DEBUG if verbosity > 0 else logging.ERROR)
     handler = logging.StreamHandler(stream=sys.stderr)
     if level <= logging.DEBUG:
-        # In DEBUG mode include the module name so users can see which
-        # subsystem emitted each line.
-        fmt = "%(levelname)s [%(name)s] %(message)s"
+        fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    elif level <= logging.INFO:
+        fmt = "%(asctime)s %(levelname)s: %(message)s"
     else:
-        # Otherwise keep it minimal — looks more like a CLI tool, less like
-        # an application server log.
         fmt = "%(levelname)s: %(message)s"
-    handler.setFormatter(logging.Formatter(fmt))
+    handler.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)
