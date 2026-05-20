@@ -59,10 +59,16 @@ logger = logging.getLogger(__name__)
 #: pixel scales are tuned to these defaults; deviating substantially
 #: produces under- or over-detailed SVGs.
 DEFAULT_BIN_SIZE_BY_MODE: dict[str, int] = {
-    "full": 1_000_000,
+    "genome": 1_000_000,
     "centromere": 100_000,
     "subtelomere": 100,
 }
+
+
+#: All available render modes, in canonical order. Used when the
+#: user doesn't specify ``--mode`` -- the default is to render every
+#: mode for every requested feature set.
+ALL_MODES: tuple[str, ...] = ("genome", "centromere", "subtelomere")
 
 
 _FASTA_EXTS: tuple[str, ...] = (
@@ -197,7 +203,7 @@ def karyotype_run(
     db_root: Path,
     db_id: str | None = None,
     feature_sets: list[str] | None = None,
-    mode: str = "full",
+    modes: list[str] | None = None,
     sex: str | None = None,
     sex_determination_system: str = "XY",
     background_color: str = "white",
@@ -212,7 +218,13 @@ def karyotype_run(
     output_path: Path | None = None,
     seed_human_chromosomes: bool = True,
 ) -> list[KaryotypeResult]:
-    """Render one SVG per requested feature set.
+    """Render one SVG per (mode, feature_set) combination.
+
+    With no overrides, the default behaviour is to render every
+    available mode (``genome``, ``centromere``, ``subtelomere``) for
+    every feature set declared in the database's manifest. Either
+    axis can be restricted via ``modes=`` or ``feature_sets=``; the
+    Cartesian product of what's specified is what gets rendered.
 
     Most parameters mirror the CLI flags; see
     :mod:`karyoscope.commands.karyotype` for the user-facing
@@ -220,10 +232,11 @@ def karyotype_run(
     """
     if not inputs:
         raise KaryotypeError("at least one --input is required")
-    if mode not in ("full", "subtelomere", "centromere"):
-        raise KaryotypeError(
-            f"unknown mode {mode!r}; expected 'full', 'subtelomere', or 'centromere'"
-        )
+
+    requested_modes: list[str] = list(modes) if modes else list(ALL_MODES)
+    unknown_modes = [m for m in requested_modes if m not in ALL_MODES]
+    if unknown_modes:
+        raise KaryotypeError(f"unknown mode(s) {unknown_modes!r}; expected from {list(ALL_MODES)}")
 
     db_id_resolved, db_dir = resolve_database(db_root, db_id)
     manifest = validate_database_layout(db_dir)
@@ -239,10 +252,17 @@ def karyotype_run(
     if not requested:
         raise KaryotypeError("no feature sets to render; manifest is empty?")
 
-    if bin_size is None:
-        bin_size = DEFAULT_BIN_SIZE_BY_MODE[mode]
-    if bin_size < 1:
-        raise KaryotypeError(f"--bin-size must be a positive integer, got {bin_size}")
+    # bin_size override only makes sense with a single mode (different
+    # modes have different natural bin sizes).
+    if bin_size is not None:
+        if len(requested_modes) != 1:
+            raise KaryotypeError(
+                "--bin-size can only be set when exactly one --mode is "
+                f"requested (got modes={requested_modes!r}). Drop --bin-size "
+                "or restrict to one mode."
+            )
+        if bin_size < 1:
+            raise KaryotypeError(f"--bin-size must be a positive integer, got {bin_size}")
 
     colors = parse_colors(db_dir / manifest.colors)
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
@@ -265,8 +285,10 @@ def karyotype_run(
 
     # For centromere mode, also ensure the centromere coordinates file
     # exists per input. centromeres_run cascades through scaffold and
-    # bin internally.
-    if mode == "centromere":
+    # bin internally. Only call when centromere mode is actually
+    # requested -- it's expensive (an extra bin pass) and unnecessary
+    # for genome / subtelomere outputs.
+    if "centromere" in requested_modes:
         centromeres_run(
             inputs,
             db_root=db_root,
@@ -300,56 +322,68 @@ def karyotype_run(
         results_dir = output_dir if output_dir is not None else per_input_state[0][1]
 
     results: list[KaryotypeResult] = []
-    for fs in requested:
-        leaves = leaves_for(hierarchy, fs)
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-        render_inputs: list[RenderInput] = []
-        for spec, out_dir, stem in per_input_state:
-            binned_path = _ensure_binned_scaffolded(
-                out_dir=out_dir,
-                stem=stem,
-                db_id=db_id_resolved,
-                fs=fs,
-                bin_size=bin_size,
-                leaf_set=leaves,
-                auto=auto,
-                input_name=spec.path.name,
-            )
-            binned_bed = _load_binned_bed(binned_path)
-            map_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
-
-            centromere_ranges: dict[str, tuple[int, int]] | None = None
-            if mode == "centromere":
-                cpath = _centromeres_bed_path(out_dir, stem, db_id_resolved)
-                if not cpath.is_file():
-                    raise KaryotypeError(
-                        f"missing centromeres BED for {spec.path.name} (expected at {cpath})"
-                    )
-                centromere_ranges = _load_centromeres_bed(cpath)
-
-            render_inputs.append(
-                RenderInput(
-                    map_rows=map_rows,
-                    binned_bed=binned_bed,
-                    centromere_ranges=centromere_ranges,
-                )
-            )
-
-        flat_colors = colors_for_set(colors, fs)
-        svg_path = results_dir / f"{base_name}.{db_id_resolved}.{mode}.{fs}.karyotype.svg"
-        results_dir.mkdir(parents=True, exist_ok=True)
-        render_karyotype(
-            render_inputs,
-            colors=flat_colors,
-            mode=mode,  # type: ignore[arg-type]
-            sex=sex,
-            sex_determination_system=sex_determination_system,
-            background_color=background_color,
-            subtelomere_boundary=subtelomere_boundary,
-            seed_human_chromosomes=seed_human_chromosomes,
-            output_path=svg_path,
+    # Outer loop: mode (sets bin_size). Inner loop: feature set.
+    # Binned BEDs are cached per (input, fs, bin_size) on disk so the
+    # second time we hit the same fs at a different bin_size, we just
+    # do a fresh bin call -- not re-running scaffold/annotate.
+    for current_mode in requested_modes:
+        current_bin_size = (
+            bin_size if bin_size is not None else DEFAULT_BIN_SIZE_BY_MODE[current_mode]
         )
-        results.append(KaryotypeResult(feature_set=fs, mode=mode, svg_path=svg_path))
+
+        for fs in requested:
+            leaves = leaves_for(hierarchy, fs)
+
+            render_inputs: list[RenderInput] = []
+            for spec, out_dir, stem in per_input_state:
+                binned_path = _ensure_binned_scaffolded(
+                    out_dir=out_dir,
+                    stem=stem,
+                    db_id=db_id_resolved,
+                    fs=fs,
+                    bin_size=current_bin_size,
+                    leaf_set=leaves,
+                    auto=auto,
+                    input_name=spec.path.name,
+                )
+                binned_bed = _load_binned_bed(binned_path)
+                map_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
+
+                centromere_ranges: dict[str, tuple[int, int]] | None = None
+                if current_mode == "centromere":
+                    cpath = _centromeres_bed_path(out_dir, stem, db_id_resolved)
+                    if not cpath.is_file():
+                        raise KaryotypeError(
+                            f"missing centromeres BED for {spec.path.name} (expected at {cpath})"
+                        )
+                    centromere_ranges = _load_centromeres_bed(cpath)
+
+                render_inputs.append(
+                    RenderInput(
+                        map_rows=map_rows,
+                        binned_bed=binned_bed,
+                        centromere_ranges=centromere_ranges,
+                    )
+                )
+
+            flat_colors = colors_for_set(colors, fs)
+            svg_path = (
+                results_dir / f"{base_name}.{db_id_resolved}.{current_mode}.{fs}.karyotype.svg"
+            )
+            render_karyotype(
+                render_inputs,
+                colors=flat_colors,
+                mode=current_mode,  # type: ignore[arg-type]
+                sex=sex,
+                sex_determination_system=sex_determination_system,
+                background_color=background_color,
+                subtelomere_boundary=subtelomere_boundary,
+                seed_human_chromosomes=seed_human_chromosomes,
+                output_path=svg_path,
+            )
+            results.append(KaryotypeResult(feature_set=fs, mode=current_mode, svg_path=svg_path))
 
     return results
 

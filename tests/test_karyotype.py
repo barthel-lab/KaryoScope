@@ -97,8 +97,8 @@ def _read_svg_text(p: Path) -> str:
 
 
 class TestRenderKaryotypeUnit:
-    def test_renders_full_mode_minimal(self, tmp_path: Path) -> None:
-        # One contig, chr1, hap1, full mode.
+    def test_renders_genome_mode_minimal(self, tmp_path: Path) -> None:
+        # One contig, chr1, hap1, genome mode.
         ri = RenderInput(
             map_rows=[_row("chr1_hap1_a", chrom="chr1", hap="hap1", stats="TPCQT", length=1000)],
             binned_bed={
@@ -109,7 +109,7 @@ class TestRenderKaryotypeUnit:
         render_karyotype(
             [ri],
             colors={"rA": "#2ca02c", "rB": "#d62728"},
-            mode="full",
+            mode="genome",
             output_path=out,
         )
         assert out.is_file()
@@ -195,7 +195,7 @@ class TestRenderKaryotypeUnit:
             binned_bed={"chr1_hap1_a": [(0, 1000, "mystery_feature")]},
         )
         out = tmp_path / "x.svg"
-        render_karyotype([ri], colors={}, mode="full", output_path=out)
+        render_karyotype([ri], colors={}, mode="genome", output_path=out)
         assert out.is_file()
 
 
@@ -258,7 +258,7 @@ def dummy_assembly_fasta(tmp_path: Path) -> Path:
 
 @_required
 @pytest.mark.integration
-def test_karyotype_full_mode_against_dummy_db(
+def test_karyotype_genome_mode_against_dummy_db(
     cli_runner: CliRunner,
     populated_db_root: Path,
     dummy_assembly_fasta: Path,
@@ -274,7 +274,7 @@ def test_karyotype_full_mode_against_dummy_db(
             "--outdir",
             str(out_dir),
             "--mode",
-            "full",
+            "genome",
             "--bin-size",
             "10",  # tiny -- sequences are 21 bp
             "--min-scaffold-length",

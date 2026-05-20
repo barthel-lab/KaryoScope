@@ -10,7 +10,7 @@ coordinates for the centromere mode.
 
 Three render modes:
 
-* ``"full"`` -- whole-chromosome view. Pixels-per-bp tuned so a
+* ``"genome"`` -- whole-chromosome view. Pixels-per-bp tuned so a
   human chromosome fits comfortably; 10 Mb scale bar.
 * ``"subtelomere"`` -- zoomed view of the p-arm and q-arm telomeric
   ends. Only contigs flagged with a telomere are drawn. Scale 1 px
@@ -49,8 +49,8 @@ logger = logging.getLogger(__name__)
 
 
 #: The three render modes.
-Mode = Literal["full", "subtelomere", "centromere"]
-_VALID_MODES: tuple[Mode, ...] = ("full", "subtelomere", "centromere")
+Mode = Literal["genome", "subtelomere", "centromere"]
+_VALID_MODES: tuple[Mode, ...] = ("genome", "subtelomere", "centromere")
 
 
 #: Recognised sex-determination systems. Each declares the
@@ -102,7 +102,7 @@ class _ModeParams:
 
 
 _MODE_PARAMS: dict[str, _ModeParams] = {
-    "full": _ModeParams(
+    "genome": _ModeParams(
         pixels_per_pos=4 / 1_000_000, scale_bar_length=10_000_000, scale_bar_label="10 Mbp"
     ),
     "subtelomere": _ModeParams(
@@ -223,7 +223,7 @@ def render_karyotype(
     inputs: list[RenderInput],
     *,
     colors: dict[str, str],
-    mode: Mode = "full",
+    mode: Mode = "genome",
     sex: str | None = None,
     sex_determination_system: str | dict = "XY",
     background_color: str = "white",
@@ -371,7 +371,7 @@ def render_karyotype(
         final_image_height = int(
             initial_y + (max_centromere_length * pixels_per_pos) + y_border + initial_y
         )
-    else:  # full
+    else:  # genome
         final_image_height = 0  # computed below from max_stop_y
 
     # --- helpers depending on layout consts --------------------------
@@ -406,12 +406,12 @@ def render_karyotype(
                 continue
             sequences_to_plot.append(seq)
             seen_sequences.add(seq)
-            if mode == "full":
+            if mode == "genome":
                 stop = sequence_lengths.get(seq, 0)
                 if stop:
                     max_stop_y = max(max_stop_y, pos_to_y(stop))
 
-    if mode == "full":
+    if mode == "genome":
         final_image_height = int(max_stop_y + y_border)
 
     # --- group by chromosome and haplotype ---------------------------
@@ -601,7 +601,7 @@ def render_karyotype(
                                 fill=color,
                             )
                         )
-                else:  # full
+                else:  # genome
                     start_y = pos_to_y(start)
                     stop_y = pos_to_y(stop)
                     d.append(
@@ -659,7 +659,7 @@ def render_karyotype(
                         stroke_width=1,
                     )
                 )
-            else:  # full
+            else:  # genome
                 seq_len = sequence_lengths.get(seq)
                 if seq_len:
                     height = pos_to_y(seq_len) - initial_y
@@ -675,9 +675,9 @@ def render_karyotype(
                         )
                     )
 
-    # --- telomere indicator circles (full mode only) ------------------
+    # --- telomere indicator circles (genome mode only) ----------------
 
-    if mode == "full":
+    if mode == "genome":
         telomere_color = "#006884"
         for seq, x in x_coords.items():
             if seq in tel_start_sequences:

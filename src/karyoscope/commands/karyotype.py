@@ -94,10 +94,11 @@ logger = logging.getLogger(__name__)
 )
 @click.option(
     "--mode",
-    type=click.Choice(["full", "subtelomere", "centromere"], case_sensitive=False),
-    default="full",
-    show_default=True,
-    help="Which view to render.",
+    "modes_raw",
+    type=click.Choice(["genome", "subtelomere", "centromere"], case_sensitive=False),
+    multiple=True,
+    help="Which view(s) to render. Repeatable. Default: render every mode "
+    "(genome, centromere, subtelomere).",
 )
 @click.option(
     "--sex",
@@ -124,8 +125,8 @@ logger = logging.getLogger(__name__)
     "--bin-size",
     type=int,
     default=None,
-    help="Bin size (bp) for the SVG. Default depends on --mode: 1Mb for full, "
-    "100Kb for centromere, 100bp for subtelomere.",
+    help="Bin size (bp) for the SVG. Default depends on --mode: 1Mb for genome, "
+    "100Kb for centromere, 100bp for subtelomere. Only valid with exactly one --mode.",
 )
 @click.option(
     "--subtelomere-boundary",
@@ -195,7 +196,7 @@ def cmd(
     db_id: str | None,
     db_root_arg: Path | None,
     feature_sets_arg: tuple[str, ...],
-    mode: str,
+    modes_raw: tuple[str, ...],
     sex: str,
     sex_determination_system: str,
     background_color: str,
@@ -211,15 +212,24 @@ def cmd(
 ) -> None:
     """Render karyotype SVGs.
 
+    By default, every (mode, feature_set) combination is rendered --
+    three modes (genome, centromere, subtelomere) times every feature
+    set declared in the database's manifest. Restrict either axis
+    with ``--mode`` and/or ``--feature-set`` (both repeatable).
+
     \b
     Examples:
-        # Diploid male, full karyotype
+        # Diploid male, every mode for every feature set (the default)
         karyoscope karyotype -i hap1=HG002.hap1.fa.gz -i hap2=HG002.hap2.fa.gz \\
                               --sex male
 
-        # Centromere zoom for HG002
+        # Just the genome view for the chromosome feature set
         karyoscope karyotype -i hap1=HG002.hap1.fa.gz -i hap2=HG002.hap2.fa.gz \\
-                              --mode centromere --sex male
+                              --sex male --mode genome --feature-set chromosome
+
+        # All modes but only the region feature set
+        karyoscope karyotype -i hap1=HG002.hap1.fa.gz -i hap2=HG002.hap2.fa.gz \\
+                              --sex male --feature-set region
     """
     # --- parse named-pair options -----------------------------------
     parsed_inputs: list[tuple[str | None, Path]] = [_parse_named_path(raw) for raw in inputs_raw]
@@ -266,6 +276,7 @@ def cmd(
 
     sex_resolved: str | None = None if sex.lower() == "unknown" else sex.lower()
     feature_sets = list(feature_sets_arg) if feature_sets_arg else None
+    modes = [m.lower() for m in modes_raw] if modes_raw else None
 
     db_root = paths.ensure_db_root(db_root_arg)
     try:
@@ -274,7 +285,7 @@ def cmd(
             db_root=db_root,
             db_id=db_id,
             feature_sets=feature_sets,
-            mode=mode.lower(),
+            modes=modes,
             sex=sex_resolved,
             sex_determination_system=sex_determination_system.upper(),
             background_color=background_color.lower(),

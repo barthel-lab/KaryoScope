@@ -539,6 +539,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Stage 5d series is complete.
 
 ### Changed
+- ``karyoscope karyotype`` renamed its ``full`` render mode to
+  ``genome``. The CLI now accepts ``--mode genome`` (case-insensitive)
+  and the output filename segment is ``.genome.`` rather than
+  ``.full.``. The internal API (:func:`render_karyotype`,
+  :data:`ALL_MODES`, :data:`DEFAULT_BIN_SIZE_BY_MODE` keys, the
+  ``Mode`` literal type) was updated to match. Hard rename with no
+  back-compat: callers that used ``mode="full"`` need to switch to
+  ``mode="genome"``.
+- ``karyoscope karyotype --mode`` is now repeatable, and the default
+  (no ``--mode`` flag) renders **every** mode rather than just one.
+  Combined with ``--feature-set`` (already repeatable), the default
+  ``karyoscope karyotype -i hap1.fa -i hap2.fa --sex male`` invocation
+  now produces ``len(modes) x len(feature_sets)`` SVGs. Restrict
+  either axis to subset.
+- ``karyoscope karyotype --bin-size`` is now only valid when exactly
+  one ``--mode`` is specified, since different modes have different
+  natural bin sizes (1 Mb / 100 kb / 100 bp for genome / centromere /
+  subtelomere respectively). Combining ``--bin-size`` with multiple
+  modes raises ``UsageError`` rather than silently applying the
+  override to all of them.
+- The auto-derive cascade in ``karyotype_run`` only calls
+  ``centromeres_run`` when ``"centromere"`` is in the requested
+  modes (it's expensive: an extra bin pass per input). Previous
+  behaviour ran it unconditionally because the caller could only
+  specify a single mode at a time.
 - Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt from scratch.
   ``features.tsv`` now uses the correct one-row-per-id schema
   (``featureID`` plus one column per feature set), and the KMC index
