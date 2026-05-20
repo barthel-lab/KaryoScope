@@ -393,7 +393,14 @@ def scaffold_run(
     # We always need the role sets present in annotate output, even when
     # the user didn't ask for them in --feature-set (and even in
     # mode='fasta' -- the role sets drive classify_and_orient).
-    annotate_sets = sorted(set(requested) | {chromosome_fs, region_fs})
+    # Preserve the user's / manifest's order so progress messages and
+    # output files appear in the order users expect; only append role
+    # sets at the end if they weren't already requested. (A previous
+    # version used ``sorted(set(...))`` which alphabetised, surfacing
+    # in dogfooding as "acrocentric" arriving first instead of the
+    # manifest's "chromosome".)
+    seen = set(requested)
+    annotate_sets = list(requested) + [fs for fs in (chromosome_fs, region_fs) if fs not in seen]
 
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
     chromosome_leaves = leaves_for(hierarchy, chromosome_fs)

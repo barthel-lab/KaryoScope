@@ -278,6 +278,51 @@ def test_smooth_doesnt_demote(region_index: HierarchyIndex) -> None:
     assert out[1].feature == "rA"
 
 
+# --- pass-count diagnostic (out_stats) -------------------------------
+
+
+def test_smooth_out_stats_records_pass_count(region_index: HierarchyIndex) -> None:
+    """``out_stats['passes']`` reports the number of fixed-point iterations.
+
+    For a productive smoothing run the count is >=2: one pass that
+    promotes the middle interval, plus a final no-op pass that
+    confirms convergence and breaks the loop. Used by the smoothing
+    worker to report per-sequence diagnostics in INFO logs.
+    """
+    intervals = [
+        Interval("seqA", 0, 100, "rA", False),
+        Interval("seqA", 100, 200, "centromeric", False),
+        Interval("seqA", 200, 300, "rB", False),
+    ]
+    stats: dict[str, int] = {}
+    smooth_intervals(intervals, region_index, out_stats=stats)
+    assert stats["passes"] >= 2  # at least one productive + one confirmatory
+
+
+def test_smooth_out_stats_no_op_is_one_pass(region_index: HierarchyIndex) -> None:
+    """An input with nothing to smooth still records ``passes >= 1``.
+
+    The fixed-point loop always runs the first pass; the loop exits
+    when that pass made no changes. So an input that needs no
+    smoothing reports exactly 1 pass.
+    """
+    intervals = [
+        Interval("seqA", 0, 100, "rA", False),
+        Interval("seqA", 100, 200, "rA", False),
+    ]
+    stats: dict[str, int] = {}
+    smooth_intervals(intervals, region_index, out_stats=stats)
+    assert stats["passes"] == 1
+
+
+def test_smooth_out_stats_optional(region_index: HierarchyIndex) -> None:
+    """``out_stats`` is optional -- callers that don't care don't pass it."""
+    intervals = [Interval("seqA", 0, 100, "rA", False)]
+    # No stats dict; must still work.
+    result = smooth_intervals(intervals, region_index)
+    assert len(result) == 1
+
+
 # --- chunked_seq_reader -----------------------------------------------
 
 

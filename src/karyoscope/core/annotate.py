@@ -288,11 +288,15 @@ def _smooth_one_feature_set(
     smo_handle = smoothed_path.open("w") if smoothed_path is not None else None
 
     ctx = mp.get_context("spawn")
+    # Inherit the main process's root log level so worker INFO lines
+    # (per-sequence smoothing progress) appear when the user passed
+    # -v, but stay silent at the default WARNING level.
+    worker_log_level = logging.getLogger().level
     try:
         with ctx.Pool(
             processes=pool_size,
             initializer=worker_initializer,
-            initargs=(index, features_for_worker),
+            initargs=(index, features_for_worker, worker_log_level),
         ) as pool:
             for smoothed_lines, presmoothed_lines in pool.imap(
                 process_seq_chunk,

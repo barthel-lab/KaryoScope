@@ -54,6 +54,7 @@ flanking context for each sequence.
 from __future__ import annotations
 
 import gzip
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,8 @@ from typing import IO
 from karyoscope.core.io.features import NOVEL_NAME, Features
 from karyoscope.core.io.hierarchy import REQUIRED_ROOT, Hierarchy
 from karyoscope.exceptions import KaryoscopeError
+
+logger = logging.getLogger(__name__)
 
 
 class SmoothError(KaryoscopeError):
@@ -198,6 +201,7 @@ def smooth_intervals(
     index: HierarchyIndex,
     *,
     max_gap: int = DEFAULT_MAX_GAP,
+    out_stats: dict[str, int] | None = None,
 ) -> list[Interval]:
     """Promote noisy intermediate intervals to their LCA with flankers.
 
@@ -216,6 +220,13 @@ def smooth_intervals(
     max_gap
         Maximum BED-coordinate gap between two intervals for them to
         be considered "flanking" for smoothing.
+    out_stats
+        Optional mutable dict the function populates with diagnostic
+        counters. When provided, on return it carries:
+        ``{"passes": int}`` -- the number of fixed-point iterations
+        actually executed (always >= 1; converges when an iteration
+        makes no changes). Useful for debugging perf, e.g. confirming
+        the algorithm isn't pathologically iterating.
     """
     if not intervals:
         return []
@@ -232,7 +243,9 @@ def smooth_intervals(
         for iv in intervals
     ]
 
+    pass_count = 0
     while True:
+        pass_count += 1
         changes_made = False
         i = 0
         was_related = [False] * len(work)
@@ -330,6 +343,8 @@ def smooth_intervals(
         if not changes_made:
             break
 
+    if out_stats is not None:
+        out_stats["passes"] = pass_count
     return work
 
 
@@ -437,12 +452,34 @@ def make_features_for_worker(features: Features, feature_set: str) -> FeaturesFo
 def worker_initializer(
     index: HierarchyIndex,
     features_for_worker: FeaturesForWorker,
+    log_level: int = logging.WARNING,
 ) -> None:
     """Initialise a multiprocessing-pool worker.
 
     Sets the per-worker globals used by :func:`process_seq_chunk`.
     Pickling cost is paid once per worker, not once per chunk.
+
+    Also installs a stderr log handler in the worker process. With
+    the ``spawn`` context (which is what :mod:`karyoscope.core.annotate`
+    uses), the worker is a fresh Python process with no logging
+    configuration; without this step ``logger.info`` calls inside
+    workers vanish into the void. The handler format matches the
+    main process's ``-v`` / ``-vv`` format plus a worker-PID tag so
+    interleaved lines from multiple workers are distinguishable.
     """
+    import sys
+
+    handler = logging.StreamHandler(stream=sys.stderr)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s [worker %(process)d] %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(log_level)
+
     global _worker_index, _worker_features, _worker_feature_set
     _worker_index = index
     _worker_features = features_for_worker
@@ -491,15 +528,35 @@ def process_seq_chunk(
     def flush() -> None:
         if not current_intervals:
             return
+        import time as _time
+
+        t0 = _time.perf_counter()
+        n_in = len(current_intervals)
         # Presmoothed: just merge adjacent same-feature runs.
         merged_pre = merge_adjacent(current_intervals, root)
         for iv in merged_pre:
             presmoothed_out.append(_render_for_output(iv, root))
         # Smoothed: run the algorithm, then re-merge.
-        smoothed = smooth_intervals(current_intervals, index)
+        stats: dict[str, int] = {}
+        smoothed = smooth_intervals(current_intervals, index, out_stats=stats)
         merged_post = merge_adjacent(smoothed, root)
         for iv in merged_post:
             smoothed_out.append(_render_for_output(iv, root))
+        # Per-sequence progress log. Visible at -v (INFO) and above;
+        # critical for diagnosing per-chromosome smoothing perf on
+        # whole-genome runs where the pool can otherwise look hung.
+        dt = _time.perf_counter() - t0
+        passes = stats.get("passes", 0)
+        logger.info(
+            "smoothed %s/%s: %d intervals -> %d in %.1fs (%d pass%s)",
+            _worker_feature_set,
+            current_seq,
+            n_in,
+            len(smoothed),
+            dt,
+            passes,
+            "" if passes == 1 else "es",
+        )
 
     for raw in chunk:
         line = raw.rstrip("\n")
