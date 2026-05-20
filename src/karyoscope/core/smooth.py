@@ -44,17 +44,33 @@ Two sentinels at output time:
 
 Concurrency: this module exposes :func:`process_seq_chunk` as the
 per-worker entry point for ``multiprocessing.Pool``. Workers are
-initialised with the shared :class:`HierarchyIndex` and id-to-name
-table via :func:`worker_initializer`. The chunk-flushing boundary is
-the sequence id (the BED's first column): a chunk always contains
-complete sequences, never a fragment, because smoothing needs the full
-flanking context for each sequence.
+initialised once via :func:`worker_initializer` with the full set of
+``(HierarchyIndex, FeaturesForWorker)`` pairs -- one per requested
+feature set -- so a single pool can produce all output BEDs in one
+streaming pass over the combined BED rather than re-spawning per
+feature set. The chunk-flushing boundary is the sequence id (the
+BED's first column): a chunk always contains complete sequences,
+never a fragment, because smoothing needs the full flanking context
+for each sequence.
+
+In *assembly mode* (the default; ``preserve_input_order=True`` in
+:func:`karyoscope.core.annotate.annotate`) workers also receive a
+per-feature-set temp directory and write their smoothed /
+presmoothed output for each ``(feature_set, sequence)`` pair
+directly to disk -- the worker returns only small line-count
+metadata, avoiding the multi-GB IPC transfer that would otherwise
+occur for whole-chromosome chunks. In *reads mode*
+(``preserve_input_order=False``, intended for FASTQ/long-read input
+with millions of small sequences) workers return the output lines
+in a dict and the main process writes them straight to a single
+per-feature-set BED.
 """
 
 from __future__ import annotations
 
 import gzip
 import logging
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -410,11 +426,17 @@ def _render_for_output(iv: Interval, root: str) -> str:
 # --- Worker entry point for multiprocessing --------------------------
 
 # These globals are populated by worker_initializer on each Pool worker
-# process. Workers can't pickle the HierarchyIndex's caches efficiently
-# through every imap call, so we share the constants once per worker.
-_worker_index: HierarchyIndex | None = None
-_worker_features: FeaturesForWorker | None = None
-_worker_feature_set: str | None = None
+# process. Workers can't pickle the HierarchyIndex caches through every
+# imap call cheaply, so we share constants once per worker. All
+# requested feature sets live in the worker simultaneously -- the
+# single-pool architecture (see module docstring) processes each chunk
+# for every feature set in one invocation.
+_worker_indices: dict[str, HierarchyIndex] | None = None
+_worker_features_by_fs: dict[str, FeaturesForWorker] | None = None
+_worker_feature_sets: list[str] | None = None
+# Set in assembly mode (per-(fs, seq) temp files); ``None`` in reads
+# mode (worker returns output lines via IPC).
+_worker_tmpdir_by_fs: dict[str, Path] | None = None
 
 
 # A trimmed worker-friendly view of the features table. We hold it as a
@@ -449,23 +471,60 @@ def make_features_for_worker(features: Features, feature_set: str) -> FeaturesFo
     )
 
 
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def safe_filename(seq_name: str) -> str:
+    """Sanitise a FASTA sequence name for use as a path component.
+
+    Replaces any character outside ``[A-Za-z0-9_.-]`` with ``_``.
+    Real FASTA sequence names from human assemblies are already
+    filesystem-safe (``chr1_MATERNAL`` etc.); the regex defends
+    against the occasional ``/``, space, or pipe character that
+    would otherwise break the per-(feature_set, sequence) temp file
+    paths the assembly-mode worker writes to.
+
+    Two distinct sequence names sanitising to the same filename
+    would silently concatenate their output. Real genomes don't hit
+    this; the main process raises if it detects a collision while
+    enumerating input sequences.
+    """
+    return _SAFE_FILENAME_RE.sub("_", seq_name)
+
+
 def worker_initializer(
-    index: HierarchyIndex,
-    features_for_worker: FeaturesForWorker,
+    indices: dict[str, HierarchyIndex],
+    features_by_fs: dict[str, FeaturesForWorker],
+    feature_sets: list[str],
+    tmpdir_by_fs: dict[str, Path] | None,
     log_level: int = logging.WARNING,
 ) -> None:
-    """Initialise a multiprocessing-pool worker.
+    """Initialise a multiprocessing-pool worker for the single-pool path.
 
-    Sets the per-worker globals used by :func:`process_seq_chunk`.
-    Pickling cost is paid once per worker, not once per chunk.
+    Workers process every requested feature set per chunk, so all of
+    the per-feature-set state (``HierarchyIndex`` + ``FeaturesForWorker``)
+    arrives once via the ``initargs`` rather than per chunk. The
+    ``feature_sets`` argument fixes the iteration order so the worker
+    visits feature sets in a deterministic order across chunks.
 
-    Also installs a stderr log handler in the worker process. With
-    the ``spawn`` context (which is what :mod:`karyoscope.core.annotate`
-    uses), the worker is a fresh Python process with no logging
-    configuration; without this step ``logger.info`` calls inside
-    workers vanish into the void. The handler format matches the
-    main process's ``-v`` / ``-vv`` format plus a worker-PID tag so
-    interleaved lines from multiple workers are distinguishable.
+    ``tmpdir_by_fs`` selects the output mode:
+
+    * **dict**: assembly mode. The worker writes each
+      ``(feature_set, sequence)`` pair's smoothed / presmoothed BED
+      lines directly to ``{tmpdir_by_fs[fs]}/{safe_seq_name}.smo`` /
+      ``.pre``, and returns only ``{fs: {seq: (n_pre, n_smo)}}``
+      line counts. Avoids the multi-GB IPC transfer that whole-chr
+      chunks would otherwise produce.
+    * **None**: reads mode. The worker returns
+      ``{fs: {seq: (smo_lines, pre_lines)}}`` for the main process
+      to write. Reads produce small per-chunk outputs so IPC is
+      cheap; the absence of input-order tracking is acceptable
+      because read order isn't meaningful in FASTQ/long-read input.
+
+    Also installs a stderr log handler in the worker. With the
+    ``spawn`` context (which :mod:`karyoscope.core.annotate` uses),
+    the worker is a fresh Python process with no logging
+    configuration; without this step ``logger.info`` calls vanish.
     """
     import sys
 
@@ -480,124 +539,51 @@ def worker_initializer(
     root.handlers = [handler]
     root.setLevel(log_level)
 
-    global _worker_index, _worker_features, _worker_feature_set
-    _worker_index = index
-    _worker_features = features_for_worker
-    _worker_feature_set = features_for_worker.feature_set
+    global _worker_indices, _worker_features_by_fs
+    global _worker_feature_sets, _worker_tmpdir_by_fs
+    _worker_indices = indices
+    _worker_features_by_fs = features_by_fs
+    _worker_feature_sets = list(feature_sets)
+    _worker_tmpdir_by_fs = tmpdir_by_fs
 
 
-def process_seq_chunk(
-    chunk: list[str],
-) -> dict[str, tuple[list[str], list[str]]]:
-    """Smooth one chunk of combined-BED lines for one feature set.
+def _smooth_one_seq_for_fs(
+    seq_name: str,
+    intervals_raw: list[tuple[int, int, int]],
+    feature_set: str,
+    index: HierarchyIndex,
+    features: FeaturesForWorker,
+) -> tuple[list[str], list[str]]:
+    """Smooth one sequence for one feature set; return (smo, pre) lines.
 
-    The chunk must consist of complete sequences (no fragments).
-    Input lines are 4-column combined BED records with the integer
-    feature id in column 4 (the C++ binary's output format).
+    Translates raw ``(start, end, feature_id)`` tuples to FS-specific
+    :class:`Interval` objects, runs the merge / smooth / merge pipeline,
+    renders to BED lines, and logs per-sequence progress at ``INFO``.
 
-    Returns ``{seq_name: (smoothed_lines, presmoothed_lines)}`` --
-    one entry per complete sequence in the chunk, each value a pair
-    of newline-terminated BED line lists ready for the caller to
-    write. Keyed per-sequence so the main process can route each
-    sequence's output to a per-sequence temp file (for
-    ``preserve_input_order=True`` in
-    :func:`karyoscope.core.annotate._smooth_one_feature_set`) or to
-    a single combined file regardless of dict-iteration order.
-
-    The archive smoothing treats novel intervals (id 0) as the root
-    sentinel during the algorithm (``id_map['0'] = root``) and renames
-    ``root + is_novel`` back to ``"novel"`` at output. We do the same:
-    id 0 becomes the root internally and is unprojected to
-    :data:`karyoscope.core.io.features.NOVEL_NAME` in
-    :func:`_render_for_output`.
+    Pulled out of :func:`process_seq_chunk` so the worker can iterate
+    over feature sets while letting Python free each FS's intermediate
+    state (Interval list + smoothing scratch) between iterations.
     """
-    if _worker_index is None or _worker_features is None:
-        raise SmoothError("worker_initializer was not called; cannot process chunk")
-    index = _worker_index
-    features = _worker_features
+    import time as _time
+
+    t0 = _time.perf_counter()
     root = index.root
+    id_to_name = features.id_to_name
 
-    out: dict[str, tuple[list[str], list[str]]] = {}
-
-    current_seq: str | None = None
-    current_intervals: list[Interval] = []
-
-    def flush() -> None:
-        if not current_intervals or current_seq is None:
-            return
-        import time as _time
-
-        t0 = _time.perf_counter()
-        n_in = len(current_intervals)
-        # Presmoothed: just merge adjacent same-feature runs.
-        merged_pre = merge_adjacent(current_intervals, root)
-        pre_lines = [_render_for_output(iv, root) for iv in merged_pre]
-        # Smoothed: run the algorithm, then re-merge.
-        stats: dict[str, int] = {}
-        smoothed = smooth_intervals(current_intervals, index, out_stats=stats)
-        merged_post = merge_adjacent(smoothed, root)
-        smo_lines = [_render_for_output(iv, root) for iv in merged_post]
-        out[current_seq] = (smo_lines, pre_lines)
-        # Per-sequence progress log. Visible at -v (INFO) and above;
-        # critical for diagnosing per-chromosome smoothing perf on
-        # whole-genome runs where the pool can otherwise look hung.
-        # The "->" reports the post-merge output line counts (what
-        # actually ends up in the BED) so the compression ratio is
-        # visible (e.g. 11M raw intervals -> 8k merged smoothed lines).
-        dt = _time.perf_counter() - t0
-        passes = stats.get("passes", 0)
-        logger.info(
-            "smoothed %s/%s: %d intervals -> %d presmoothed, %d smoothed in %.1fs (%d pass%s)",
-            _worker_feature_set,
-            current_seq,
-            n_in,
-            len(pre_lines),
-            len(smo_lines),
-            dt,
-            passes,
-            "" if passes == 1 else "es",
-        )
-
-    for raw in chunk:
-        line = raw.rstrip("\n")
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("\t")
-        if len(parts) < 4:
-            raise SmoothError(f"malformed line in chunk (need at least 4 columns): {raw!r}")
-        seq_name = parts[0]
-        try:
-            start = int(parts[1])
-            end = int(parts[2])
-            feature_id = int(parts[3])
-        except ValueError as e:
-            raise SmoothError(f"non-integer field in chunk line: {raw!r}") from e
-
-        if seq_name != current_seq:
-            flush()
-            current_seq = seq_name
-            current_intervals = []
-
-        # Translate the feature id to a hierarchy node label. id 0 is
-        # the novel sentinel; ids >0 should be in the table (the
-        # main-process annotate() function verifies the features file
-        # is consistent with the index before kicking off workers, but
-        # we still raise rather than silently mislabel if an id
-        # slipped through).
-        if feature_id == 0:
+    intervals: list[Interval] = []
+    for start, end, fid in intervals_raw:
+        if fid == 0:
             internal_label = root
             is_novel = True
         else:
-            name = features.id_to_name.get(feature_id)
+            name = id_to_name.get(fid)
             if name is None:
                 raise SmoothError(
-                    f"feature id {feature_id} not in features.tsv for "
-                    f"feature set {features.feature_set!r}"
+                    f"feature id {fid} not in features.tsv for feature set {feature_set!r}"
                 )
             internal_label = name
             is_novel = False
-
-        current_intervals.append(
+        intervals.append(
             Interval(
                 seq_name=seq_name,
                 start=start,
@@ -607,7 +593,125 @@ def process_seq_chunk(
             )
         )
 
-    flush()
+    n_in = len(intervals)
+    merged_pre = merge_adjacent(intervals, root)
+    pre_lines = [_render_for_output(iv, root) for iv in merged_pre]
+    stats: dict[str, int] = {}
+    smoothed = smooth_intervals(intervals, index, out_stats=stats)
+    merged_post = merge_adjacent(smoothed, root)
+    smo_lines = [_render_for_output(iv, root) for iv in merged_post]
+
+    dt = _time.perf_counter() - t0
+    passes = stats.get("passes", 0)
+    logger.info(
+        "smoothed %s/%s: %d intervals -> %d presmoothed, %d smoothed in %.1fs (%d pass%s)",
+        feature_set,
+        seq_name,
+        n_in,
+        len(pre_lines),
+        len(smo_lines),
+        dt,
+        passes,
+        "" if passes == 1 else "es",
+    )
+    return smo_lines, pre_lines
+
+
+def process_seq_chunk(
+    chunk: list[str],
+) -> dict[str, dict[str, tuple[int, int] | tuple[list[str], list[str]]]]:
+    """Smooth one chunk of combined-BED lines for *every* feature set.
+
+    The chunk must consist of complete sequences (no fragments).
+    Input lines are 4-column combined BED records with the integer
+    feature id in column 4 (the C++ binary's output format).
+
+    The chunk is parsed *once* into per-sequence raw
+    ``(start, end, feature_id)`` tuples; then for each sequence the
+    function iterates over every requested feature set, building an
+    FS-specific :class:`Interval` list and running the smoothing
+    pipeline. Letting each FS's intermediate state go out of scope
+    between iterations keeps peak worker RAM bounded by one FS's
+    working set rather than ``N_fs x`` that.
+
+    Return type depends on the mode set in :func:`worker_initializer`:
+
+    * **Assembly mode** (``_worker_tmpdir_by_fs`` is a dict): for each
+      ``(fs, seq)`` the BED lines are written directly to
+      ``{tmpdir}/{safe_seq_name}.smo`` / ``.pre``. The return value
+      is ``{fs: {seq: (n_pre_lines, n_smo_lines)}}`` -- counts only,
+      so IPC stays microscopic regardless of chr1-sized output.
+    * **Reads mode** (``_worker_tmpdir_by_fs`` is ``None``): returns
+      ``{fs: {seq: (smo_lines, pre_lines)}}``. Reads produce small
+      per-chunk outputs so this is cheap to transfer.
+
+    Novel feature ids (id 0) are mapped to the hierarchy root
+    sentinel internally during smoothing; :func:`_render_for_output`
+    rewrites them back to :data:`karyoscope.core.io.features.NOVEL_NAME`
+    so users never see the internal sentinel.
+    """
+    if _worker_indices is None or _worker_features_by_fs is None or _worker_feature_sets is None:
+        raise SmoothError("worker_initializer was not called; cannot process chunk")
+    indices = _worker_indices
+    features_by_fs = _worker_features_by_fs
+    feature_sets = _worker_feature_sets
+    tmpdir_by_fs = _worker_tmpdir_by_fs
+
+    # Phase 1: parse the chunk into per-sequence raw intervals.
+    # Holding tuples (24 bytes each + python overhead) instead of
+    # full Interval objects (~150 bytes each) keeps the parsed-but-
+    # not-yet-smoothed state small. The per-FS Interval list is
+    # built lazily inside the smoothing loop.
+    by_seq: dict[str, list[tuple[int, int, int]]] = {}
+    seq_order: list[str] = []
+    for raw in chunk:
+        line = raw.rstrip("\n")
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 4:
+            raise SmoothError(f"malformed line in chunk (need at least 4 columns): {raw!r}")
+        try:
+            start = int(parts[1])
+            end = int(parts[2])
+            feature_id = int(parts[3])
+        except ValueError as e:
+            raise SmoothError(f"non-integer field in chunk line: {raw!r}") from e
+        seq_name = parts[0]
+        bucket = by_seq.get(seq_name)
+        if bucket is None:
+            bucket = []
+            by_seq[seq_name] = bucket
+            seq_order.append(seq_name)
+        bucket.append((start, end, feature_id))
+
+    # Phase 2: per-sequence, per-feature-set smoothing.
+    out: dict[str, dict[str, tuple[int, int] | tuple[list[str], list[str]]]] = {
+        fs: {} for fs in feature_sets
+    }
+    for seq in seq_order:
+        intervals_raw = by_seq.pop(seq)
+        for fs in feature_sets:
+            smo_lines, pre_lines = _smooth_one_seq_for_fs(
+                seq_name=seq,
+                intervals_raw=intervals_raw,
+                feature_set=fs,
+                index=indices[fs],
+                features=features_by_fs[fs],
+            )
+            if tmpdir_by_fs is not None:
+                # Assembly mode: write directly, return counts only.
+                fs_dir = tmpdir_by_fs[fs]
+                safe = safe_filename(seq)
+                if smo_lines:
+                    with (fs_dir / f"{safe}.smo").open("a") as f:
+                        f.writelines(smo_lines)
+                if pre_lines:
+                    with (fs_dir / f"{safe}.pre").open("a") as f:
+                        f.writelines(pre_lines)
+                out[fs][seq] = (len(pre_lines), len(smo_lines))
+            else:
+                out[fs][seq] = (smo_lines, pre_lines)
     return out
 
 

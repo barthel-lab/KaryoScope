@@ -50,6 +50,7 @@ from karyoscope.core.smooth import (
     chunked_seq_reader,
     make_features_for_worker,
     process_seq_chunk,
+    safe_filename,
     worker_initializer,
 )
 from karyoscope.exceptions import (
@@ -349,56 +350,61 @@ def _spawn_pool_watchdog(
     return stop_event
 
 
-def _smooth_one_feature_set(
+def _smooth_all_feature_sets(
     *,
     combined_bed: Path,
-    feature_set: str,
+    feature_sets: list[str],
     features: Features,
-    index: HierarchyIndex,
-    presmoothed_path: Path | None,
-    smoothed_path: Path | None,
+    indices: dict[str, HierarchyIndex],
+    presmoothed_paths: dict[str, Path],
+    smoothed_paths: dict[str, Path],
     threads: int,
     chunk_size: int = 50000,
     preserve_input_order: bool = True,
 ) -> None:
-    """Stream ``combined_bed`` through a worker pool, writing per-set BEDs.
+    """Stream ``combined_bed`` through ONE pool that handles every FS.
 
-    ``presmoothed_path`` and ``smoothed_path`` are independently
-    optional -- pass ``None`` for either to skip writing it. At least
-    one must be set; the caller is responsible for not calling this
-    function with both ``None``.
+    Replaces the legacy per-feature-set pool loop. Each worker is
+    initialised with the full ``{fs: HierarchyIndex}`` /
+    ``{fs: FeaturesForWorker}`` state up front, parses each chunk
+    once, and runs the smoothing pipeline for every requested
+    feature set on each sequence in the chunk.
 
-    The worker pool is sized at ``threads`` (or auto via
-    ``os.cpu_count()`` when ``threads <= 0``). Workers are initialised
-    once with the shared :class:`HierarchyIndex` and a per-set
-    :class:`FeaturesForWorker` projection; each chunk arrives as a
-    list of combined-BED lines that the worker translates, smooths,
-    and returns keyed per-sequence.
+    Wins over the per-FS loop:
 
-    Two output codepaths, selected by ``preserve_input_order``:
+    * One pool spawn instead of one per feature set (saves ~30 s x
+      ``N_fs-1`` of process startup + initargs unpickle on whole-
+      genome inputs).
+    * One pass over ``combined_bed`` instead of one per feature set
+      (saves ``N_fs-1`` x I/O of a multi-GB combined BED).
+    * No inter-feature-set idle gaps (previously ~2 min per
+      transition on HG002 while the old pool drained, temp files
+      were concatenated, and the next pool initialised).
 
-    * **True (default)** -- *assembly mode*. Each worker's
-      per-sequence results stream into a per-sequence temp file in a
-      :class:`tempfile.TemporaryDirectory`. After the pool drains,
-      the temp files are concatenated in input-sequence order to
-      produce the final BED. ``pool.imap_unordered`` is used so the
-      slowest chunk (chr1, typically) doesn't queue up GB-scale
-      results from finished chunks in the IPC pipe. Output is
-      byte-identical to the old ``pool.imap`` codepath; memory peak
-      drops to ~ workers x one chunk's worth.
+    ``presmoothed_paths`` and ``smoothed_paths`` are each
+    ``{feature_set: path}``; either may be empty (when
+    ``--no-keep-presmoothed`` / ``--no-smooth``) but not both. The
+    caller is responsible for that check.
 
-    * **False** -- *reads mode*. ``pool.imap_unordered`` straight
-      through to the output file, no temp files. Use for inputs
-      with millions of small sequences (long-read FASTA, future
-      FASTQ/BAM) where per-sequence temp files aren't feasible
-      (file-descriptor limits, syscall overhead) and the user
-      doesn't care about input order in the output BED.
+    Selected by ``preserve_input_order``:
+
+    * **True (default)** -- *assembly mode*. Workers write each
+      ``(fs, seq)`` pair's output directly to a per-feature-set temp
+      directory; the main process concatenates the per-sequence
+      files in input-FASTA order at the end. Output is
+      byte-equivalent to the legacy per-FS code.
+    * **False** -- *reads mode*. Workers return output lines via
+      IPC; the main process appends to per-feature-set BEDs in
+      worker-completion order. Cheap because reads produce small
+      per-chunk outputs.
     """
-    if presmoothed_path is None and smoothed_path is None:
-        raise KaryoscopeError("internal error: _smooth_one_feature_set called with no output paths")
+    if not presmoothed_paths and not smoothed_paths:
+        raise KaryoscopeError(
+            "internal error: _smooth_all_feature_sets called with no output paths"
+        )
 
     pool_size = threads if threads > 0 else (os.cpu_count() or 1)
-    features_for_worker = make_features_for_worker(features, feature_set)
+    features_by_fs = {fs: make_features_for_worker(features, fs) for fs in feature_sets}
 
     ctx = mp.get_context("spawn")
     # Inherit the main process's root log level so worker INFO lines
@@ -409,24 +415,26 @@ def _smooth_one_feature_set(
     if preserve_input_order:
         _smooth_with_per_sequence_tempfiles(
             combined_bed=combined_bed,
-            presmoothed_path=presmoothed_path,
-            smoothed_path=smoothed_path,
+            feature_sets=feature_sets,
+            indices=indices,
+            features_by_fs=features_by_fs,
+            presmoothed_paths=presmoothed_paths,
+            smoothed_paths=smoothed_paths,
             ctx=ctx,
             pool_size=pool_size,
-            index=index,
-            features_for_worker=features_for_worker,
             worker_log_level=worker_log_level,
             chunk_size=chunk_size,
         )
     else:
         _smooth_streaming_unordered(
             combined_bed=combined_bed,
-            presmoothed_path=presmoothed_path,
-            smoothed_path=smoothed_path,
+            feature_sets=feature_sets,
+            indices=indices,
+            features_by_fs=features_by_fs,
+            presmoothed_paths=presmoothed_paths,
+            smoothed_paths=smoothed_paths,
             ctx=ctx,
             pool_size=pool_size,
-            index=index,
-            features_for_worker=features_for_worker,
             worker_log_level=worker_log_level,
             chunk_size=chunk_size,
         )
@@ -435,29 +443,30 @@ def _smooth_one_feature_set(
 def _smooth_streaming_unordered(
     *,
     combined_bed: Path,
-    presmoothed_path: Path | None,
-    smoothed_path: Path | None,
+    feature_sets: list[str],
+    indices: dict[str, HierarchyIndex],
+    features_by_fs: dict,
+    presmoothed_paths: dict[str, Path],
+    smoothed_paths: dict[str, Path],
     ctx,
     pool_size: int,
-    index: HierarchyIndex,
-    features_for_worker,
     worker_log_level: int,
     chunk_size: int,
 ) -> None:
-    """Reads-mode smoothing: ``imap_unordered`` direct to output files.
+    """Reads-mode smoothing: ``imap_unordered`` direct to per-FS BEDs.
 
-    Sequences appear in the output BED in the order their workers
-    finished, not input order. Acceptable when the caller has set
+    Sequences appear in each output BED in worker-completion order,
+    not input order. Acceptable when the caller has set
     ``preserve_input_order=False`` (i.e. input is sequencing reads,
     not an assembly, and order is irrelevant downstream).
     """
-    pre_handle = presmoothed_path.open("w") if presmoothed_path is not None else None
-    smo_handle = smoothed_path.open("w") if smoothed_path is not None else None
+    pre_handles = {fs: presmoothed_paths[fs].open("w") for fs in presmoothed_paths}
+    smo_handles = {fs: smoothed_paths[fs].open("w") for fs in smoothed_paths}
     try:
         with ctx.Pool(
             processes=pool_size,
             initializer=worker_initializer,
-            initargs=(index, features_for_worker, worker_log_level),
+            initargs=(indices, features_by_fs, feature_sets, None, worker_log_level),
         ) as pool:
             stop_event = _spawn_pool_watchdog(pool)
             try:
@@ -465,45 +474,53 @@ def _smooth_streaming_unordered(
                     process_seq_chunk,
                     chunked_seq_reader(combined_bed, chunk_size),
                 ):
-                    # chunk_result: {seq_name: (smoothed_lines, presmoothed_lines)}
-                    for _seq, (smo_lines, pre_lines) in chunk_result.items():
-                        if pre_handle is not None:
-                            pre_handle.writelines(pre_lines)
-                        if smo_handle is not None:
-                            smo_handle.writelines(smo_lines)
+                    # chunk_result: {fs: {seq: (smoothed_lines, presmoothed_lines)}}
+                    for fs, per_seq in chunk_result.items():
+                        pre_h = pre_handles.get(fs)
+                        smo_h = smo_handles.get(fs)
+                        for _seq, (smo_lines, pre_lines) in per_seq.items():
+                            if pre_h is not None:
+                                pre_h.writelines(pre_lines)
+                            if smo_h is not None:
+                                smo_h.writelines(smo_lines)
             finally:
                 stop_event.set()
     finally:
-        if pre_handle is not None:
-            pre_handle.close()
-        if smo_handle is not None:
-            smo_handle.close()
+        for h in pre_handles.values():
+            h.close()
+        for h in smo_handles.values():
+            h.close()
 
 
 def _smooth_with_per_sequence_tempfiles(
     *,
     combined_bed: Path,
-    presmoothed_path: Path | None,
-    smoothed_path: Path | None,
+    feature_sets: list[str],
+    indices: dict[str, HierarchyIndex],
+    features_by_fs: dict,
+    presmoothed_paths: dict[str, Path],
+    smoothed_paths: dict[str, Path],
     ctx,
     pool_size: int,
-    index: HierarchyIndex,
-    features_for_worker,
     worker_log_level: int,
     chunk_size: int,
 ) -> None:
-    """Assembly-mode smoothing: per-sequence temp files + concat in input order.
+    """Assembly-mode smoothing: workers write per-(fs, seq) temp files.
 
-    ``pool.imap_unordered`` keeps memory bounded (no GB-scale result
-    queue waiting on the slowest chunk to finish). Per-sequence
-    output streams to its own temp file; at the end we concatenate
-    the temp files in input-sequence order. Output is byte-identical
-    to the legacy ``pool.imap`` codepath.
+    Workers write each ``(feature_set, sequence)`` pair's smoothed /
+    presmoothed BED lines directly to
+    ``{tmpdir}/{fs}/{safe_seq_name}.smo`` / ``.pre`` and return only
+    line-count metadata, avoiding the multi-GB IPC transfer that
+    whole-chromosome chunks would otherwise produce. At the end the
+    main process concatenates the per-sequence files in input-FASTA
+    order to produce each feature set's final BED.
 
     Input sequence order is captured at dispatch time: we wrap
     :func:`chunked_seq_reader` with a peek-and-yield generator that
     records each chunk's sequence names before yielding the chunk
-    to the pool.
+    to the pool. Collisions between distinct seq names that sanitise
+    to the same filename component are detected here (real genomes
+    don't trigger this).
     """
     import shutil
     import tempfile
@@ -511,13 +528,17 @@ def _smooth_with_per_sequence_tempfiles(
     # Temp dir lives next to the output so cleanup happens on the
     # same filesystem (no cross-device shutil.copy cost) and so the
     # temp dir is on /scratch when the output is.
-    anchor = smoothed_path if smoothed_path is not None else presmoothed_path
-    assert anchor is not None  # guarded by the caller check above
+    anchor = (
+        next(iter(smoothed_paths.values()))
+        if smoothed_paths
+        else next(iter(presmoothed_paths.values()))
+    )
     out_dir = anchor.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
     input_seq_order: list[str] = []
     seen_seqs: set[str] = set()
+    safe_to_orig: dict[str, str] = {}
 
     def _record_and_yield():
         """Peek each chunk for sequence names, record in input order, yield."""
@@ -527,56 +548,69 @@ def _smooth_with_per_sequence_tempfiles(
                 if seq and seq not in seen_seqs:
                     seen_seqs.add(seq)
                     input_seq_order.append(seq)
+                    safe = safe_filename(seq)
+                    existing = safe_to_orig.get(safe)
+                    if existing is not None and existing != seq:
+                        raise KaryoscopeError(
+                            f"sequence names {existing!r} and {seq!r} both "
+                            f"sanitise to the same temp-file path component "
+                            f"{safe!r}. Rename one of the inputs."
+                        )
+                    safe_to_orig[safe] = seq
             yield chunk
 
-    # Per-sequence temp file paths, opened lazily on first write.
     with tempfile.TemporaryDirectory(prefix="ks_smooth_", dir=out_dir) as tmpdir_str:
         tmpdir = Path(tmpdir_str)
-        smo_temps: dict[str, Path] = {}
-        pre_temps: dict[str, Path] = {}
+        tmpdir_by_fs = {fs: tmpdir / fs for fs in feature_sets}
+        for fs_dir in tmpdir_by_fs.values():
+            fs_dir.mkdir(parents=True, exist_ok=True)
 
         with ctx.Pool(
             processes=pool_size,
             initializer=worker_initializer,
-            initargs=(index, features_for_worker, worker_log_level),
+            initargs=(
+                indices,
+                features_by_fs,
+                feature_sets,
+                tmpdir_by_fs,
+                worker_log_level,
+            ),
         ) as pool:
             stop_event = _spawn_pool_watchdog(pool)
             try:
-                for chunk_result in pool.imap_unordered(
+                # Drain the iterator -- workers have already written
+                # the per-(fs, seq) files; we just need to consume the
+                # metadata returns to drive imap_unordered to completion.
+                for _chunk_meta in pool.imap_unordered(
                     process_seq_chunk,
                     _record_and_yield(),
                 ):
-                    for seq, (smo_lines, pre_lines) in chunk_result.items():
-                        if smoothed_path is not None and smo_lines:
-                            if seq not in smo_temps:
-                                smo_temps[seq] = tmpdir / f"{len(smo_temps):08d}.smo"
-                            with smo_temps[seq].open("a") as f:
-                                f.writelines(smo_lines)
-                        if presmoothed_path is not None and pre_lines:
-                            if seq not in pre_temps:
-                                pre_temps[seq] = tmpdir / f"{len(pre_temps):08d}.pre"
-                            with pre_temps[seq].open("a") as f:
-                                f.writelines(pre_lines)
+                    pass
             finally:
                 stop_event.set()
 
-        # Concatenate temp files in input sequence order.
-        if smoothed_path is not None:
-            with smoothed_path.open("wb") as out_h:
-                for seq in input_seq_order:
-                    p = smo_temps.get(seq)
-                    if p is None:
-                        continue
-                    with p.open("rb") as src:
-                        shutil.copyfileobj(src, out_h)
-        if presmoothed_path is not None:
-            with presmoothed_path.open("wb") as out_h:
-                for seq in input_seq_order:
-                    p = pre_temps.get(seq)
-                    if p is None:
-                        continue
-                    with p.open("rb") as src:
-                        shutil.copyfileobj(src, out_h)
+        # Concatenate per-(fs, seq) temp files in input sequence order
+        # to produce each feature set's final BEDs.
+        for fs in feature_sets:
+            fs_dir = tmpdir_by_fs[fs]
+            smo_path = smoothed_paths.get(fs)
+            pre_path = presmoothed_paths.get(fs)
+            if smo_path is not None:
+                with smo_path.open("wb") as out_h:
+                    for seq in input_seq_order:
+                        p = fs_dir / f"{safe_filename(seq)}.smo"
+                        if not p.exists():
+                            continue
+                        with p.open("rb") as src:
+                            shutil.copyfileobj(src, out_h)
+            if pre_path is not None:
+                with pre_path.open("wb") as out_h:
+                    for seq in input_seq_order:
+                        p = fs_dir / f"{safe_filename(seq)}.pre"
+                        if not p.exists():
+                            continue
+                        with p.open("rb") as src:
+                            shutil.copyfileobj(src, out_h)
         # tmpdir cleaned up automatically on context manager exit
 
 
@@ -744,27 +778,29 @@ def annotate(
         {fs: output_dir / f"{prefix}.{fs}.smoothed.bed" for fs in requested} if smooth else {}
     )
 
-    # Run the per-feature-set pass. When smoothing is on we go through
-    # the worker pool; when smoothing is off we use the simpler
-    # in-process splitter (no need to fork workers for a one-line
-    # translation).
+    # Run the smoothing pass. One pool initialised with every
+    # requested feature set's state; each chunk is processed for all
+    # feature sets in one worker invocation. See
+    # :func:`_smooth_all_feature_sets` for the architectural rationale.
+    # When smoothing is off we use the simpler in-process splitter
+    # (no need to fork workers for a one-line translation).
     if smooth:
         logger.debug(
-            "smoothing pass with threads=%d, preserve_input_order=%s",
+            "smoothing pass with threads=%d, preserve_input_order=%s, feature_sets=%s",
             threads,
             preserve_input_order,
+            requested,
         )
-        for fs in requested:
-            _smooth_one_feature_set(
-                combined_bed=combined_bed,
-                feature_set=fs,
-                features=features,
-                index=indices[fs],
-                presmoothed_path=presmoothed_paths.get(fs),
-                smoothed_path=smoothed_paths.get(fs),
-                threads=threads,
-                preserve_input_order=preserve_input_order,
-            )
+        _smooth_all_feature_sets(
+            combined_bed=combined_bed,
+            feature_sets=requested,
+            features=features,
+            indices=indices,
+            presmoothed_paths=presmoothed_paths,
+            smoothed_paths=smoothed_paths,
+            threads=threads,
+            preserve_input_order=preserve_input_order,
+        )
     else:
         # Only presmoothed output, no smoothing.
         _split_combined_bed(combined_bed, requested, features, presmoothed_paths)

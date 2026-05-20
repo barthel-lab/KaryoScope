@@ -693,6 +693,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit-test workflow fast and friendly for Python-only contributors,
   while still ensuring the full pipeline is exercised in CI.
 
+### Changed
+- ``karyoscope annotate`` smoothing is now driven by **one worker pool
+  for all feature sets**, replacing the previous per-feature-set loop.
+  Each worker is initialised once with the full
+  ``{feature_set: HierarchyIndex}`` /
+  ``{feature_set: FeaturesForWorker}`` state and processes every
+  requested set per chunk in a single invocation. Wins:
+    * One pool spawn instead of ``N`` (saves the spawn-context init
+      cost ``N-1`` times -- on whole-genome inputs this is ~30 s ×
+      ``N-1`` of fresh Python process startup plus initargs unpickle).
+    * One pass over the combined BED instead of ``N`` (saves
+      ``N-1`` × multi-GB sequential I/O).
+    * No inter-feature-set idle gaps (previously ~2 min per
+      transition on HG002 while the old pool drained, per-sequence
+      temp files were concatenated, and the next pool initialised).
+  In assembly mode workers write each ``(feature_set, sequence)``
+  pair's output directly to a per-feature-set temp directory using a
+  sanitised sequence-name filename; the main process concatenates the
+  per-sequence files in input-FASTA order at the end. Reads mode
+  (``--no-preserve-order``) keeps the IPC return path. Output BEDs
+  are byte-equivalent to the previous per-feature-set code.
+
 ### Fixed
 - ``karyoscope annotate`` no longer hangs silently for hours when a
   smoothing worker is killed by an external signal (most commonly
