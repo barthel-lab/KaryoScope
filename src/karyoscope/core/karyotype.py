@@ -231,6 +231,12 @@ def render_karyotype(
     max_num_sequences: int = 400,
     seed_human_chromosomes: bool = True,
     output_path: Path,
+    sample_label: str | None = None,
+    database_id: str | None = None,
+    feature_set_label: str | None = None,
+    smoothed: bool = True,
+    show_title: bool = True,
+    show_legend: bool = True,
 ) -> None:
     """Render and save a karyotype SVG.
 
@@ -266,6 +272,16 @@ def render_karyotype(
         columns. Disable for non-human assemblies.
     output_path
         Where to write the SVG.
+    sample_label, database_id, feature_set_label, smoothed
+        Metadata fields rendered in the title band at the top of the
+        SVG when ``show_title=True``. Each is optional; missing fields
+        are omitted from the title rather than left as placeholders.
+    show_title
+        Draw the title band at the top. Default True.
+    show_legend
+        Draw the color legend in the right margin. Only features that
+        actually appear in the rendered data are listed (so the
+        legend stays compact for large feature sets). Default True.
     """
     if mode not in _VALID_MODES:
         raise KaryotypeError(f"unknown mode {mode!r}; expected one of {_VALID_MODES}")
@@ -353,13 +369,27 @@ def render_karyotype(
     circle_radius = 3
     x_border = initial_x + sequence_gap - 1
     y_border = 25
-    chrom_label_y = 23
-    chrom_line_y = 28
-    hap_label_y = 43
-    hap_line_y = 48
-    initial_y = 60 if len(HAPLOTYPES) > 1 else 40
+    # Title band (optional, drawn above the karyotype). All
+    # below-title-band y constants get offset by ``title_band_height``
+    # via :data:`title_offset`.
+    title_band_height = 35 if show_title else 0
+    title_offset = title_band_height
+    chrom_label_y = 23 + title_offset
+    chrom_line_y = 28 + title_offset
+    hap_label_y = 43 + title_offset
+    hap_line_y = 48 + title_offset
+    initial_y = (60 if len(HAPLOTYPES) > 1 else 40) + title_offset
     min_q_arm_offset = 5
     text_color = "#000000" if background_color == "white" else "#FFFFFF"
+
+    # Legend band (optional, drawn at the right margin). The width is
+    # added to ``image_width`` below. Per-row height matches the small
+    # text size we use for feature labels.
+    legend_band_width = 170 if show_legend else 0
+    legend_row_height = 16
+    legend_swatch_size = 12
+    legend_text_size = 11
+    legend_pad_x = 18  # gap between karyotype right edge and legend
 
     P_Q_ARM_GAP = 50
     if mode == "subtelomere":
@@ -466,13 +496,42 @@ def render_karyotype(
             hap_current_x += layout.hap_block_widths[chromosome][hap] + hap_gap
         current_x += total_chrom_width + chrom_gap
 
-    layout.image_width = current_x - chrom_gap + x_border
+    karyotype_right_edge = current_x - chrom_gap + x_border
+    layout.image_width = karyotype_right_edge + legend_band_width
     image_height = final_image_height
 
     # --- prepare the SVG canvas -------------------------------------
 
     d = draw.Drawing(layout.image_width, image_height, id_prefix="k")
     d.append(draw.Rectangle(0, 0, layout.image_width, image_height, fill=background_color))
+
+    # --- title band (top) ------------------------------------------
+
+    if show_title:
+        title_parts: list[str] = []
+        if sample_label:
+            title_parts.append(sample_label)
+        if database_id:
+            title_parts.append(database_id)
+        title_parts.append(f"{mode} view")
+        if feature_set_label:
+            title_parts.append(feature_set_label)
+        if smoothed:
+            title_parts.append("smoothed")
+        title_text = "  |  ".join(title_parts)
+        # Centre the title over the karyotype area (excluding the
+        # legend band) so it visually balances the chromosome columns.
+        d.append(
+            draw.Text(
+                title_text,
+                14,
+                karyotype_right_edge / 2,
+                title_band_height - 12,
+                text_anchor="middle",
+                fill=text_color,
+                font_weight="bold",
+            )
+        )
 
     x_coords: dict[str, float] = {}
     for chromosome, haps in layout.drawable_haps_per_chrom.items():
@@ -527,6 +586,7 @@ def render_karyotype(
     # --- Final pass: draw colored rectangles per feature ------------
 
     missing_features_warned: set[str] = set()
+    features_drawn: set[str] = set()  # tracked for the legend
 
     def _color_for(feature: str) -> str:
         if feature in colors:
@@ -545,6 +605,7 @@ def render_karyotype(
                 continue
             for start, stop, feature in intervals:
                 color = _color_for(feature)
+                features_drawn.add(feature)
                 if mode == "subtelomere":
                     seq_len = sequence_lengths.get(seq)
                     if not seq_len:
@@ -841,4 +902,90 @@ def render_karyotype(
                     )
                 )
 
+    # --- legend (right margin) --------------------------------------
+
+    if show_legend and features_drawn:
+        # One row per feature actually rendered (small font, tight
+        # rows). Sorted with a stable convention: numbered chromosome
+        # leaves naturally (chr1, chr2, ...), then everything else
+        # alphabetical. Falls back cleanly when the feature names
+        # don't match the chromosome pattern.
+        def _legend_sort_key(name: str) -> tuple[int, int, str]:
+            if name.startswith("chr"):
+                suffix = name[3:]
+                if suffix.isdigit():
+                    return (0, int(suffix), "")
+                return (1, 0, suffix)
+            return (2, 0, name)
+
+        legend_x = karyotype_right_edge + legend_pad_x
+        legend_y = initial_y
+        for i, feature in enumerate(sorted(features_drawn, key=_legend_sort_key)):
+            row_y = legend_y + i * legend_row_height
+            # Bail out if the legend would overflow the SVG height
+            # (rare on tall karyotypes but possible for small ones).
+            if row_y + legend_swatch_size > image_height - 5:
+                logger.info(
+                    "legend truncated at %d entries; remaining features fit outside the SVG height",
+                    i,
+                )
+                break
+            d.append(
+                draw.Rectangle(
+                    legend_x,
+                    row_y,
+                    legend_swatch_size,
+                    legend_swatch_size,
+                    fill=_color_for(feature),
+                    stroke="black",
+                    stroke_width=0.5,
+                )
+            )
+            d.append(
+                draw.Text(
+                    feature,
+                    legend_text_size,
+                    legend_x + legend_swatch_size + 4,
+                    row_y + legend_swatch_size - 2,
+                    text_anchor="start",
+                    fill=text_color,
+                )
+            )
+
     d.save_svg(str(output_path))
+
+
+def convert_svg(svg_path: Path, target_path: Path) -> None:
+    """Convert an existing SVG file to another format (PDF / PNG).
+
+    Format is inferred from ``target_path``'s extension. PDF / PNG
+    use cairosvg, which in turn requires the native ``libcairo``
+    library at runtime; if cairo isn't installed in the active
+    environment, this function raises :class:`KaryotypeError` with
+    an actionable install hint. SVG-to-SVG is a plain file copy and
+    has no dependency on cairo.
+    """
+    ext = target_path.suffix.lower()
+    if ext == ".svg":
+        if svg_path.resolve() != target_path.resolve():
+            target_path.write_bytes(svg_path.read_bytes())
+        return
+    if ext not in (".pdf", ".png"):
+        raise KaryotypeError(f"unsupported output format {ext!r}; expected one of .svg, .pdf, .png")
+
+    try:
+        import cairosvg
+    except OSError as e:
+        # cairosvg loads libcairo at import time; missing libcairo
+        # surfaces as OSError ("no library called 'cairo'... was found").
+        raise KaryotypeError(
+            f"cannot convert to {ext}: native libcairo is not installed. "
+            "Install in the active conda env with `conda install -c conda-forge cairo`, "
+            "or use `--format svg` only."
+        ) from e
+
+    svg_bytes = svg_path.read_bytes()
+    if ext == ".pdf":
+        cairosvg.svg2pdf(bytestring=svg_bytes, write_to=str(target_path))
+    else:  # .png
+        cairosvg.svg2png(bytestring=svg_bytes, write_to=str(target_path))

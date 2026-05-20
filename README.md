@@ -42,7 +42,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 > Installation via Bioconda is planned. For now, install from source.
 
-KaryoScope requires Python ≥3.10 and several external tools (`KMC`, `bgzip`, `tabix`, `seqtk`). The simplest setup is a dedicated conda environment:
+KaryoScope requires Python ≥3.10 and several external tools (`KMC`, `bgzip`, `tabix`, `seqtk`, and `cairo` for PDF/PNG karyotype output). The simplest setup is a dedicated conda environment:
 
 ```bash
 git clone https://github.com/barthel-lab/KaryoScope.git
@@ -50,7 +50,7 @@ cd KaryoScope
 
 # Create a dedicated environment with Python and the bioinformatics tools
 conda create -n karyoscope -c conda-forge -c bioconda \
-    python=3.12 pip kmc htslib seqtk zlib compilers
+    python=3.12 pip kmc htslib seqtk cairo zlib compilers
 conda activate karyoscope
 
 # Install KaryoScope

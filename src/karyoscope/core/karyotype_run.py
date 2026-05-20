@@ -41,6 +41,7 @@ from karyoscope.core.io.scaffold_map import read_map
 from karyoscope.core.karyotype import (
     DEFAULT_HUMAN_CHROMOSOMES,
     RenderInput,
+    convert_svg,
     render_karyotype,
 )
 from karyoscope.core.scaffold import (
@@ -189,13 +190,30 @@ def _centromeres_bed_path(out_dir: Path, stem: str, db_id: str) -> Path:
     return gz
 
 
+#: Output formats supported by :func:`karyotype_run`. SVG is the
+#: native drawsvg output; PDF and PNG are produced by converting the
+#: SVG via :mod:`cairosvg`.
+SUPPORTED_FORMATS: tuple[str, ...] = ("svg", "pdf", "png")
+
+
 @dataclass
 class KaryotypeResult:
-    """One SVG written by :func:`karyotype_run`."""
+    """One render produced by :func:`karyotype_run`.
+
+    ``output_paths`` is the list of files written for this
+    (mode, feature_set) combination -- one per requested format. The
+    first entry is always the SVG (the canonical output); other
+    formats are derived from it.
+    """
 
     feature_set: str
     mode: str
-    svg_path: Path
+    output_paths: list[Path]
+
+    @property
+    def svg_path(self) -> Path:
+        """The SVG output (always the first entry)."""
+        return self.output_paths[0]
 
 
 def karyotype_run(
@@ -218,6 +236,10 @@ def karyotype_run(
     output_dir: Path | None = None,
     output_path: Path | None = None,
     seed_human_chromosomes: bool = True,
+    formats: list[str] | None = None,
+    sample_label: str | None = None,
+    show_title: bool = True,
+    show_legend: bool = True,
 ) -> list[KaryotypeResult]:
     """Render one SVG per (mode, feature_set) combination.
 
@@ -238,6 +260,21 @@ def karyotype_run(
     unknown_modes = [m for m in requested_modes if m not in ALL_MODES]
     if unknown_modes:
         raise KaryotypeError(f"unknown mode(s) {unknown_modes!r}; expected from {list(ALL_MODES)}")
+
+    # Output formats: default to just SVG. Preserve user-supplied
+    # order so the listed formats appear in result.output_paths in
+    # the same order on disk (cosmetic). SVG is always produced
+    # first (everything else is derived from it).
+    requested_formats: list[str] = [f.lower() for f in formats] if formats else ["svg"]
+    unknown_formats = [f for f in requested_formats if f not in SUPPORTED_FORMATS]
+    if unknown_formats:
+        raise KaryotypeError(
+            f"unsupported format(s) {unknown_formats!r}; expected from {list(SUPPORTED_FORMATS)}"
+        )
+    if "svg" not in requested_formats:
+        # We always need an SVG (it's the source for PDF/PNG); insert
+        # at the front so the file is written first.
+        requested_formats = ["svg", *requested_formats]
 
     db_id_resolved, db_dir = resolve_database(db_root, db_id)
     manifest = validate_database_layout(db_dir)
@@ -322,6 +359,13 @@ def karyotype_run(
         base_name = "karyotype"
         results_dir = output_dir if output_dir is not None else per_input_state[0][1]
 
+    # Sample label for the SVG title band. Defaults to the first
+    # input's stem, joined with " + " for multi-input runs so a quick
+    # glance at the title tells the reader which assembly produced it.
+    if sample_label is None:
+        stems = [stem for _, _, stem in per_input_state]
+        sample_label = " + ".join(stems) if stems else None
+
     results: list[KaryotypeResult] = []
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -371,9 +415,8 @@ def karyotype_run(
                 )
 
             flat_colors = colors_for_set(colors, fs)
-            svg_path = (
-                results_dir / f"{base_name}.{db_id_resolved}.{current_mode}.{fs}.karyotype.svg"
-            )
+            stem_for_paths = f"{base_name}.{db_id_resolved}.{current_mode}.{fs}.karyotype"
+            svg_path = results_dir / f"{stem_for_paths}.svg"
             render_karyotype(
                 render_inputs,
                 colors=flat_colors,
@@ -384,8 +427,36 @@ def karyotype_run(
                 subtelomere_boundary=subtelomere_boundary,
                 seed_human_chromosomes=seed_human_chromosomes,
                 output_path=svg_path,
+                sample_label=sample_label,
+                database_id=db_id_resolved,
+                feature_set_label=fs,
+                smoothed=True,
+                show_title=show_title,
+                show_legend=show_legend,
             )
-            results.append(KaryotypeResult(feature_set=fs, mode=current_mode, svg_path=svg_path))
+
+            # Convert SVG to additional formats as requested. The SVG
+            # itself stays on disk only if the user asked for it; for
+            # PDF/PNG-only runs we delete the SVG after conversion.
+            output_paths: list[Path] = []
+            keep_svg = "svg" in requested_formats
+            for fmt in requested_formats:
+                if fmt == "svg":
+                    output_paths.append(svg_path)
+                    continue
+                target = results_dir / f"{stem_for_paths}.{fmt}"
+                convert_svg(svg_path, target)
+                output_paths.append(target)
+            if not keep_svg:
+                svg_path.unlink(missing_ok=True)
+
+            results.append(
+                KaryotypeResult(
+                    feature_set=fs,
+                    mode=current_mode,
+                    output_paths=output_paths,
+                )
+            )
 
     return results
 

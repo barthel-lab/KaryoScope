@@ -539,6 +539,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Stage 5d series is complete.
 
 ### Changed
+- ``karyoscope karyotype`` SVGs now carry a title band at the top
+  (centred over the karyotype area) listing sample, database, mode,
+  feature set, and a ``smoothed`` flag, plus a colour legend in the
+  right margin listing only features that actually appear in the
+  rendered data (so the legend stays compact for large feature
+  sets). Three new flags: ``--sample-label TEXT`` overrides the
+  auto-derived label (default: joined input-FASTA stems);
+  ``--no-title`` and ``--no-legend`` suppress the new bands when
+  not wanted. Layout impact: title adds ~35 px to the top, legend
+  adds ~170 px to the right; visible differences in image
+  dimensions vs prior renders.
+- ``karyoscope karyotype --format {svg,pdf,png}`` (repeatable;
+  default ``svg``). PDF and PNG are produced by converting the SVG
+  via ``cairosvg`` (already a Python dep), which requires the
+  native ``libcairo`` library at runtime -- install with
+  ``conda install -c conda-forge cairo`` in the active env. When
+  requested formats include only non-SVG, the intermediate SVG is
+  written to its conventional path, converted, then deleted; pass
+  ``--format svg --format pdf`` to keep both.
+- ``KaryotypeResult.output_paths`` replaces ``svg_path`` (now a
+  property pointing at ``output_paths[0]`` for back-compat). One
+  ``KaryotypeResult`` per (mode, feature_set) carries the full list
+  of files written for that combination.
 - ``karyoscope bin`` gained per-sequence-chunk parallelism via
   :class:`multiprocessing.Pool`. New CLI flag ``-t / --threads``
   (default 1; 0 = auto via ``os.cpu_count()``). Threaded output is

@@ -14,6 +14,7 @@ from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.karyotype import (
     PREDEFINED_SEX_SYSTEMS,
     RenderInput,
+    convert_svg,
     get_expected_haps,
     render_karyotype,
 )
@@ -197,6 +198,158 @@ class TestRenderKaryotypeUnit:
         out = tmp_path / "x.svg"
         render_karyotype([ri], colors={}, mode="genome", output_path=out)
         assert out.is_file()
+
+
+# --- title + legend ------------------------------------------------
+
+
+class TestTitleBand:
+    def _basic_input(self) -> RenderInput:
+        return RenderInput(
+            map_rows=[_row("chr1_hap1_a", chrom="chr1", hap="hap1", length=1000)],
+            binned_bed={"chr1_hap1_a": [(0, 1000, "rA")]},
+        )
+
+    def test_title_text_appears_in_svg(self, tmp_path: Path) -> None:
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [self._basic_input()],
+            colors={"rA": "#2ca02c"},
+            mode="genome",
+            output_path=out,
+            sample_label="HG002.maternal",
+            database_id="KS_human_CHM13_v2",
+            feature_set_label="region",
+            smoothed=True,
+        )
+        text = out.read_text()
+        # Title fields should all appear in the SVG (drawsvg writes
+        # Text as literal text nodes).
+        assert "HG002.maternal" in text
+        assert "KS_human_CHM13_v2" in text
+        assert "genome" in text
+        assert "region" in text
+        assert "smoothed" in text
+
+    def test_no_title_suppresses_title(self, tmp_path: Path) -> None:
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [self._basic_input()],
+            colors={"rA": "#000"},
+            mode="genome",
+            output_path=out,
+            sample_label="HG002",
+            database_id="db1",
+            feature_set_label="region",
+            show_title=False,
+        )
+        text = out.read_text()
+        # The sample label should NOT be present when show_title=False.
+        assert "HG002" not in text
+
+
+class TestLegend:
+    def test_legend_lists_drawn_features_only(self, tmp_path: Path) -> None:
+        # Two features in the colors map, only one in the binned data.
+        # The legend should list only the one actually drawn.
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=1000)],
+            binned_bed={"chr1_h1_a": [(0, 1000, "rA")]},
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"rA": "#2ca02c", "rB": "#d62728"},  # rB unused
+            mode="genome",
+            output_path=out,
+            show_title=False,
+        )
+        text = out.read_text()
+        # rA should appear as a legend label; rB should not.
+        assert text.count("rA") >= 1
+        assert "rB" not in text
+
+    def test_no_legend_suppresses_legend(self, tmp_path: Path) -> None:
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=1000)],
+            binned_bed={"chr1_h1_a": [(0, 1000, "uniquely_named_feature_xyz")]},
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"uniquely_named_feature_xyz": "#000"},
+            mode="genome",
+            output_path=out,
+            show_title=False,
+            show_legend=False,
+        )
+        text = out.read_text()
+        # The feature name only appears as a legend label; the
+        # rendered rectangles use the colour, not the name. With
+        # legend off, the name should be entirely absent.
+        assert "uniquely_named_feature_xyz" not in text
+
+
+# --- format conversion --------------------------------------------
+
+
+def _has_cairo() -> bool:
+    """True if cairosvg can import (its native libcairo is present)."""
+    try:
+        import cairosvg  # noqa: F401
+
+        return True
+    except OSError:
+        return False
+
+
+class TestConvertSvg:
+    def _make_svg(self, tmp_path: Path) -> Path:
+        # A minimal valid SVG cairosvg will accept.
+        p = tmp_path / "src.svg"
+        p.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+            '<rect x="10" y="10" width="80" height="80" fill="#2ca02c"/></svg>'
+        )
+        return p
+
+    @pytest.mark.skipif(not _has_cairo(), reason="needs native libcairo")
+    def test_svg_to_pdf(self, tmp_path: Path) -> None:
+        src = self._make_svg(tmp_path)
+        dst = tmp_path / "out.pdf"
+        convert_svg(src, dst)
+        # PDF magic bytes
+        assert dst.is_file()
+        assert dst.read_bytes()[:4] == b"%PDF"
+
+    @pytest.mark.skipif(not _has_cairo(), reason="needs native libcairo")
+    def test_svg_to_png(self, tmp_path: Path) -> None:
+        src = self._make_svg(tmp_path)
+        dst = tmp_path / "out.png"
+        convert_svg(src, dst)
+        # PNG magic bytes
+        assert dst.is_file()
+        assert dst.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_svg_to_svg_copies(self, tmp_path: Path) -> None:
+        src = self._make_svg(tmp_path)
+        dst = tmp_path / "out.svg"
+        convert_svg(src, dst)
+        assert dst.read_text() == src.read_text()
+
+    def test_unsupported_format_raises(self, tmp_path: Path) -> None:
+        src = self._make_svg(tmp_path)
+        dst = tmp_path / "out.bmp"
+        with pytest.raises(KaryotypeError, match="unsupported output format"):
+            convert_svg(src, dst)
+
+    def test_pdf_without_cairo_gives_actionable_error(self, tmp_path: Path) -> None:
+        if _has_cairo():
+            pytest.skip("libcairo is installed; can't exercise the missing-cairo branch")
+        src = self._make_svg(tmp_path)
+        dst = tmp_path / "out.pdf"
+        with pytest.raises(KaryotypeError, match="libcairo"):
+            convert_svg(src, dst)
 
 
 # --- CLI parsing ---------------------------------------------------
