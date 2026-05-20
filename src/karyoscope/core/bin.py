@@ -47,6 +47,7 @@ import gzip
 import logging
 import multiprocessing as mp
 import os
+import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -431,6 +432,7 @@ def bin_features(
         "yes" if leaf_set else "no",
         pool_size if use_pool else 1,
     )
+    t_start = time.perf_counter()
 
     if not use_pool:
         # Single-threaded path: stream directly through the binner.
@@ -445,6 +447,7 @@ def bin_features(
         finally:
             _close_if_owned(in_h)
             _close_if_owned(out_h)
+        logger.info("binned %s in %.1fs", output_path, time.perf_counter() - t_start)
         return
 
     # Multi-threaded path: chunked-by-sequence-boundary dispatch
@@ -468,3 +471,4 @@ def bin_features(
                 out_h.writelines(out_lines)
     finally:
         _close_if_owned(out_h)
+    logger.info("binned %s in %.1fs", output_path, time.perf_counter() - t_start)

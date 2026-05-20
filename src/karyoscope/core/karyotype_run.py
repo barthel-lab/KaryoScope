@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -175,7 +176,8 @@ def _ensure_binned_scaffolded(
     src = _scaffolded_bed_path(out_dir, stem, db_id, fs)
     if not src.is_file():
         raise KaryotypeError(f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at {src}")
-    logger.info("binning %s -> %s (bin_size=%d)", src, out, bin_size)
+    # bin_features logs its own start (with leaf_set + threads) and
+    # completion lines; no need for a redundant announcement here.
     bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads)
     return out
 
@@ -256,6 +258,7 @@ def karyotype_run(
     if not inputs:
         raise KaryotypeError("at least one --input is required")
 
+    t_karyo_start = time.perf_counter()
     requested_modes: list[str] = list(modes) if modes else list(ALL_MODES)
     unknown_modes = [m for m in requested_modes if m not in ALL_MODES]
     if unknown_modes:
@@ -316,6 +319,16 @@ def karyotype_run(
             "to render. Fix colors.tsv (or use `karyoscope info` to see the "
             "full list of issues):\n  - " + "\n  - ".join(color_issues)
         )
+
+    logger.info(
+        "rendering karyotype(s): %d input(s), modes=%s, feature_sets=%s "
+        "(= %d SVG(s) x %d format(s))",
+        len(inputs),
+        requested_modes,
+        requested,
+        len(requested_modes) * len(requested),
+        len(requested_formats),
+    )
 
     # Make sure scaffolded BEDs exist for every input + requested
     # feature set. scaffold_run short-circuits on existing files.
@@ -434,6 +447,13 @@ def karyotype_run(
             flat_colors = colors_for_set(colors, fs)
             stem_for_paths = f"{base_name}.{db_id_resolved}.{current_mode}.{fs}.karyotype"
             svg_path = results_dir / f"{stem_for_paths}.svg"
+            logger.info(
+                "rendering karyotype: mode=%s, feature_set=%s -> %s",
+                current_mode,
+                fs,
+                svg_path.name,
+            )
+            t_render = time.perf_counter()
             render_karyotype(
                 render_inputs,
                 colors=flat_colors,
@@ -452,6 +472,7 @@ def karyotype_run(
                 show_legend=show_legend,
                 feature_order=fs_feature_order,
             )
+            logger.info("rendered %s in %.1fs", svg_path.name, time.perf_counter() - t_render)
 
             # Convert SVG to additional formats as requested. The SVG
             # itself stays on disk only if the user asked for it; for
@@ -463,7 +484,10 @@ def karyotype_run(
                     output_paths.append(svg_path)
                     continue
                 target = results_dir / f"{stem_for_paths}.{fmt}"
+                logger.info("converting %s -> %s", svg_path.name, target.name)
+                t_conv = time.perf_counter()
                 convert_svg(svg_path, target)
+                logger.info("converted %s in %.1fs", target.name, time.perf_counter() - t_conv)
                 output_paths.append(target)
             if not keep_svg:
                 svg_path.unlink(missing_ok=True)
@@ -476,6 +500,12 @@ def karyotype_run(
                 )
             )
 
+    logger.info(
+        "karyotype complete in %.1fs (%d render(s) -> %d file(s))",
+        time.perf_counter() - t_karyo_start,
+        len(results),
+        sum(len(r.output_paths) for r in results),
+    )
     return results
 
 

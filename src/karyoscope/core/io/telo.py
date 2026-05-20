@@ -27,6 +27,7 @@ This module provides:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -105,5 +106,7 @@ def run_seqtk_telo(fasta_path: Path, out_path: Path) -> None:
         install_hint="Install with: conda install -c bioconda seqtk",
     )
     logger.info("running seqtk telo on %s -> %s", fasta_path, out_path)
+    t0 = time.perf_counter()
     result = run_tool([seqtk, "telo", str(fasta_path)], capture=True)
     out_path.write_text(result.stdout or "")
+    logger.info("ran seqtk telo on %s in %.1fs", fasta_path.name, time.perf_counter() - t0)

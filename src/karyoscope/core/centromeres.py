@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -268,7 +269,8 @@ def _ensure_binned_scaffolded(
         raise CentromereError(
             f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at {src}"
         )
-    logger.info("binning %s -> %s (bin_size=%d)", src, out, bin_size)
+    # bin_features logs its own start (with leaf_set + threads) and
+    # completion lines; no need for a redundant announcement here.
     bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads)
     return out
 
@@ -325,6 +327,7 @@ def centromeres_run(
     if fine_bin_size is not None and fine_bin_size < 0:
         raise CentromereError(f"--fine-bin-size must be >= 0 (0 disables), got {fine_bin_size}")
 
+    t_cen_start = time.perf_counter()
     db_id_resolved, db_dir = resolve_database(db_root, db_id)
     manifest = validate_database_layout(db_dir)
     available = list(manifest.feature_sets)
@@ -341,6 +344,13 @@ def centromeres_run(
 
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
     centromere_leaves = leaves_for(hierarchy, centromere_fs)
+
+    logger.info(
+        "extracting centromeres from %d input(s) against %s (feature_set=%s)",
+        len(inputs),
+        db_id_resolved,
+        centromere_fs,
+    )
 
     # Make sure the scaffolded region BEDs exist for every input by
     # calling scaffold_run with mode='bed'. scaffold_run itself is
@@ -398,7 +408,19 @@ def centromeres_run(
             )
             fine_bins = _load_binned_bed(fine_path)
 
+        logger.info(
+            "finding centromere ranges for %s (contigs=%d)",
+            spec.path.name,
+            len(coarse_bins),
+        )
+        t_find = time.perf_counter()
         ranges = find_centromere_ranges(coarse_bins, fine_bins)
+        logger.info(
+            "found %d centromere range(s) for %s in %.1fs",
+            len(ranges),
+            spec.path.name,
+            time.perf_counter() - t_find,
+        )
 
         # Resolve hap label by reading the scaffold map (which scaffold
         # wrote during the cascade above) so it shows up in the result
@@ -419,6 +441,11 @@ def centromeres_run(
             num_contigs=len(ranges),
         )
 
+    logger.info(
+        "centromeres complete in %.1fs (%d input(s))",
+        time.perf_counter() - t_cen_start,
+        len(inputs),
+    )
     return results
 
 

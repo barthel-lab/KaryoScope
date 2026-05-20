@@ -39,6 +39,7 @@ that's why the cascade is expressed as a list of independent
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -278,7 +279,8 @@ def _ensure_binned(
             f"can't bin {fs!r} for {spec.spec.path.name}: smoothed BED missing "
             f"at {src} (annotate should have produced it)"
         )
-    logger.info("binning %s -> %s (bin_size=%d)", src, out, bin_size)
+    # bin_features logs its own start (with leaf_set + threads) and
+    # completion lines; no need for a redundant announcement here.
     bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads)
     return out
 
@@ -369,6 +371,7 @@ def scaffold_run(
     if mode not in _VALID_MODES:
         raise ScaffoldError(f"unknown mode {mode!r}; expected one of {_VALID_MODES}")
 
+    t_scaffold_start = time.perf_counter()
     db_id_resolved, db_dir = resolve_database(db_root, db_id)
     manifest = validate_database_layout(db_dir)
     available = list(manifest.feature_sets)
@@ -423,6 +426,13 @@ def scaffold_run(
 
     is_only_input = len(resolved) == 1
     acros_set = acrocentrics if acrocentrics is not None else set(DEFAULT_HUMAN_ACROCENTRICS)
+
+    logger.info(
+        "scaffolding %d input(s) against %s (mode=%s)",
+        len(resolved),
+        db_id_resolved,
+        mode,
+    )
 
     # --- auto-derive cascade per input -------------------------------
     # Sequential for Stage 5d-1; the per-input units are independent
@@ -508,11 +518,22 @@ def scaffold_run(
             contigs_per_input[r.spec.path.name].append(ci)
 
     # --- classify + orient (joint across all inputs) -----------------
+    logger.info(
+        "classifying + orienting %d contig(s) across %d input(s)",
+        len(all_contigs),
+        len(resolved),
+    )
+    t_classify_start = time.perf_counter()
     rows = classify_and_orient(
         all_contigs,
         chromosome_leaves=chromosome_leaves,
         acrocentrics=acros_set,
         min_scaffold_length=min_scaffold_length,
+    )
+    logger.info(
+        "classified %d scaffold row(s) in %.1fs",
+        len(rows),
+        time.perf_counter() - t_classify_start,
     )
 
     # Group rows by input file for the writer.
@@ -542,7 +563,15 @@ def scaffold_run(
                     )
                     continue
                 out_plain = r.out_dir / f"{r.stem}.{db_id_resolved}.{fs}.smoothed.scaffolded.bed"
+                logger.info(
+                    "rewriting scaffolded BED for %s / %s -> %s",
+                    r.spec.path.name,
+                    fs,
+                    out_plain.name,
+                )
+                t_rb = time.perf_counter()
                 rewrite_bed(src, out_plain, map_rows=per_input_rows, gzip_out=False)
+                logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
                 out_final = _bgzip_file(out_plain) if bgzip else out_plain
                 scaffolded_beds[fs] = out_final
 
@@ -557,6 +586,7 @@ def scaffold_run(
                 r.spec.path.name,
                 fasta_plain,
             )
+            t_rf = time.perf_counter()
             rewrite_fasta(
                 r.spec.path,
                 fasta_plain,
@@ -564,6 +594,7 @@ def scaffold_run(
                 keep_unscaffolded=keep_unscaffolded,
                 gzip_out=False,
             )
+            logger.info("wrote %s in %.1fs", fasta_plain.name, time.perf_counter() - t_rf)
             scaffolded_fasta = _bgzip_file(fasta_plain) if bgzip else fasta_plain
 
         results[r.spec.path.name] = ScaffoldResult(
@@ -575,4 +606,9 @@ def scaffold_run(
             scaffolded_fasta=scaffolded_fasta,
         )
 
+    logger.info(
+        "scaffold complete in %.1fs (%d input(s))",
+        time.perf_counter() - t_scaffold_start,
+        len(resolved),
+    )
     return results

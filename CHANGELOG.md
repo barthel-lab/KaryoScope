@@ -694,6 +694,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Changed
+- ``karyoscope scaffold -v``, ``karyoscope centromeres -v``, and
+  ``karyoscope karyotype -v`` now bookend every major phase with
+  start + end INFO lines, matching the depth of the annotate logging.
+  Per-pipeline additions:
+    * **scaffold**: opening banner (``scaffolding N input(s) ...``);
+      ``classifying + orienting ... contigs`` / ``classified ... in Xs``;
+      per-(input, FS) ``rewriting scaffolded BED`` / ``wrote ... in Xs``;
+      per-input ``wrote <scaffolded.fa> in Xs`` (paired with the existing
+      ``writing scaffolded FASTA`` start log); closing
+      ``scaffold complete in Xs``.
+    * **centromeres**: opening banner; per-input ``finding centromere
+      ranges`` / ``found N centromere range(s) in Xs``; closing
+      ``centromeres complete in Xs``.
+    * **karyotype**: opening banner with the total ``N renders x M
+      formats`` count; per-(mode, FS) ``rendering karyotype`` /
+      ``rendered ... in Xs``; per-format ``converting`` / ``converted
+      ... in Xs`` (PDF / PNG via cairosvg can take several seconds
+      each); closing ``karyotype complete in Xs``.
+  Also adds completion lines to two reusable building blocks:
+  ``bin_features`` now logs ``binned ... in Xs`` after the existing
+  start line, and ``run_seqtk_telo`` logs ``ran seqtk telo on ... in
+  Xs``. The redundant ``binning X -> Y (bin_size=Z)`` line previously
+  emitted by every ``_ensure_binned*`` helper (in scaffold_run,
+  centromeres, karyotype_run) is dropped -- ``bin_features``'
+  own start line carries strictly more information (leaf_set + thread
+  count), so the helper-level announcement was just noise.
 - ``karyoscope annotate -v`` now logs at INFO level for every major
   pipeline phase: ``running get_featureIDs`` (start) /
   ``ran get_featureIDs in Xs (combined BED: N GB)`` (end),
