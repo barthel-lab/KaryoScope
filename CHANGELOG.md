@@ -539,6 +539,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Stage 5d series is complete.
 
 ### Changed
+- ``karyoscope karyotype`` title-band wording: each metadata segment
+  now carries an explanatory noun for consistency with ``genome view``.
+  Format: ``<sample>  |  <dbid> database  |  <mode> view  |
+  <feature_set> feature set  |  smoothed``. The plain ``<dbid>`` /
+  ``<feature_set>`` form from the first dogfooding pass was
+  ambiguous to scan.
+- ``karyoscope karyotype`` legend layout: gap between karyotype and
+  legend is now ``chrom_gap`` (same as between adjacent chromosomes,
+  so the legend reads as just another column) rather than the
+  previous double-padded ``x_border + 18`` (~82 px of wasted space).
+  Legend column width is computed dynamically from the longest
+  drawn label rather than a fixed 170 px, removing the wasted right
+  margin in the SVG.
+- ``karyoscope karyotype`` legend sort: features are now ordered by
+  the ``hierarchy.tsv`` ``child`` column in file order (the
+  database author's intended ordering -- internal nodes first, then
+  the subtree under each). This groups related features together
+  visually. The previous natural-chr-then-alpha sort is still the
+  fallback when no order is given. For chromosome feature sets the
+  hierarchy.tsv naturally lists ``chr1``, ``chr2``, ...,
+  ``chrX``, ``chrY`` in order so the user-visible behaviour
+  matches the previous natural sort. No special case needed.
 - ``karyoscope karyotype`` SVGs now carry a title band at the top
   (centred over the karyotype area) listing sample, database, mode,
   feature set, and a ``smoothed`` flag, plus a colour legend in the

@@ -380,6 +380,11 @@ def karyotype_run(
 
         for fs in requested:
             leaves = leaves_for(hierarchy, fs)
+            # Legend sort: hand the renderer the list of child names
+            # in hierarchy.tsv file order. Internal nodes appear first
+            # (defined as children of "categorized"), then their
+            # subtrees, mirroring the order the user wrote the file.
+            fs_feature_order = [row.child for row in hierarchy.rows_in(fs)]
 
             render_inputs: list[RenderInput] = []
             for spec, out_dir, stem in per_input_state:
@@ -433,6 +438,7 @@ def karyotype_run(
                 smoothed=True,
                 show_title=show_title,
                 show_legend=show_legend,
+                feature_order=fs_feature_order,
             )
 
             # Convert SVG to additional formats as requested. The SVG

@@ -289,6 +289,67 @@ class TestLegend:
         # legend off, the name should be entirely absent.
         assert "uniquely_named_feature_xyz" not in text
 
+    def test_legend_respects_feature_order(self, tmp_path: Path) -> None:
+        # Three features drawn; the requested order puts them in
+        # reverse alphabetical, which is different from any natural
+        # fallback so we can verify the order was honoured. Length
+        # is generous so the karyotype is tall enough for all three
+        # legend rows to fit (short contigs trigger the truncation
+        # safety in real-world too-small renders, irrelevant here).
+        ri = RenderInput(
+            map_rows=[
+                _row("chr1_h1_a", chrom="chr1", hap="hap1", length=30_000_000),
+            ],
+            binned_bed={
+                "chr1_h1_a": [
+                    (0, 10_000_000, "aaa"),
+                    (10_000_000, 20_000_000, "bbb"),
+                    (20_000_000, 30_000_000, "ccc"),
+                ],
+            },
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"aaa": "#100", "bbb": "#020", "ccc": "#003"},
+            mode="genome",
+            output_path=out,
+            show_title=False,
+            feature_order=["ccc", "bbb", "aaa"],  # reversed
+        )
+        text = out.read_text()
+        # The legend labels appear in the SVG in the order they were
+        # drawn, which is the feature_order order. We just need
+        # ``ccc`` to appear before ``bbb`` before ``aaa`` somewhere
+        # after the karyotype draws.
+        pos_a = text.find("aaa")
+        pos_b = text.find("bbb")
+        pos_c = text.find("ccc")
+        assert pos_a > 0 and pos_b > 0 and pos_c > 0, "all three labels should be present"
+        assert pos_c < pos_b < pos_a
+
+    def test_title_uses_database_and_feature_set_nouns(self, tmp_path: Path) -> None:
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=1000)],
+            binned_bed={"chr1_h1_a": [(0, 1000, "rA")]},
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"rA": "#000"},
+            mode="genome",
+            output_path=out,
+            sample_label="HG002",
+            database_id="KS_human_CHM13_v2",
+            feature_set_label="gene",
+        )
+        text = out.read_text()
+        # Nouns appear next to their tags so the title reads as a
+        # sentence rather than a string of unlabelled IDs.
+        assert "KS_human_CHM13_v2 database" in text
+        assert "genome view" in text
+        assert "gene feature set" in text
+
 
 # --- format conversion --------------------------------------------
 

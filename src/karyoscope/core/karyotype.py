@@ -237,6 +237,7 @@ def render_karyotype(
     smoothed: bool = True,
     show_title: bool = True,
     show_legend: bool = True,
+    feature_order: list[str] | None = None,
 ) -> None:
     """Render and save a karyotype SVG.
 
@@ -382,14 +383,12 @@ def render_karyotype(
     min_q_arm_offset = 5
     text_color = "#000000" if background_color == "white" else "#FFFFFF"
 
-    # Legend band (optional, drawn at the right margin). The width is
-    # added to ``image_width`` below. Per-row height matches the small
-    # text size we use for feature labels.
-    legend_band_width = 170 if show_legend else 0
+    # Legend band (optional, drawn at the right margin). The total
+    # width is computed dynamically after the feature pre-pass below,
+    # so the canvas stays tight against the longest legend label.
     legend_row_height = 16
     legend_swatch_size = 12
     legend_text_size = 11
-    legend_pad_x = 18  # gap between karyotype right edge and legend
 
     P_Q_ARM_GAP = 50
     if mode == "subtelomere":
@@ -444,6 +443,42 @@ def render_karyotype(
     if mode == "genome":
         final_image_height = int(max_stop_y + y_border)
 
+    # --- Pre-pass for the legend -------------------------------------
+    # Walk the binned BEDs once (filtered to seen_sequences only) to
+    # collect every feature label that will be drawn. Used for both
+    # legend ordering and dynamic width sizing.
+    features_in_data: set[str] = set()
+    for ri in inputs:
+        for seq, intervals in ri.binned_bed.items():
+            if seq not in seen_sequences:
+                continue
+            for _, _, feature in intervals:
+                features_in_data.add(feature)
+
+    # Legend sort: hierarchy order if provided (rows in hierarchy.tsv's
+    # child column, in file order), otherwise the natural-then-alpha
+    # fallback. Features that appear in the data but not in the order
+    # list (e.g. ``"novel"``, internal hierarchy nodes the smoother
+    # promoted to) sink to the bottom alphabetically.
+    if feature_order:
+        order_index = {f: i for i, f in enumerate(feature_order)}
+        sentinel = len(feature_order)
+        sorted_legend_features = sorted(
+            features_in_data,
+            key=lambda f: (order_index.get(f, sentinel), f),
+        )
+    else:
+
+        def _legend_sort_key(name: str) -> tuple[int, int, str]:
+            if name.startswith("chr"):
+                suffix = name[3:]
+                if suffix.isdigit():
+                    return (0, int(suffix), "")
+                return (1, 0, suffix)
+            return (2, 0, name)
+
+        sorted_legend_features = sorted(features_in_data, key=_legend_sort_key)
+
     # --- group by chromosome and haplotype ---------------------------
 
     sequences_per_chrom_hap: dict[str, dict[str, list[str]]] = {
@@ -496,8 +531,29 @@ def render_karyotype(
             hap_current_x += layout.hap_block_widths[chromosome][hap] + hap_gap
         current_x += total_chrom_width + chrom_gap
 
-    karyotype_right_edge = current_x - chrom_gap + x_border
-    layout.image_width = karyotype_right_edge + legend_band_width
+    # Karyotype right edge = end of last drawn chromosome content
+    # (current_x at this point is "next chromosome start", so subtract
+    # the trailing chrom_gap to land on the last column's right edge).
+    karyotype_content_right = current_x - chrom_gap
+
+    # Legend sizing. ``legend_band_width`` is computed dynamically
+    # from the longest feature label so the canvas stays tight; the
+    # old fixed-width approach left tens of pixels of empty space.
+    # Rough text-width estimate: 6 px per char for 11pt sans-serif.
+    if show_legend and sorted_legend_features:
+        max_label_chars = max(len(label) for label in sorted_legend_features)
+        legend_text_px = max(20, max_label_chars * 6)
+        legend_inner_width = legend_swatch_size + 4 + legend_text_px
+        legend_right_pad = 10  # small padding to the SVG right edge
+        legend_band_width = chrom_gap + legend_inner_width + legend_right_pad
+        karyotype_right_edge = karyotype_content_right + chrom_gap
+    else:
+        legend_band_width = 0
+        karyotype_right_edge = karyotype_content_right + x_border
+
+    layout.image_width = (
+        karyotype_content_right + legend_band_width if legend_band_width else karyotype_right_edge
+    )
     image_height = final_image_height
 
     # --- prepare the SVG canvas -------------------------------------
@@ -512,10 +568,10 @@ def render_karyotype(
         if sample_label:
             title_parts.append(sample_label)
         if database_id:
-            title_parts.append(database_id)
+            title_parts.append(f"{database_id} database")
         title_parts.append(f"{mode} view")
         if feature_set_label:
-            title_parts.append(feature_set_label)
+            title_parts.append(f"{feature_set_label} feature set")
         if smoothed:
             title_parts.append("smoothed")
         title_text = "  |  ".join(title_parts)
@@ -586,7 +642,6 @@ def render_karyotype(
     # --- Final pass: draw colored rectangles per feature ------------
 
     missing_features_warned: set[str] = set()
-    features_drawn: set[str] = set()  # tracked for the legend
 
     def _color_for(feature: str) -> str:
         if feature in colors:
@@ -605,7 +660,6 @@ def render_karyotype(
                 continue
             for start, stop, feature in intervals:
                 color = _color_for(feature)
-                features_drawn.add(feature)
                 if mode == "subtelomere":
                     seq_len = sequence_lengths.get(seq)
                     if not seq_len:
@@ -904,23 +958,16 @@ def render_karyotype(
 
     # --- legend (right margin) --------------------------------------
 
-    if show_legend and features_drawn:
-        # One row per feature actually rendered (small font, tight
-        # rows). Sorted with a stable convention: numbered chromosome
-        # leaves naturally (chr1, chr2, ...), then everything else
-        # alphabetical. Falls back cleanly when the feature names
-        # don't match the chromosome pattern.
-        def _legend_sort_key(name: str) -> tuple[int, int, str]:
-            if name.startswith("chr"):
-                suffix = name[3:]
-                if suffix.isdigit():
-                    return (0, int(suffix), "")
-                return (1, 0, suffix)
-            return (2, 0, name)
-
-        legend_x = karyotype_right_edge + legend_pad_x
+    if show_legend and sorted_legend_features:
+        # ``legend_x`` sits one ``chrom_gap`` to the right of the
+        # last chromosome's content, matching the spacing between
+        # adjacent chromosomes so the legend reads as just another
+        # "column" of the figure. ``sorted_legend_features`` was
+        # computed up front using either the database's hierarchy
+        # order (preferred) or a natural chr-then-alpha fallback.
+        legend_x = karyotype_content_right + chrom_gap
         legend_y = initial_y
-        for i, feature in enumerate(sorted(features_drawn, key=_legend_sort_key)):
+        for i, feature in enumerate(sorted_legend_features):
             row_y = legend_y + i * legend_row_height
             # Bail out if the legend would overflow the SVG height
             # (rare on tall karyotypes but possible for small ones).
