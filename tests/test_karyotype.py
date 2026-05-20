@@ -330,6 +330,74 @@ class TestLegend:
         assert pos_a > 0 and pos_b > 0 and pos_c > 0, "all three labels should be present"
         assert pos_c < pos_b < pos_a
 
+    def test_categorized_pins_to_top_novel_pins_to_bottom(self, tmp_path: Path) -> None:
+        # "categorized" is the hierarchy root -- only in the parent
+        # column, never in feature_order. "novel" is the k-mer-not-
+        # in-index sentinel, never in the hierarchy. Both deserve
+        # fixed positions in the legend regardless of the rest of
+        # the sort. This test puts a real feature (rA) in the
+        # middle and verifies the order is: categorized, rA, novel.
+        ri = RenderInput(
+            map_rows=[
+                _row("chr1_h1_a", chrom="chr1", hap="hap1", length=30_000_000),
+            ],
+            binned_bed={
+                "chr1_h1_a": [
+                    (0, 10_000_000, "categorized"),
+                    (10_000_000, 20_000_000, "rA"),
+                    (20_000_000, 30_000_000, "novel"),
+                ],
+            },
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"categorized": "#aaa", "rA": "#2ca02c"},  # novel handled by sentinel
+            mode="genome",
+            output_path=out,
+            show_title=False,
+            feature_order=["rA"],  # only rA in hierarchy order
+        )
+        text = out.read_text()
+        pos_categorized = text.find("categorized")
+        pos_ra = text.find("rA")
+        pos_novel = text.find("novel")
+        assert pos_categorized > 0 and pos_ra > 0 and pos_novel > 0
+        # Visual order in SVG matches draw order: categorized first
+        # (top of legend), then rA, then novel (bottom).
+        assert pos_categorized < pos_ra < pos_novel
+
+    def test_fallback_sort_also_pins_categorized_and_novel(self, tmp_path: Path) -> None:
+        # When feature_order is None the fallback chr-then-alpha
+        # sort applies; the categorized/novel pins should still
+        # take effect.
+        ri = RenderInput(
+            map_rows=[
+                _row("chr1_h1_a", chrom="chr1", hap="hap1", length=30_000_000),
+            ],
+            binned_bed={
+                "chr1_h1_a": [
+                    (0, 10_000_000, "categorized"),
+                    (10_000_000, 20_000_000, "chr1"),
+                    (20_000_000, 30_000_000, "novel"),
+                ],
+            },
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"categorized": "#aaa", "chr1": "#1f77b4"},
+            mode="genome",
+            output_path=out,
+            show_title=False,
+            # No feature_order -- fallback sort applies.
+        )
+        text = out.read_text()
+        pos_categorized = text.find("categorized")
+        pos_chr1_legend = text.rfind("chr1")  # last occurrence is the legend label
+        pos_novel = text.find("novel")
+        assert pos_categorized < pos_chr1_legend < pos_novel
+
     def test_title_uses_database_and_feature_set_nouns(self, tmp_path: Path) -> None:
         ri = RenderInput(
             map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=1000)],

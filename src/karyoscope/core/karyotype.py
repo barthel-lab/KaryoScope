@@ -41,6 +41,7 @@ from typing import Literal
 
 import drawsvg as draw
 
+from karyoscope.core.io.features import NOVEL_NAME
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.scaffold import Interval, chromosome_sort_key
 from karyoscope.exceptions import KaryotypeError
@@ -287,6 +288,14 @@ def render_karyotype(
     if mode not in _VALID_MODES:
         raise KaryotypeError(f"unknown mode {mode!r}; expected one of {_VALID_MODES}")
 
+    # The ``novel`` sentinel is always white. ``colors_for_set`` in
+    # the orchestrator path already injects this, but direct callers
+    # of render_karyotype shouldn't have to remember -- it's a
+    # universal project rule that "novel = #ffffff" regardless of
+    # what colors.tsv says (or doesn't say) about it.
+    if NOVEL_NAME not in colors:
+        colors = {NOVEL_NAME: "#ffffff", **colors}
+
     mode_params = _MODE_PARAMS[mode]
     pixels_per_pos = mode_params.pixels_per_pos
 
@@ -455,21 +464,43 @@ def render_karyotype(
             for _, _, feature in intervals:
                 features_in_data.add(feature)
 
-    # Legend sort: hierarchy order if provided (rows in hierarchy.tsv's
-    # child column, in file order), otherwise the natural-then-alpha
-    # fallback. Features that appear in the data but not in the order
-    # list (e.g. ``"novel"``, internal hierarchy nodes the smoother
-    # promoted to) sink to the bottom alphabetically.
+    # Legend sort. Two special cases applied in both the
+    # feature_order-given and the natural-fallback paths:
+    #
+    #   * ``"categorized"`` (the hierarchy root) always pins to the
+    #     top. It only appears in the parent column of hierarchy.tsv
+    #     so it's never in ``feature_order``; without the pin it
+    #     would sink to the bottom (or sort alphabetically among
+    #     unranked entries).
+    #   * ``"novel"`` (the k-mer-not-in-index sentinel) always pins
+    #     to the bottom. It's never in the hierarchy. Without the
+    #     pin it would sort between hierarchy entries and other
+    #     unranked entries alphabetically -- noise we don't want.
+    #
+    # Everything else: hierarchy file order if ``feature_order`` is
+    # given, otherwise the natural chr-then-alpha fallback.
+    _TOP = -1
+    _BOTTOM = 10**9
+
     if feature_order:
         order_index = {f: i for i, f in enumerate(feature_order)}
         sentinel = len(feature_order)
-        sorted_legend_features = sorted(
-            features_in_data,
-            key=lambda f: (order_index.get(f, sentinel), f),
-        )
+
+        def _key(f: str) -> tuple[int, str]:
+            if f == "categorized":
+                return (_TOP, "")
+            if f == "novel":
+                return (_BOTTOM, "")
+            return (order_index.get(f, sentinel), f)
+
+        sorted_legend_features = sorted(features_in_data, key=_key)
     else:
 
         def _legend_sort_key(name: str) -> tuple[int, int, str]:
+            if name == "categorized":
+                return (_TOP, 0, "")
+            if name == "novel":
+                return (_BOTTOM, 0, "")
             if name.startswith("chr"):
                 suffix = name[3:]
                 if suffix.isdigit():
