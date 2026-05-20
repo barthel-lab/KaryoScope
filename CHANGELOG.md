@@ -694,6 +694,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Changed
+- ``karyoscope annotate -v`` now logs at INFO level for every major
+  pipeline phase: ``running get_featureIDs`` (start) /
+  ``ran get_featureIDs in Xs (combined BED: N GB)`` (end),
+  ``smoothing pass: N feature set(s)`` /
+  ``smoothing pass complete in Xs``, ``bgzip pass: N BED(s)`` /
+  per-file ``bgzipping ...`` / ``bgzipped ... (input -> output) in Xs``
+  / ``bgzip pass complete in Xs``, and a closing
+  ``annotate complete in Xs (N output BED(s))``. Previously the C++
+  k-mer query and bgzip steps were completely silent at INFO; long
+  whole-genome runs looked indistinguishable from a hung process.
 - ``karyoscope annotate`` smoothing is now driven by **one worker pool
   for all feature sets**, replacing the previous per-feature-set loop.
   Each worker is initialised once with the full

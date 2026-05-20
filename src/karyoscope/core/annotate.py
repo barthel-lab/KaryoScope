@@ -31,6 +31,7 @@ import multiprocessing as mp
 import os
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -614,19 +615,41 @@ def _smooth_with_per_sequence_tempfiles(
         # tmpdir cleaned up automatically on context manager exit
 
 
+def _human_bytes(n: int) -> str:
+    """Render a byte count as ``"X.YY GB"`` (>=1 GB) or ``"X.Y MB"``."""
+    if n >= 1024**3:
+        return f"{n / 1024**3:.2f} GB"
+    return f"{n / 1024**2:.1f} MB"
+
+
 def _bgzip_file(path: Path) -> Path:
     """Compress ``path`` in-place with ``bgzip``, returning the new path.
 
     ``bgzip`` removes the source file by default (matches gzip's behaviour).
-    Returns ``Path(str(path) + ".gz")``.
+    Returns ``Path(str(path) + ".gz")``. Logs per-file start + completion
+    at INFO so a long bgzip pass (12 files for a 6-feature-set human
+    database) doesn't look like the pipeline has hung.
     """
     bgzip = require_tool(
         "bgzip",
         install_hint="Install htslib (`conda install -c bioconda htslib`), "
         "or rerun with --no-bgzip to skip compression.",
     )
+    orig_size = path.stat().st_size
+    logger.info("bgzipping %s (%s)", path.name, _human_bytes(orig_size))
+    t0 = time.perf_counter()
     run_tool([bgzip, "-f", str(path)])
-    return Path(str(path) + ".gz")
+    out_path = Path(str(path) + ".gz")
+    out_size = out_path.stat().st_size if out_path.is_file() else 0
+    dt = time.perf_counter() - t0
+    logger.info(
+        "bgzipped %s (%s -> %s) in %.1fs",
+        out_path.name,
+        _human_bytes(orig_size),
+        _human_bytes(out_size),
+        dt,
+    )
+    return out_path
 
 
 # --- main entry point -------------------------------------------------
@@ -715,6 +738,7 @@ def annotate(
             )
         requested = list(feature_sets)
     logger.info("annotating %s against %s, sets=%s", input_path, db_id_resolved, requested)
+    t_annotate_start = time.perf_counter()
 
     # Parse features.tsv up front so we fail fast if it's malformed.
     features = parse_features(db_dir / manifest.features)
@@ -756,6 +780,12 @@ def annotate(
     input_basename = _derive_input_basename(input_path)
     prefix = f"{input_basename}.{db_id_resolved}"
     kmc_db_basename = db_dir / manifest.index.basename
+    logger.info(
+        "running get_featureIDs on %s (threads=%d); this may take several minutes",
+        input_path.name,
+        threads,
+    )
+    t_kmc_start = time.perf_counter()
     combined_bed = run_get_featureids(
         db_path=kmc_db_basename,
         input_path=input_path,
@@ -766,6 +796,12 @@ def annotate(
     )
     if not combined_bed.is_file():
         raise KaryoscopeError(f"get_featureIDs did not produce expected output at {combined_bed}")
+    combined_size = combined_bed.stat().st_size
+    logger.info(
+        "ran get_featureIDs in %.1fs (combined BED: %s)",
+        time.perf_counter() - t_kmc_start,
+        _human_bytes(combined_size),
+    )
     logger.debug("combined BED at %s", combined_bed)
 
     # Compute output paths (uncompressed names; bgzip later if requested).
@@ -785,12 +821,18 @@ def annotate(
     # When smoothing is off we use the simpler in-process splitter
     # (no need to fork workers for a one-line translation).
     if smooth:
+        logger.info(
+            "smoothing pass: %d feature set(s), threads=%d",
+            len(requested),
+            threads,
+        )
         logger.debug(
             "smoothing pass with threads=%d, preserve_input_order=%s, feature_sets=%s",
             threads,
             preserve_input_order,
             requested,
         )
+        t_smooth_start = time.perf_counter()
         _smooth_all_feature_sets(
             combined_bed=combined_bed,
             feature_sets=requested,
@@ -801,17 +843,27 @@ def annotate(
             threads=threads,
             preserve_input_order=preserve_input_order,
         )
+        logger.info("smoothing pass complete in %.1fs", time.perf_counter() - t_smooth_start)
     else:
         # Only presmoothed output, no smoothing.
+        logger.info("splitting combined BED into %d per-feature-set BED(s)", len(requested))
+        t_split_start = time.perf_counter()
         _split_combined_bed(combined_bed, requested, features, presmoothed_paths)
+        logger.info("split complete in %.1fs", time.perf_counter() - t_split_start)
 
     # bgzip (or not).
     if bgzip:
+        n_to_bgzip = sum(1 for fs in requested if fs in presmoothed_paths) + sum(
+            1 for fs in requested if fs in smoothed_paths
+        )
+        logger.info("bgzip pass: %d BED(s)", n_to_bgzip)
+        t_bgzip_start = time.perf_counter()
         for fs in requested:
             if fs in presmoothed_paths:
                 presmoothed_paths[fs] = _bgzip_file(presmoothed_paths[fs])
             if fs in smoothed_paths:
                 smoothed_paths[fs] = _bgzip_file(smoothed_paths[fs])
+        logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
 
     # Tidy up the combined intermediate unless asked to keep it.
     if not keep_intermediates:
@@ -824,6 +876,13 @@ def annotate(
             combined_kept = combined_bed
     else:
         combined_kept = combined_bed
+
+    n_outputs = len(presmoothed_paths) + len(smoothed_paths)
+    logger.info(
+        "annotate complete in %.1fs (%d output BED(s))",
+        time.perf_counter() - t_annotate_start,
+        n_outputs,
+    )
 
     return AnnotateResult(
         presmoothed_paths=presmoothed_paths,
