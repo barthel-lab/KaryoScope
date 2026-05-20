@@ -641,15 +641,24 @@ def render_karyotype(
 
     # --- Final pass: draw colored rectangles per feature ------------
 
-    missing_features_warned: set[str] = set()
-
     def _color_for(feature: str) -> str:
+        # Hard fail on missing colour: ``karyotype_run`` runs
+        # :func:`validate_colors` before calling us, so a missing
+        # colour here means either the renderer was called with an
+        # incomplete colours dict (caller bug) or a feature
+        # appeared in the data that isn't in the hierarchy (the
+        # earlier validation would have caught it from
+        # hierarchy.tsv). Either way, silent white would be wrong
+        # -- it conflates real categorisation with the
+        # ``novel``-rendered-white sentinel.
         if feature in colors:
             return colors[feature]
-        if feature not in missing_features_warned:
-            logger.warning("feature %r not found in colors map; using white", feature)
-            missing_features_warned.add(feature)
-        return "#ffffff"
+        raise KaryotypeError(
+            f"feature {feature!r} appeared in the binned BED but has no "
+            "colour entry; this should have been caught by validate_colors "
+            "upstream. If you're calling render_karyotype directly, make "
+            "sure the colors dict includes every feature your data uses."
+        )
 
     for ri in inputs:
         for seq, intervals in ri.binned_bed.items():

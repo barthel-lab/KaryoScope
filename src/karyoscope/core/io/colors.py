@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from karyoscope.core.io.features import NOVEL_NAME
+from karyoscope.core.io.hierarchy import Hierarchy
 from karyoscope.exceptions import KaryoscopeError
 
 
@@ -97,3 +99,52 @@ def colors_for_set(
     out: dict[str, str] = {"novel": "#ffffff"}
     out.update(colors.get(feature_set, {}))
     return out
+
+
+def validate_colors(
+    hierarchy: Hierarchy,
+    colors: dict[str, dict[str, str]],
+) -> list[str]:
+    """Cross-check colors.tsv against hierarchy.tsv.
+
+    Returns a list of human-readable issue strings (empty list when
+    the colors file is complete). Each issue is one missing
+    ``(feature_set, node)`` pair.
+
+    The rule: every node that appears in ``hierarchy.tsv`` for a
+    given feature set -- whether as a child or as a parent -- must
+    have an entry in ``colors.tsv`` for that feature set. Smoothing
+    can promote intervals to any node in the tree (including the
+    ``categorized`` root, which only ever appears in the parent
+    column), so all of them can show up in rendered output.
+
+    The implicit ``novel`` sentinel is **not** required in
+    ``colors.tsv`` -- it's always rendered white by the renderer.
+
+    Used by:
+
+    * :func:`karyoscope.commands.info.cmd` as a soft warning.
+    * :func:`karyoscope.commands.download.cmd` as a hard error so
+      community-built databases that are missing colors get rejected
+      at install time, not karyotype time.
+    * :func:`karyoscope.core.karyotype_run.karyotype_run` as a hard
+      error so locally-installed databases that bypassed download
+      validation still get caught before any SVG is rendered.
+    """
+    issues: list[str] = []
+    for feature_set in hierarchy.feature_sets():
+        nodes = hierarchy.nodes(feature_set)
+        fs_colors = colors.get(feature_set, {})
+        for node in sorted(nodes):
+            if node == NOVEL_NAME:
+                # Defensive: ``novel`` is the white sentinel and
+                # should never appear in hierarchy.tsv. If it does
+                # we let it through here (hierarchy validation is
+                # the right place to flag that).
+                continue
+            if node not in fs_colors:
+                issues.append(
+                    f"feature set {feature_set!r}: hierarchy node {node!r} "
+                    "has no entry in colors.tsv"
+                )
+    return issues

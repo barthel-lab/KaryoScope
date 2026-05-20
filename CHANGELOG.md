@@ -539,6 +539,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Stage 5d series is complete.
 
 ### Changed
+- ``karyoscope`` now treats missing colour entries as malformed-
+  database errors rather than silently rendering white. Surfaced
+  during dogfooding when ``repeat`` (a top-level grouping in the
+  production hierarchy) was missing from colors.tsv and the
+  legend showed a white swatch -- visually indistinguishable from
+  the ``novel`` sentinel. The fallback was wrong by design.
+- New :func:`karyoscope.core.io.colors.validate_colors` cross-checks
+  hierarchy.tsv against colors.tsv: every hierarchy node (children
+  + parents, so including the ``categorized`` root) must have an
+  entry in colors.tsv for its feature set. The ``novel`` sentinel
+  is exempt -- it's always rendered white.
+- ``karyoscope info <db>`` now runs ``validate_colors`` and prints
+  any issues under a ``Colors warnings:`` heading (informational,
+  doesn't fail the command).
+- ``karyoscope download`` runs ``validate_colors`` after extracting
+  the tarball and **refuses to register** the install (no entry
+  added to installed.json) if any colours are missing. The
+  extracted directory is left on disk for inspection; the error
+  message lists every missing ``(feature_set, node)`` pair.
+- ``karyoscope karyotype`` runs ``validate_colors`` before any
+  render starts, raising :class:`KaryotypeError` if any colour is
+  missing. Catches malformed databases that bypassed
+  ``download`` validation (e.g. our manual installed.json
+  bootstrap on the cluster).
+- :func:`render_karyotype._color_for` now raises
+  :class:`KaryotypeError` on missing colours instead of falling
+  back to white. ``karyotype_run`` validates upstream so the
+  raise is defence-in-depth for direct callers.
+- Test fixture ``tests/data/dummy_db.tar.gz`` rebuilt to add the
+  missing internal nodes (``categorized``, ``autosome``,
+  ``centromeric``, ``aSat``, ``HSat``) to colors.txt so the dummy
+  db itself passes the new validator. New SHA-256 propagated to
+  ``dummy_db.sha256`` and ``dummy_registry.yaml``.
 - ``karyoscope karyotype`` title-band wording: each metadata segment
   now carries an explanatory noun for consistency with ``genome view``.
   Format: ``<sample>  |  <dbid> database  |  <mode> view  |

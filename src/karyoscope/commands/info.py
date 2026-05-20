@@ -159,6 +159,19 @@ def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
 
     issues = validate_hierarchy(hierarchy, feature_columns=features_columns)
 
+    # Cross-validate colors.tsv against the hierarchy. info is
+    # read-only inspection; treat both checks as warnings rather
+    # than erroring. ``download`` and ``karyotype`` enforce the
+    # same checks as hard errors.
+    color_issues: list[str] = []
+    try:
+        from karyoscope.core.io.colors import parse_colors, validate_colors
+
+        colors = parse_colors(db_dir / manifest.colors)
+        color_issues = validate_colors(hierarchy, colors)
+    except Exception as e:
+        color_issues = [f"colors.tsv could not be parsed: {e}"]
+
     counts = hierarchy.count_by_feature_set()
     click.echo("  Feature sets:")
     for fs in manifest.feature_sets:
@@ -168,6 +181,10 @@ def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
     if issues:
         click.echo("  Hierarchy warnings:")
         for issue in issues:
+            click.echo(f"    ! {issue}")
+    if color_issues:
+        click.echo("  Colors warnings:")
+        for issue in color_issues:
             click.echo(f"    ! {issue}")
 
 

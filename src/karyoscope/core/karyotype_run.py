@@ -35,7 +35,7 @@ from pathlib import Path
 from karyoscope.core.annotate import resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.centromeres import centromeres_run
-from karyoscope.core.io.colors import colors_for_set, parse_colors
+from karyoscope.core.io.colors import colors_for_set, parse_colors, validate_colors
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import read_map
 from karyoscope.core.karyotype import (
@@ -304,6 +304,18 @@ def karyotype_run(
 
     colors = parse_colors(db_dir / manifest.colors)
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
+
+    # Hard check that every hierarchy node has a colour. ``download``
+    # runs the same check at install time; we re-run it here so
+    # locally-installed databases (which bypass download validation)
+    # still get caught before any SVG is rendered.
+    color_issues = validate_colors(hierarchy, colors)
+    if color_issues:
+        raise KaryotypeError(
+            f"database {db_id_resolved!r} is missing colour entries; refusing "
+            "to render. Fix colors.tsv (or use `karyoscope info` to see the "
+            "full list of issues):\n  - " + "\n  - ".join(color_issues)
+        )
 
     # Make sure scaffolded BEDs exist for every input + requested
     # feature set. scaffold_run short-circuits on existing files.

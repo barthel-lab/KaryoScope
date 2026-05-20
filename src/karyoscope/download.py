@@ -219,9 +219,31 @@ def install_database(
     # on disk so the user can inspect; just don't record the install.
     logger.debug("validating database layout at %s", target_dir)
     try:
-        validate_database_layout(target_dir)
+        manifest = validate_database_layout(target_dir)
     except DatabaseLayoutError:
         raise
+
+    # Cross-validate hierarchy <-> colors. The hierarchy parser is
+    # structural; this is the semantic check that every node a
+    # downstream command might see in BED output has a colour.
+    # Failing here surfaces malformed community-built databases at
+    # install time rather than karyotype time. We keep the extracted
+    # directory on disk for inspection but refuse to register the
+    # install in installed.json.
+    from karyoscope.core.io.colors import parse_colors, validate_colors
+    from karyoscope.core.io.hierarchy import parse_hierarchy
+
+    hierarchy = parse_hierarchy(target_dir / manifest.hierarchy)
+    colors = parse_colors(target_dir / manifest.colors)
+    color_issues = validate_colors(hierarchy, colors)
+    if color_issues:
+        raise KaryoscopeError(
+            f"database {entry.id!r} extracted at {target_dir} but FAILED colors "
+            f"validation; refusing to register the install:\n  - "
+            + "\n  - ".join(color_issues)
+            + "\nFix colors.tsv (or use a different database) and re-run "
+            "`karyoscope download`."
+        )
 
     # Record the install.
     logger.debug("recording install of %s in installed.json", entry.id)

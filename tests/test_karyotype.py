@@ -188,16 +188,18 @@ class TestRenderKaryotypeUnit:
         assert "#abcdef" in text
         assert "#fedcba" not in text
 
-    def test_unknown_feature_renders_white(self, tmp_path: Path) -> None:
-        # Missing colour -> warning + white. We don't have a hook to
-        # observe the warning here, but the function must not raise.
+    def test_unknown_feature_is_hard_error(self, tmp_path: Path) -> None:
+        # Stage 6d: missing colours used to silently fall back to
+        # white (conflating real categorisation with the novel
+        # sentinel). They now raise. The caller is expected to have
+        # validated colours upstream via validate_colors.
         ri = RenderInput(
             map_rows=[_row("chr1_hap1_a", chrom="chr1", hap="hap1", length=1000)],
             binned_bed={"chr1_hap1_a": [(0, 1000, "mystery_feature")]},
         )
         out = tmp_path / "x.svg"
-        render_karyotype([ri], colors={}, mode="genome", output_path=out)
-        assert out.is_file()
+        with pytest.raises(KaryotypeError, match="mystery_feature"):
+            render_karyotype([ri], colors={}, mode="genome", output_path=out)
 
 
 # --- title + legend ------------------------------------------------

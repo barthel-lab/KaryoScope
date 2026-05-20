@@ -158,10 +158,22 @@ featureID\tchromosome\tregion
 3\tchr2\trC
 """
 
+#: Every hierarchy node needs an entry in colors.tsv (Stage 6d's
+#: ``validate_colors`` cross-check, enforced by ``karyoscope download``
+#: and ``karyoscope karyotype``). Internal nodes (``categorized``,
+#: ``autosome``, ``centromeric``, ``aSat``, ``HSat``) get neutral
+#: greys; the leaves get distinctive colours so the rendered SVG
+#: can be eyeballed in tests.
 COLORS_TXT = """\
 feature_set\tfeature\tcolor
+chromosome\tcategorized\t#A0A0A0
+chromosome\tautosome\t#C0C0C0
 chromosome\tchr1\t#1f77b4
 chromosome\tchr2\t#ff7f0e
+region\tcategorized\t#A0A0A0
+region\tcentromeric\t#C0C0C0
+region\taSat\t#D0D0D0
+region\tHSat\t#D0D0D0
 region\trA\t#2ca02c
 region\trB\t#d62728
 region\trC\t#9467bd
