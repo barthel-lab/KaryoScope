@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import gzip
 import logging
+import multiprocessing as mp
+import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -52,9 +54,16 @@ from typing import IO
 
 from karyoscope.core.io.features import NOVEL_NAME
 from karyoscope.core.io.hierarchy import Hierarchy
+from karyoscope.core.smooth import chunked_seq_reader
 from karyoscope.exceptions import BinError
 
 logger = logging.getLogger(__name__)
+
+#: Default lines-per-chunk for the worker pool. Matches the smoothing
+#: module's default; chunks always end at a sequence boundary, so the
+#: actual chunk size is "at least N lines and ends at the next
+#: sequence boundary".
+DEFAULT_CHUNK_SIZE = 50_000
 
 
 #: Features that lose ties and that win only when they cover more than
@@ -239,6 +248,12 @@ def bin_records(
 
 
 def _open_in(path: Path) -> IO[str]:
+    """Open ``path`` for text reading.
+
+    Returns ``sys.stdin`` when ``path`` is ``-``. Callers must not
+    close the returned handle in that case; use :func:`_close_if_owned`
+    or check ``handle is sys.stdin`` before closing.
+    """
     if str(path) == "-":
         import sys
 
@@ -249,6 +264,11 @@ def _open_in(path: Path) -> IO[str]:
 
 
 def _open_out(path: Path, *, gzip_out: bool) -> IO[str]:
+    """Open ``path`` for text writing.
+
+    Returns ``sys.stdout`` when ``path`` is ``-``. Same close-semantics
+    caveat as :func:`_open_in`.
+    """
     if str(path) == "-":
         import sys
 
@@ -256,6 +276,15 @@ def _open_out(path: Path, *, gzip_out: bool) -> IO[str]:
     if gzip_out:
         return gzip.open(path, "wt")
     return path.open("w")
+
+
+def _close_if_owned(handle: IO[str]) -> None:
+    """Close ``handle`` unless it's stdin/stdout (which we don't own)."""
+    import sys
+
+    if handle is sys.stdin or handle is sys.stdout:
+        return
+    handle.close()
 
 
 def _iter_bed(handle: IO[str]) -> Iterator[tuple[str, int, int, str]]:
@@ -281,6 +310,81 @@ def _iter_bed(handle: IO[str]) -> Iterator[tuple[str, int, int, str]]:
         yield parts[0], start, end, parts[3]
 
 
+def _resolve_pool_size(threads: int) -> int:
+    """Translate the user-facing ``threads`` arg into an actual pool size.
+
+    ``threads <= 0`` means "auto" (``os.cpu_count()``). ``threads == 1``
+    is single-threaded (caller short-circuits the pool entirely).
+    """
+    if threads <= 0:
+        return os.cpu_count() or 1
+    return threads
+
+
+# --- worker-pool dispatch ------------------------------------------
+
+# Per-worker globals, set once via :func:`worker_initializer`. Pickling
+# cost for ``bin_size`` and ``leaf_set`` is paid once per worker
+# (when the Pool spawns it), not once per chunk.
+_worker_bin_size: int | None = None
+_worker_leaf_set: frozenset[str] | None = None
+
+
+def worker_initializer(
+    bin_size: int,
+    leaf_set: frozenset[str] | None,
+) -> None:
+    """Initialise a :class:`multiprocessing.Pool` worker.
+
+    Public so it can be the ``initializer=`` callback. Not part of the
+    user-facing API; tests may reference it.
+    """
+    global _worker_bin_size, _worker_leaf_set
+    _worker_bin_size = bin_size
+    _worker_leaf_set = leaf_set
+
+
+def process_seq_chunk(chunk: list[str]) -> list[str]:
+    """Bin one chunk of BED lines into a list of output lines.
+
+    The chunk must contain complete sequences (no fragment ever
+    crosses a chunk boundary -- :func:`karyoscope.core.smooth.chunked_seq_reader`
+    enforces this). Returns newline-terminated output lines ready for
+    the caller to ``writelines`` into the output file.
+
+    Output order within the chunk matches input order: contigs appear
+    in their input order, and within each contig the bins are
+    coordinate-sorted.
+    """
+    if _worker_bin_size is None:
+        raise BinError("worker_initializer was not called; cannot process chunk")
+    bin_size = _worker_bin_size
+    leaf_set: set[str] | None = set(_worker_leaf_set) if _worker_leaf_set else None
+
+    out_lines: list[str] = []
+
+    def _sink(c: str, s: int, e: int, f: str) -> None:
+        out_lines.append(f"{c}\t{s}\t{e}\t{f}\n")
+
+    def _records() -> Iterator[tuple[str, int, int, str]]:
+        for i, raw in enumerate(chunk, start=1):
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 4:
+                raise BinError(
+                    f"chunk line {i}: expected 4+ tab-separated columns, got {len(parts)}: {raw!r}"
+                )
+            try:
+                yield parts[0], int(parts[1]), int(parts[2]), parts[3]
+            except ValueError as e:
+                raise BinError(f"chunk line {i}: non-integer coordinates: {raw!r}") from e
+
+    _drive(_records(), bin_size, leaf_set, _sink)
+    return out_lines
+
+
 def bin_features(
     input_path: Path,
     output_path: Path,
@@ -288,29 +392,79 @@ def bin_features(
     bin_size: int,
     leaf_set: set[str] | None = None,
     gzip_out: bool | None = None,
+    threads: int = 1,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> None:
     """Bin a BED file and write the result.
 
     ``input_path`` may be plain or gzipped (``.gz``). When
     ``gzip_out`` is ``None`` (the default) the output is gzipped iff
-    ``output_path`` ends in ``.gz``.
+    ``output_path`` ends in ``.gz``. Use ``Path("-")`` for either
+    path to mean stdin/stdout (always single-threaded in that case --
+    the pool path requires a real on-disk input).
 
-    Use ``Path("-")`` for either path to mean stdin/stdout.
+    Parallelism: ``threads`` (default 1) controls the worker-pool
+    size. ``threads == 0`` means "auto" (``os.cpu_count()``).
+    ``threads == 1`` short-circuits the pool entirely and runs the
+    in-process binner directly -- output is byte-for-byte identical
+    to the multi-threaded path.
+
+    The pool divides the input into chunks of at least ``chunk_size``
+    lines, never splitting a sequence across chunks. Each chunk goes
+    to one worker. ``pool.imap`` preserves input order, so the output
+    BED is grouped per sequence in source order with bins
+    coordinate-sorted within each sequence (the same property the
+    single-threaded path produces).
     """
     if gzip_out is None:
         gzip_out = str(output_path).endswith(".gz") and str(output_path) != "-"
 
+    is_stdio = str(input_path) == "-" or str(output_path) == "-"
+    pool_size = _resolve_pool_size(threads)
+    use_pool = pool_size > 1 and not is_stdio
+
     logger.info(
-        "binning %s -> %s (bin_size=%d, leaf_set=%s)",
+        "binning %s -> %s (bin_size=%d, leaf_set=%s, threads=%s)",
         input_path,
         output_path,
         bin_size,
         "yes" if leaf_set else "no",
+        pool_size if use_pool else 1,
     )
 
-    with _open_in(input_path) as in_h, _open_out(output_path, gzip_out=gzip_out) as out_h:
+    if not use_pool:
+        # Single-threaded path: stream directly through the binner.
+        in_h = _open_in(input_path)
+        out_h = _open_out(output_path, gzip_out=gzip_out)
+        try:
 
-        def _emit(c: str, s: int, e: int, f: str) -> None:
-            out_h.write(f"{c}\t{s}\t{e}\t{f}\n")
+            def _emit(c: str, s: int, e: int, f: str) -> None:
+                out_h.write(f"{c}\t{s}\t{e}\t{f}\n")
 
-        _drive(_iter_bed(in_h), bin_size, leaf_set, _emit)
+            _drive(_iter_bed(in_h), bin_size, leaf_set, _emit)
+        finally:
+            _close_if_owned(in_h)
+            _close_if_owned(out_h)
+        return
+
+    # Multi-threaded path: chunked-by-sequence-boundary dispatch
+    # through a process pool. ``chunked_seq_reader`` lives in
+    # :mod:`karyoscope.core.smooth`; the sequence-boundary guarantee
+    # is the same one smoothing relies on, so per-sequence binning
+    # semantics are preserved.
+    leaf_frozen = frozenset(leaf_set) if leaf_set else None
+    ctx = mp.get_context("spawn")
+    out_h = _open_out(output_path, gzip_out=gzip_out)
+    try:
+        with ctx.Pool(
+            processes=pool_size,
+            initializer=worker_initializer,
+            initargs=(bin_size, leaf_frozen),
+        ) as pool:
+            for out_lines in pool.imap(
+                process_seq_chunk,
+                chunked_seq_reader(input_path, chunk_size),
+            ):
+                out_h.writelines(out_lines)
+    finally:
+        _close_if_owned(out_h)

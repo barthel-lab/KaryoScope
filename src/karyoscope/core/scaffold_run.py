@@ -260,6 +260,7 @@ def _ensure_binned(
     bin_size: int,
     leaf_set: set[str],
     auto: bool,
+    threads: int,
 ) -> Path:
     """Return the binned-BED path, running the binner if necessary."""
     out = _binned_bed_path(spec.out_dir, spec.stem, db_id, fs, bin_size)
@@ -278,7 +279,7 @@ def _ensure_binned(
             f"at {src} (annotate should have produced it)"
         )
     logger.info("binning %s -> %s (bin_size=%d)", src, out, bin_size)
-    bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None)
+    bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads)
     return out
 
 
@@ -439,6 +440,7 @@ def scaffold_run(
             bin_size=bin_size,
             leaf_set=chromosome_leaves,
             auto=auto,
+            threads=threads,
         )
         _ensure_binned(
             r,
@@ -447,6 +449,7 @@ def scaffold_run(
             bin_size=bin_size,
             leaf_set=region_leaves,
             auto=auto,
+            threads=threads,
         )
 
     # --- build ContigInput list across all inputs --------------------

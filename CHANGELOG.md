@@ -539,6 +539,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Stage 5d series is complete.
 
 ### Changed
+- ``karyoscope bin`` gained per-sequence-chunk parallelism via
+  :class:`multiprocessing.Pool`. New CLI flag ``-t / --threads``
+  (default 1; 0 = auto via ``os.cpu_count()``). Threaded output is
+  byte-for-byte identical to the single-threaded path (verified by
+  ``tests/test_bin.py::TestBinFeaturesThreaded``). Stdin/stdout I/O
+  remains single-threaded regardless of the flag (the pool path
+  requires a real on-disk input). The worker pool reuses the same
+  ``chunked_seq_reader`` from :mod:`karyoscope.core.smooth`: chunks
+  always end at a sequence boundary so per-sequence binning
+  semantics are preserved without needing a bin-boundary-aware
+  reader. ``scaffold_run``, ``centromeres_run``, and
+  ``karyotype_run`` propagate their ``threads`` parameter to
+  ``bin_features`` so the per-sequence parallelism flows through
+  the auto-derive cascade end-to-end.
 - ``karyoscope karyotype`` renamed its ``full`` render mode to
   ``genome``. The CLI now accepts ``--mode genome`` (case-insensitive)
   and the output filename segment is ``.genome.`` rather than

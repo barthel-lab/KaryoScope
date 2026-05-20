@@ -252,6 +252,7 @@ def _ensure_binned_scaffolded(
     leaf_set: set[str],
     auto: bool,
     input_name: str,
+    threads: int,
 ) -> Path:
     out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size)
     if out.is_file():
@@ -268,7 +269,7 @@ def _ensure_binned_scaffolded(
             f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at {src}"
         )
     logger.info("binning %s -> %s (bin_size=%d)", src, out, bin_size)
-    bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None)
+    bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads)
     return out
 
 
@@ -378,6 +379,7 @@ def centromeres_run(
             leaf_set=centromere_leaves,
             auto=auto,
             input_name=spec.path.name,
+            threads=threads,
         )
         coarse_bins = _load_binned_bed(coarse_path)
 
@@ -392,6 +394,7 @@ def centromeres_run(
                 leaf_set=centromere_leaves,
                 auto=auto,
                 input_name=spec.path.name,
+                threads=threads,
             )
             fine_bins = _load_binned_bed(fine_path)
 

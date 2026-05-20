@@ -94,6 +94,15 @@ logger = logging.getLogger(__name__)
     default=None,
     help="Feature set to use for leaf prioritisation. Required when --db is given (or implied).",
 )
+@click.option(
+    "--threads",
+    "-t",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Per-sequence-chunk parallelism. 0 = auto (os.cpu_count()). 1 = single-threaded. "
+    "Stdin/stdout I/O is always single-threaded regardless of this flag.",
+)
 def cmd(
     input_path: Path,
     output_path: Path,
@@ -101,6 +110,7 @@ def cmd(
     db_id: str | None,
     db_root_arg: Path | None,
     feature_set: str | None,
+    threads: int,
 ) -> None:
     """Run the binner.
 
@@ -154,6 +164,7 @@ def cmd(
             output_path=output_path,
             bin_size=bin_size,
             leaf_set=leaf_set,
+            threads=threads,
         )
     except BinError as e:
         raise click.ClickException(str(e)) from e

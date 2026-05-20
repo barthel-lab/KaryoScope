@@ -269,3 +269,97 @@ class TestCLI:
         )
         assert result.exit_code == 0, result.output
         assert dst.read_text() == "chr1\t0\t100\trA\n"
+
+
+# --- threaded path produces byte-identical output -------------------
+
+
+class TestBinFeaturesThreaded:
+    """``bin_features(threads=N)`` should byte-for-byte match
+    ``bin_features(threads=1)`` regardless of N.
+
+    Pool-based execution path: chunked-by-sequence-boundary dispatch
+    via :class:`multiprocessing.Pool`. The output ordering is
+    preserved by ``pool.imap`` (input-chunk-order) and within each
+    chunk by the in-worker ``_drive`` loop, so byte equality is the
+    right invariant to test.
+    """
+
+    def _write_bed(self, p: Path, rows: list[tuple[str, int, int, str]]) -> None:
+        p.write_text("".join(f"{c}\t{s}\t{e}\t{f}\n" for c, s, e, f in rows))
+
+    def test_single_sequence_threads_match(self, tmp_path: Path) -> None:
+        src = tmp_path / "in.bed"
+        self._write_bed(
+            src,
+            [("chr1", i * 1000, (i + 1) * 1000, "A" if i % 2 == 0 else "B") for i in range(100)],
+        )
+        dst1 = tmp_path / "out1.bed"
+        dst2 = tmp_path / "out2.bed"
+        bin_features(src, dst1, bin_size=2000, threads=1)
+        bin_features(src, dst2, bin_size=2000, threads=2, chunk_size=20)
+        assert dst1.read_text() == dst2.read_text()
+
+    def test_multi_sequence_threads_match(self, tmp_path: Path) -> None:
+        # Several sequences forces chunking across sequence boundaries.
+        rows: list[tuple[str, int, int, str]] = []
+        for chrom in ("chr1", "chr2", "chr3", "chr4"):
+            for i in range(50):
+                rows.append((chrom, i * 1000, (i + 1) * 1000, "A" if i % 3 else "B"))
+        src = tmp_path / "in.bed"
+        self._write_bed(src, rows)
+        dst1 = tmp_path / "out1.bed"
+        dst2 = tmp_path / "out2.bed"
+        bin_features(src, dst1, bin_size=10000, threads=1)
+        # Force lots of chunks: 4 sequences x 50 lines = 200 lines,
+        # chunk_size=30 makes at least 4 chunks (one per sequence).
+        bin_features(src, dst2, bin_size=10000, threads=4, chunk_size=30)
+        assert dst1.read_text() == dst2.read_text()
+
+    def test_with_leaf_set_threads_match(self, tmp_path: Path) -> None:
+        # Worker must receive and apply leaf_set correctly.
+        rows = [
+            ("chr1", 0, 80, "centromeric"),
+            ("chr1", 80, 100, "rA"),
+            ("chr2", 0, 100, "rB"),
+        ]
+        src = tmp_path / "in.bed"
+        self._write_bed(src, rows)
+        dst1 = tmp_path / "out1.bed"
+        dst2 = tmp_path / "out2.bed"
+        leaf = {"rA", "rB", "rC"}
+        bin_features(src, dst1, bin_size=100, leaf_set=leaf, threads=1)
+        bin_features(src, dst2, bin_size=100, leaf_set=leaf, threads=2, chunk_size=1)
+        assert dst1.read_text() == dst2.read_text()
+
+    def test_gzip_io_threads_match(self, tmp_path: Path) -> None:
+        # Confirm the gzipped-output path works through the pool too.
+        rows = [("chr1", i * 100, (i + 1) * 100, "X") for i in range(20)]
+        src = tmp_path / "in.bed"
+        self._write_bed(src, rows)
+        dst1 = tmp_path / "out1.bed.gz"
+        dst2 = tmp_path / "out2.bed.gz"
+        bin_features(src, dst1, bin_size=200, threads=1)
+        bin_features(src, dst2, bin_size=200, threads=2, chunk_size=5)
+        # Compare decompressed text -- compressed-byte equality is
+        # not guaranteed across runs (gzip metadata).
+        with gzip.open(dst1, "rt") as h1, gzip.open(dst2, "rt") as h2:
+            assert h1.read() == h2.read()
+
+    def test_threads_zero_auto_detects(self, tmp_path: Path) -> None:
+        # threads=0 means auto -- should not raise.
+        src = tmp_path / "in.bed"
+        self._write_bed(src, [("chr1", 0, 1000, "A")])
+        dst = tmp_path / "out.bed"
+        bin_features(src, dst, bin_size=100, threads=0)
+        assert dst.read_text() == "chr1\t0\t1000\tA\n"
+
+    def test_stdio_forces_single_threaded(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        # The pool path requires a real input path; stdin/stdout
+        # invocations should still work with --threads > 1 (we
+        # silently fall back to single-threaded).
+        src = tmp_path / "in.bed"
+        src.write_text("chr1\t0\t300\tA\n")
+        result = cli_runner.invoke(main, ["bin", "-i", str(src), "-o", "-", "-b", "100", "-t", "4"])
+        assert result.exit_code == 0, result.output
+        assert "chr1\t0\t300\tA\n" in result.output
