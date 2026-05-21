@@ -694,6 +694,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Changed
+- ``karyoscope karyotype`` now exposes ``--bgzip/--no-bgzip`` (default
+  on), matching the surface of ``annotate``, ``scaffold``, and
+  ``centromeres``. The flag controls compression of the intermediate
+  scaffolded BEDs and the centromeres BED produced by the cascade;
+  the SVG / PDF / PNG outputs are unaffected. Previously karyotype
+  always bgzipped its intermediates with no override, which was
+  inconsistent and inconvenient for benchmarking.
+- ``scaffold_run._ensure_annotated`` no longer hardcodes ``bgzip=True``
+  when auto-deriving missing annotation BEDs; it now inherits the
+  scaffold-level setting. This makes ``karyoscope scaffold --no-bgzip``
+  on a fresh input produce uncompressed annotation BEDs end-to-end
+  (matching what a manual ``karyoscope annotate --no-bgzip`` would
+  have produced). Downstream readers already handle ``.bed`` and
+  ``.bed.gz`` transparently via ``chunked_seq_reader``, so this only
+  affects on-disk storage, not behaviour.
 - ``annotate`` now parallelises the per-(feature_set, kind) temp-file
   concatenation phase via a :class:`ThreadPoolExecutor` of
   ``--threads`` workers. Each (fs, kind) target reads a distinct

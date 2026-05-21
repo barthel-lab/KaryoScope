@@ -199,8 +199,19 @@ def _ensure_annotated(
     feature_sets: list[str],
     threads: int,
     auto: bool,
+    bgzip: bool,
 ) -> None:
-    """Run annotate if any required smoothed BED is missing."""
+    """Run annotate if any required smoothed BED is missing.
+
+    ``bgzip`` controls whether the auto-derived ``annotate`` outputs
+    are compressed; it should inherit the scaffold-level setting so
+    a user running ``karyoscope scaffold --no-bgzip`` on a fresh input
+    gets uncompressed annotation BEDs from the cascade too (matching
+    what a manual ``karyoscope annotate --no-bgzip`` would have
+    produced). Downstream readers handle both ``.bed`` and ``.bed.gz``
+    transparently via ``chunked_seq_reader``, so the choice only
+    affects on-disk storage, not behaviour.
+    """
     missing = [
         fs
         for fs in feature_sets
@@ -229,7 +240,7 @@ def _ensure_annotated(
         smooth=True,
         keep_presmoothed=True,
         keep_intermediates=False,
-        bgzip=True,
+        bgzip=bgzip,
     )
 
 
@@ -448,6 +459,7 @@ def scaffold_run(
             feature_sets=annotate_sets,
             threads=threads,
             auto=auto,
+            bgzip=bgzip,
         )
         _ensure_telo(r, auto=auto)
         _ensure_binned(

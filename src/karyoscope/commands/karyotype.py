@@ -203,6 +203,15 @@ logger = logging.getLogger(__name__)
     help="Auto-derive missing inputs. Disable to require everything upfront.",
 )
 @click.option(
+    "--bgzip/--no-bgzip",
+    default=True,
+    show_default=True,
+    help="bgzip the intermediate scaffolded BEDs (and the centromeres BED, "
+    "when --mode includes centromere) that the cascade produces. The SVG / "
+    "PDF / PNG outputs themselves are unaffected -- this only controls "
+    "compression of the on-disk BED intermediates.",
+)
+@click.option(
     "--outdir",
     "-o",
     "output_dir",
@@ -241,6 +250,7 @@ def cmd(
     no_legend: bool,
     threads: int,
     auto: bool,
+    bgzip: bool,
     output_dir: Path | None,
     output_path: Path | None,
 ) -> None:
@@ -335,6 +345,7 @@ def cmd(
             split_haps_regex=split_haps_regex,
             threads=threads,
             auto=auto,
+            bgzip=bgzip,
             output_dir=output_dir,
             output_path=output_path,
             seed_human_chromosomes=not no_human_chroms,

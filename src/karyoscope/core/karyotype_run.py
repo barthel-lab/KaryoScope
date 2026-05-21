@@ -235,6 +235,7 @@ def karyotype_run(
     split_haps_regex: str | None = None,
     threads: int = 0,
     auto: bool = True,
+    bgzip: bool = True,
     output_dir: Path | None = None,
     output_path: Path | None = None,
     seed_human_chromosomes: bool = True,
@@ -342,6 +343,7 @@ def karyotype_run(
         acrocentrics=acrocentrics,
         split_haps_regex=split_haps_regex,
         threads=threads,
+        bgzip=bgzip,
         auto=auto,
         output_dir=output_dir,
     )
@@ -359,6 +361,7 @@ def karyotype_run(
             min_scaffold_length=min_scaffold_length,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
+            bgzip=bgzip,
             threads=threads,
             auto=auto,
             output_dir=output_dir,
