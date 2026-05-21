@@ -68,20 +68,43 @@ and the macOS + conda `-Wl,-rpath,$CONDA_PREFIX/lib` shim).
 
 ## Quick start
 
+This walkthrough uses the [HG002 v1.1 T2T diploid assembly](https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz) as input, but any FASTA will work. Substitute your own with `--input <path>` throughout.
+
 ```bash
 # 1. Download the recommended human reference database (~17 GB, one-time)
 karyoscope download
 
-# 2. Download HG002 example data (~3 GB, one-time) — or skip if you have your own assembly
-bash examples/quickstart_hg002.sh
+# 2. Download the HG002 v1.1 diploid assembly (~3 GB, one-time)
+#    Skip if you already have your own assembly to annotate.
+curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
-# 3. Annotate the assembly
-karyoscope annotate --input HG002.maternal.fa.gz --outdir results/
+# 3. Annotate the assembly. Recommended: at least 16 threads and 50 GB
+#    of RAM for human-scale inputs (HG002 runs in ~30 min at -t 16).
+#    --no-bgzip keeps the per-feature-set BEDs as plain text for easy
+#    inspection; drop it to get the default bgzipped outputs.
+karyoscope annotate --input hg002v1.1.fasta.gz --outdir results/ --threads 16 --no-bgzip
 
-# 4. Render a karyotype
-karyoscope karyotype --annotation results/HG002.maternal.chromosome.smoothed.bed.gz \
-                     --output HG002.maternal.chromosome.smoothed.genome.karyotype.svg
+# 4. Render the three primary karyotype views.
+#    --no-scaffolding skips the per-feature-set scaffolded BED rewrite
+#    (the expensive step of scaffolding); the scaffold map is still
+#    applied at bin time so the renders are equivalent.
+#    The first invocation runs the full scaffold + bin + render cascade;
+#    the next two reuse the cached intermediates and finish much faster.
+COMMON="--input hg002v1.1.fasta.gz --outdir results/ --threads 16 --sex male --no-scaffolding"
+karyoscope karyotype $COMMON --mode genome      --feature-set chromosome
+karyoscope karyotype $COMMON --mode centromere  --feature-set region
+karyoscope karyotype $COMMON --mode subtelomere --feature-set subtelomeric
 ```
+
+This produces three SVGs under `results/`:
+
+| File | View | Feature set |
+|---|---|---|
+| `hg002v1.1.KS_human_CHM13_v2.genome.chromosome.karyotype.svg` | Genome view | chromosome |
+| `hg002v1.1.KS_human_CHM13_v2.centromere.region.karyotype.svg` | Centromere view | region |
+| `hg002v1.1.KS_human_CHM13_v2.subtelomere.subtelomeric.karyotype.svg` | Subtelomere view | subtelomeric |
+
+Pass `--format pdf` or `--format png` (repeatable) to additionally produce those formats from the SVG.
 
 ## Commands
 

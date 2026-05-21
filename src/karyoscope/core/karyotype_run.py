@@ -454,7 +454,11 @@ def karyotype_run(
             base_name = base_name[:-4]
         results_dir = output_path.parent
     else:
-        base_name = "karyotype"
+        # Default to the first input's stem so the on-disk filename
+        # tells the user at a glance which sample produced the SVGs.
+        # Multi-input runs (e.g. separate hap1/hap2 FASTAs) get the
+        # first input's stem; pass --output to override.
+        base_name = per_input_state[0][2]
         results_dir = output_dir if output_dir is not None else per_input_state[0][1]
 
     # Sample label for the SVG title band. Defaults to the first

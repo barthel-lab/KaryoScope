@@ -694,6 +694,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Changed
+- ``karyoscope karyotype`` now defaults its output filename base to the
+  first ``--input``'s stem (e.g. ``hg002v1.1.<dbid>.<mode>.<fs>.karyotype.svg``)
+  instead of the previous literal ``karyotype`` (e.g.
+  ``karyotype.<dbid>.<mode>.<fs>.karyotype.svg``). Tells the user at a
+  glance which sample produced the SVGs. Pass ``--output PATH`` to
+  override the base name explicitly. Multi-input runs still get the
+  first input's stem; the user can disambiguate with ``--output`` if
+  needed.
 - ``karyoscope karyotype`` now exposes ``--scaffolding/--no-scaffolding``
   (default on). With ``--no-scaffolding`` the cascade still writes
   the scaffold map (so chromosome assignment, hap label, and
