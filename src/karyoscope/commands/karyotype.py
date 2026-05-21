@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 @click.command(
-    help="Render karyotype SVG from per-input scaffolded annotations.",
+    help="Render karyotype SVGs from a genome assembly.",
     no_args_is_help=True,
 )
 @click.option(
@@ -56,7 +56,11 @@ logger = logging.getLogger(__name__)
     "inputs_raw",
     multiple=True,
     required=True,
-    help="FASTA input. Repeat per haplotype. Form: 'NAME=PATH' or bare 'PATH'.",
+    help="FASTA-format genome assembly. Repeat per haplotype. Form: "
+    "'NAME=PATH' or bare 'PATH'. Read-level inputs (FASTQ / BAM) are "
+    "rejected -- karyotype rendering needs scaffolded assembly contigs "
+    "to lay out chromosome cells, which reads don't provide. Use "
+    "`karyoscope annotate` for read-level annotation.",
 )
 @click.option(
     "--telo",
@@ -268,6 +272,14 @@ def cmd(
     output_path: Path | None,
 ) -> None:
     """Render karyotype SVGs.
+
+    \b
+    This command is for genome assemblies. It cascades through scaffold
+    and centromeres (which need contig names from a FASTA) to lay out
+    each chromosome's cells in the figure; read-level inputs (FASTQ /
+    BAM) have no chromosome-scale contig concept and are rejected with
+    a clear error. For read-level annotation, use `karyoscope annotate`
+    instead.
 
     By default, every (mode, feature_set) combination is rendered --
     three modes (genome, centromere, subtelomere) times every feature

@@ -67,7 +67,7 @@ def _split_comma(value: str) -> list[str]:
 
 
 @click.command(
-    help="Order, orient, and rename assembly contigs into canonical scaffolds.",
+    help="Order, orient, and rename genome assembly contigs into canonical scaffolds.",
     no_args_is_help=True,
 )
 @click.option(
@@ -76,8 +76,11 @@ def _split_comma(value: str) -> list[str]:
     "inputs_raw",
     multiple=True,
     required=True,
-    help="FASTA input. Repeat per haplotype. Form: 'NAME=PATH' (e.g. 'hap1=hap1.fa.gz') "
-    "or bare 'PATH' to auto-infer the label from the filename stem.",
+    help="FASTA-format genome assembly. Repeat per haplotype. Form: "
+    "'NAME=PATH' (e.g. 'hap1=hap1.fa.gz') or bare 'PATH' to auto-infer the "
+    "label from the filename stem. Read-level inputs (FASTQ / BAM) are "
+    "rejected -- use `karyoscope annotate` for those; scaffolding doesn't "
+    "apply to reads (no chromosome-scale contigs to order).",
 )
 @click.option(
     "--telo",
@@ -199,6 +202,13 @@ def cmd(
     output_dir: Path | None,
 ) -> None:
     """Run the scaffolder.
+
+    \b
+    This command is for genome assemblies. It needs contig names from a
+    FASTA to order and orient them; read-level inputs (FASTQ / BAM) have
+    no meaningful "contig" concept and are rejected with a clear error.
+    For read-level annotation, use `karyoscope annotate` -- that command
+    accepts FASTA, FASTQ, and BAM.
 
     \b
     Examples:

@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 @click.command(
-    help="Extract per-contig centromere coordinates from scaffolded region BEDs.",
+    help="Extract per-contig centromere coordinates from a genome assembly.",
     no_args_is_help=True,
 )
 @click.option(
@@ -52,8 +52,11 @@ logger = logging.getLogger(__name__)
     "inputs_raw",
     multiple=True,
     required=True,
-    help="FASTA input. Repeat per haplotype. Form: 'NAME=PATH' or bare 'PATH' to "
-    "auto-infer the label from the filename stem.",
+    help="FASTA-format genome assembly. Repeat per haplotype. Form: "
+    "'NAME=PATH' or bare 'PATH' to auto-infer the label from the filename "
+    "stem. Read-level inputs (FASTQ / BAM) are rejected -- centromere "
+    "detection needs scaffolded assembly contigs, which reads don't "
+    "provide. Use `karyoscope annotate` for read-level annotation.",
 )
 @click.option(
     "--telo",
@@ -165,6 +168,13 @@ def cmd(
     output_dir: Path | None,
 ) -> None:
     """Find per-contig centromere coordinates.
+
+    \b
+    This command is for genome assemblies. It cascades through scaffold
+    (which itself needs contig names from a FASTA) to produce per-contig
+    centromere coordinates; read-level inputs (FASTQ / BAM) have no
+    chromosome-scale contig concept and are rejected with a clear error.
+    For read-level annotation, use `karyoscope annotate` instead.
 
     \b
     Examples:
