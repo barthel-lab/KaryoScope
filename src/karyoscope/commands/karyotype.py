@@ -212,6 +212,18 @@ logger = logging.getLogger(__name__)
     "compression of the on-disk BED intermediates.",
 )
 @click.option(
+    "--scaffolding/--no-scaffolding",
+    default=True,
+    show_default=True,
+    help="Write full-resolution scaffolded BEDs to disk during the cascade. "
+    "Pass --no-scaffolding to skip the expensive per-feature-set "
+    "rewrite_bed step (saves ~5-10 min on whole-genome HG002): the "
+    "scaffold_map.tsv is still written, and the map is applied at bin "
+    "time so the binned-scaffolded BEDs and the final karyotype SVGs "
+    "are equivalent. The full-resolution scaffolded BEDs simply aren't "
+    "materialised as a side artifact.",
+)
+@click.option(
     "--outdir",
     "-o",
     "output_dir",
@@ -251,6 +263,7 @@ def cmd(
     threads: int,
     auto: bool,
     bgzip: bool,
+    scaffolding: bool,
     output_dir: Path | None,
     output_path: Path | None,
 ) -> None:
@@ -346,6 +359,7 @@ def cmd(
             threads=threads,
             auto=auto,
             bgzip=bgzip,
+            scaffolding=scaffolding,
             output_dir=output_dir,
             output_path=output_path,
             seed_human_chromosomes=not no_human_chroms,

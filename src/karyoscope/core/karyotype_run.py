@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import gzip
 import logging
+import shutil
+import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -38,7 +40,7 @@ from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.centromeres import centromeres_run
 from karyoscope.core.io.colors import colors_for_set, parse_colors, validate_colors
 from karyoscope.core.io.hierarchy import parse_hierarchy
-from karyoscope.core.io.scaffold_map import read_map
+from karyoscope.core.io.scaffold_map import MapRow, read_map
 from karyoscope.core.karyotype import (
     DEFAULT_HUMAN_CHROMOSOMES,
     RenderInput,
@@ -49,6 +51,7 @@ from karyoscope.core.scaffold import (
     DEFAULT_HUMAN_ACROCENTRICS,
     DEFAULT_MIN_SCAFFOLD_LENGTH,
     Interval,
+    rewrite_bed,
 )
 from karyoscope.core.scaffold_run import InputSpec, scaffold_run
 from karyoscope.exceptions import KaryotypeError
@@ -97,6 +100,22 @@ def _scaffolded_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
     if gz.is_file():
         return gz
     plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.scaffolded.bed"
+    if plain.is_file():
+        return plain
+    return gz
+
+
+def _smoothed_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
+    """The annotate-produced (unscaffolded) smoothed BED path.
+
+    Used on the ``--no-scaffolding`` codepath where scaffolding skipped
+    writing per-FS scaffolded BEDs. We bin this file and apply the
+    scaffold map at bin time via :func:`rewrite_bed`.
+    """
+    gz = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed.gz"
+    if gz.is_file():
+        return gz
+    plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed"
     if plain.is_file():
         return plain
     return gz
@@ -163,7 +182,22 @@ def _ensure_binned_scaffolded(
     auto: bool,
     input_name: str,
     threads: int,
+    map_rows: list[MapRow] | None = None,
 ) -> Path:
+    """Return the binned scaffolded BED path, building it if missing.
+
+    Two construction paths:
+
+    * **Scaffolded BED on disk** (the historical path): bin it directly.
+    * **Scaffolded BED missing but a map is available** (the
+      ``--no-scaffolding`` path): bin the *smoothed* (unscaffolded)
+      BED at the requested ``bin_size``, then stream the binned output
+      through :func:`rewrite_bed` to apply the map (rename contigs +
+      mirror coordinates for flipped contigs). Skipping the
+      full-resolution scaffold BED rewrite is the whole point of
+      ``--no-scaffolding`` -- the map application on binned data is
+      microseconds rather than the minutes the smoothed rewrite costs.
+    """
     out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size)
     if out.is_file():
         return out
@@ -173,12 +207,45 @@ def _ensure_binned_scaffolded(
             f"{fs!r}, bin size {bin_size} (expected at {out}). Re-run with "
             "auto-derive enabled."
         )
-    src = _scaffolded_bed_path(out_dir, stem, db_id, fs)
-    if not src.is_file():
-        raise KaryotypeError(f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at {src}")
-    # bin_features logs its own start (with leaf_set + threads) and
-    # completion lines; no need for a redundant announcement here.
-    bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads)
+    scaffolded_src = _scaffolded_bed_path(out_dir, stem, db_id, fs)
+    if scaffolded_src.is_file():
+        # bin_features logs its own start (with leaf_set + threads) and
+        # completion lines; no need for a redundant announcement here.
+        bin_features(
+            scaffolded_src,
+            out,
+            bin_size=bin_size,
+            leaf_set=leaf_set or None,
+            threads=threads,
+        )
+        return out
+
+    # Fallback: bin the smoothed BED, then apply the scaffold map.
+    if map_rows is None:
+        raise KaryotypeError(
+            f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at "
+            f"{scaffolded_src} and no scaffold map provided for post-bin "
+            f"renaming."
+        )
+    smoothed_src = _smoothed_bed_path(out_dir, stem, db_id, fs)
+    if not smoothed_src.is_file():
+        raise KaryotypeError(
+            f"cannot bin {fs!r} for {input_name}: smoothed BED missing at "
+            f"{smoothed_src} (and scaffolded BED also missing)"
+        )
+    tmpdir = Path(tempfile.mkdtemp(prefix="ks_karyo_bin_", dir=out_dir))
+    try:
+        tmp_binned = tmpdir / "binned.bed.gz"
+        bin_features(
+            smoothed_src,
+            tmp_binned,
+            bin_size=bin_size,
+            leaf_set=leaf_set or None,
+            threads=threads,
+        )
+        rewrite_bed(tmp_binned, out, map_rows=map_rows)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return out
 
 
@@ -236,6 +303,7 @@ def karyotype_run(
     threads: int = 0,
     auto: bool = True,
     bgzip: bool = True,
+    scaffolding: bool = True,
     output_dir: Path | None = None,
     output_path: Path | None = None,
     seed_human_chromosomes: bool = True,
@@ -346,6 +414,7 @@ def karyotype_run(
         bgzip=bgzip,
         auto=auto,
         output_dir=output_dir,
+        write_scaffolded_beds=scaffolding,
     )
 
     # For centromere mode, also ensure the centromere coordinates file
@@ -365,6 +434,7 @@ def karyotype_run(
             threads=threads,
             auto=auto,
             output_dir=output_dir,
+            write_scaffolded_beds=scaffolding,
         )
 
     # Per (input, feature_set): bin scaffolded BED at mode-appropriate
@@ -416,6 +486,10 @@ def karyotype_run(
 
             render_inputs: list[RenderInput] = []
             for spec, out_dir, stem in per_input_state:
+                # Read map first; the binner needs it on the
+                # ``--no-scaffolding`` path to apply rename + flip at
+                # bin time when no on-disk scaffolded BED exists.
+                map_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
                 binned_path = _ensure_binned_scaffolded(
                     out_dir=out_dir,
                     stem=stem,
@@ -426,9 +500,9 @@ def karyotype_run(
                     auto=auto,
                     input_name=spec.path.name,
                     threads=threads,
+                    map_rows=map_rows,
                 )
                 binned_bed = _load_binned_bed(binned_path)
-                map_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
 
                 centromere_ranges: dict[str, tuple[int, int]] | None = None
                 if current_mode == "centromere":

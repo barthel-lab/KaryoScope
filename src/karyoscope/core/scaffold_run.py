@@ -337,6 +337,7 @@ def scaffold_run(
     keep_unscaffolded: bool = True,
     auto: bool = True,
     output_dir: Path | None = None,
+    write_scaffolded_beds: bool = True,
 ) -> dict[str, ScaffoldResult]:
     """Run the full ``karyoscope scaffold`` pipeline.
 
@@ -563,7 +564,7 @@ def scaffold_run(
         write_legacy_stats(per_input_rows, stats_path)
 
         scaffolded_beds: dict[str, Path] = {}
-        if mode in ("bed", "both"):
+        if mode in ("bed", "both") and write_scaffolded_beds:
             for fs in requested:
                 src = _smoothed_bed_path(r.out_dir, r.stem, db_id_resolved, fs)
                 if not src.is_file():
@@ -586,6 +587,17 @@ def scaffold_run(
                 logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
                 out_final = _bgzip_file(out_plain, threads=threads) if bgzip else out_plain
                 scaffolded_beds[fs] = out_final
+        elif mode in ("bed", "both") and not write_scaffolded_beds:
+            # write_scaffolded_beds=False: caller has opted out of the
+            # per-FS BED rewrite. The scaffold_map.tsv is still written
+            # above, so downstream consumers (karyotype's binning-time
+            # map application) can produce binned-scaffolded BEDs
+            # without ever materialising the full-resolution scaffolded
+            # BED. Saves ~5-10 min on whole-genome HG002.
+            logger.info(
+                "skipping rewrite of scaffolded BEDs for %s (write_scaffolded_beds=False)",
+                r.spec.path.name,
+            )
 
         scaffolded_fasta: Path | None = None
         if mode in ("fasta", "both"):

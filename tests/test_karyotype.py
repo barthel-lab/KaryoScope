@@ -613,3 +613,69 @@ def test_karyotype_centromere_mode_against_dummy_db(
     assert result.exit_code == 0, result.output
     svgs = list(out_dir.glob("*.centromere.region.karyotype.svg"))
     assert svgs
+
+
+@_required
+@pytest.mark.integration
+def test_karyotype_no_scaffolding_path_renders(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    dummy_assembly_fasta: Path,
+    tmp_path: Path,
+) -> None:
+    """``--no-scaffolding`` skips the full-resolution scaffolded BED but
+    still renders a valid SVG via the bin-time map-application path.
+
+    Verifies:
+    1. The run exits cleanly.
+    2. The SVG is produced and well-formed.
+    3. No ``*.smoothed.scaffolded.bed[.gz]`` file is left on disk (the
+       whole point of the flag).
+    4. The binned-scaffolded BED still exists (the new path produces
+       it via bin-then-rewrite).
+    """
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "karyotype",
+            "-i",
+            f"hap1={dummy_assembly_fasta}",
+            "--outdir",
+            str(out_dir),
+            "--mode",
+            "genome",
+            "--bin-size",
+            "10",
+            "--min-scaffold-length",
+            "1",
+            "--feature-set",
+            "region",
+            "--no-human-chroms",
+            "--no-scaffolding",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    svgs = list(out_dir.glob("*.karyotype.svg"))
+    assert svgs, f"no SVGs produced; got: {list(out_dir.iterdir())}"
+    text = svgs[0].read_text()
+    assert "<svg" in text
+    assert "</svg>" in text
+
+    # The full-resolution scaffolded BED must NOT exist.
+    scaffolded = list(out_dir.glob("*.region.smoothed.scaffolded.bed*"))
+    assert not scaffolded, (
+        f"--no-scaffolding should skip writing full-resolution scaffolded BEDs, "
+        f"but found: {scaffolded}"
+    )
+
+    # The binned-scaffolded BED MUST exist (the bin-time map application
+    # path still produces it for the renderer to consume).
+    binned_scaffolded = list(out_dir.glob("*.region.smoothed.scaffolded.binned*.bed.gz"))
+    assert binned_scaffolded, f"binned scaffolded BED missing; got: {list(out_dir.iterdir())}"
+
+    # And the scaffold_map.tsv must exist (it's how the binner applied
+    # rename + flip).
+    maps = list(out_dir.glob("*.scaffold_map.tsv"))
+    assert maps, "scaffold_map.tsv should still be written when --no-scaffolding"

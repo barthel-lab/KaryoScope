@@ -694,6 +694,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Changed
+- ``karyoscope karyotype`` now exposes ``--scaffolding/--no-scaffolding``
+  (default on). With ``--no-scaffolding`` the cascade still writes
+  the scaffold map (so chromosome assignment, hap label, and
+  orientation per contig are recorded), but **skips the per-feature-set
+  ``rewrite_bed`` step** that materialises full-resolution scaffolded
+  BEDs on disk. The scaffold map is instead applied at *bin time*:
+  the binner runs against the smoothed (unscaffolded) BED, and a
+  post-bin :func:`rewrite_bed` pass on the small binned output
+  performs the rename + coordinate mirroring. The final binned
+  scaffolded BEDs and karyotype SVGs are equivalent (modulo sub-bin
+  alignment at contig length boundaries); the multi-minute smoothed
+  rewrite is replaced by a microsecond-scale binned rewrite. Saves
+  ~5-10 min on whole-genome HG002 for the default karyotype cascade
+  (all 6 feature sets x 3 modes).
+- ``scaffold_run`` and ``centromeres_run`` both accept a new
+  ``write_scaffolded_beds`` parameter (default ``True``) that
+  controls whether full-resolution scaffolded BEDs are materialised.
+  ``karyotype_run`` forwards ``write_scaffolded_beds=scaffolding`` to
+  both calls. ``_ensure_binned_scaffolded`` in both
+  :mod:`karyoscope.core.karyotype_run` and
+  :mod:`karyoscope.core.centromeres` learned a fallback path: when
+  the scaffolded BED is missing, bin the smoothed BED into a temp
+  file and apply the map via :func:`rewrite_bed` to produce the
+  binned scaffolded BED directly. The downstream renderer is
+  unchanged -- the on-disk format of the binned scaffolded BED is
+  identical to the historical path.
 - ``karyoscope karyotype`` now exposes ``--bgzip/--no-bgzip`` (default
   on), matching the surface of ``annotate``, ``scaffold``, and
   ``centromeres``. The flag controls compression of the intermediate

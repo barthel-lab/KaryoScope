@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import gzip
 import logging
+import shutil
+import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -37,10 +39,12 @@ from pathlib import Path
 from karyoscope.core.annotate import _bgzip_file, resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.io.hierarchy import parse_hierarchy
+from karyoscope.core.io.scaffold_map import MapRow, read_map
 from karyoscope.core.scaffold import (
     DEFAULT_MIN_SCAFFOLD_LENGTH,
     Interval,
     get_simple_region,
+    rewrite_bed,
 )
 from karyoscope.core.scaffold_run import InputSpec, scaffold_run
 from karyoscope.exceptions import CentromereError
@@ -205,6 +209,23 @@ def _scaffolded_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
     return gz  # default to expecting .gz
 
 
+def _smoothed_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
+    """The annotate-produced (unscaffolded) smoothed BED path.
+
+    Looked at only on the ``write_scaffolded_beds=False`` codepath
+    (when scaffolding skipped writing per-FS scaffolded BEDs). The
+    binning step then runs against this file and the scaffold map is
+    applied post-bin via :func:`rewrite_bed`.
+    """
+    gz = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed.gz"
+    if gz.is_file():
+        return gz
+    plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed"
+    if plain.is_file():
+        return plain
+    return gz  # default to expecting .gz
+
+
 def _binned_scaffolded_bed_path(
     out_dir: Path,
     stem: str,
@@ -254,7 +275,22 @@ def _ensure_binned_scaffolded(
     auto: bool,
     input_name: str,
     threads: int,
+    map_rows: list[MapRow] | None = None,
 ) -> Path:
+    """Return the binned scaffolded BED path, building it if missing.
+
+    Two construction paths:
+
+    * **Scaffolded BED on disk** (the historical path): bin it directly.
+    * **Scaffolded BED missing but a map is available** (the
+      ``--no-scaffolding`` path): bin the *smoothed* (unscaffolded)
+      BED at the requested ``bin_size``, then stream the binned output
+      through :func:`rewrite_bed` to apply the map (rename contigs +
+      mirror coordinates for flipped contigs). Skipping the
+      full-resolution scaffold BED rewrite is the whole point of
+      ``--no-scaffolding`` -- the map application on binned data is
+      microseconds rather than the minutes the smoothed rewrite costs.
+    """
     out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size)
     if out.is_file():
         return out
@@ -264,14 +300,43 @@ def _ensure_binned_scaffolded(
             f"{fs!r}, bin size {bin_size} (expected at {out}). Re-run with "
             f"auto-derive enabled."
         )
-    src = _scaffolded_bed_path(out_dir, stem, db_id, fs)
-    if not src.is_file():
-        raise CentromereError(
-            f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at {src}"
+    scaffolded_src = _scaffolded_bed_path(out_dir, stem, db_id, fs)
+    if scaffolded_src.is_file():
+        # bin_features logs its own start (with leaf_set + threads) and
+        # completion lines; no need for a redundant announcement here.
+        bin_features(
+            scaffolded_src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads
         )
-    # bin_features logs its own start (with leaf_set + threads) and
-    # completion lines; no need for a redundant announcement here.
-    bin_features(src, out, bin_size=bin_size, leaf_set=leaf_set or None, threads=threads)
+        return out
+
+    # Fallback: bin the smoothed BED, then apply the scaffold map.
+    if map_rows is None:
+        raise CentromereError(
+            f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at "
+            f"{scaffolded_src} and no scaffold map provided for post-bin "
+            f"renaming."
+        )
+    smoothed_src = _smoothed_bed_path(out_dir, stem, db_id, fs)
+    if not smoothed_src.is_file():
+        raise CentromereError(
+            f"cannot bin {fs!r} for {input_name}: smoothed BED missing at "
+            f"{smoothed_src} (and scaffolded BED also missing)"
+        )
+    tmpdir = Path(tempfile.mkdtemp(prefix="ks_centro_bin_", dir=out_dir))
+    try:
+        tmp_binned = tmpdir / "binned.bed.gz"
+        bin_features(
+            smoothed_src,
+            tmp_binned,
+            bin_size=bin_size,
+            leaf_set=leaf_set or None,
+            threads=threads,
+        )
+        # rewrite_bed applies the map: rename per row.new_name, mirror
+        # coords for flipped contigs. Output respects the .gz suffix.
+        rewrite_bed(tmp_binned, out, map_rows=map_rows)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return out
 
 
@@ -290,6 +355,7 @@ def centromeres_run(
     bgzip: bool = True,
     auto: bool = True,
     output_dir: Path | None = None,
+    write_scaffolded_beds: bool = True,
 ) -> dict[str, CentromereResult]:
     """Per input, extract per-contig centromere coordinates.
 
@@ -369,6 +435,7 @@ def centromeres_run(
         bgzip=bgzip,
         auto=auto,
         output_dir=output_dir,
+        write_scaffolded_beds=write_scaffolded_beds,
     )
 
     # Per input, bin the scaffolded BED at the two bin sizes (skipping
@@ -380,6 +447,13 @@ def centromeres_run(
         out_dir = output_dir if output_dir is not None else spec.path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # When the cascade was told to skip writing scaffolded BEDs
+        # (write_scaffolded_beds=False), the binning helper needs the
+        # scaffold map so it can apply the rename + flip at bin time
+        # rather than reading from a non-existent scaffolded BED.
+        map_path = out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv"
+        map_rows = read_map(map_path) if map_path.is_file() else None
+
         coarse_path = _ensure_binned_scaffolded(
             out_dir=out_dir,
             stem=stem,
@@ -390,6 +464,7 @@ def centromeres_run(
             auto=auto,
             input_name=spec.path.name,
             threads=threads,
+            map_rows=map_rows,
         )
         coarse_bins = _load_binned_bed(coarse_path)
 
@@ -405,6 +480,7 @@ def centromeres_run(
                 auto=auto,
                 input_name=spec.path.name,
                 threads=threads,
+                map_rows=map_rows,
             )
             fine_bins = _load_binned_bed(fine_path)
 
