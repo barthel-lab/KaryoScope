@@ -48,6 +48,59 @@ BINARY_NAME = "get_featureIDs"
 #: Environment variable users can set to override the binary location.
 ENV_OVERRIDE = "KARYOSCOPE_GET_FEATUREIDS"
 
+#: Exit codes that almost always mean "killed by the OS or job
+#: scheduler" rather than a get_featureIDs-internal failure. ``-9`` is
+#: SIGKILL as Python reports it (negative); ``137`` is the same signal
+#: as the shell-style ``128 + 9`` that SLURM and Docker report when
+#: they wrap the process. Reserved for the OOM-hint augmentation in
+#: :func:`_augment_with_oom_hint` -- a SIGKILL on get_featureIDs is
+#: ~always the OOM-killer (kernel or SLURM) because the KMC index is
+#: large and the binary doesn't ever raise SIGKILL on itself.
+_OOM_LIKE_EXIT_CODES: frozenset[int] = frozenset({-9, 137})
+
+
+_OOM_HINT_TEMPLATE = (
+    "\n\n--- KaryoScope hint ---\n"
+    "Exit code {code} almost always means get_featureIDs was killed for "
+    "using too much memory -- by the kernel OOM-killer or by the job "
+    "scheduler (SLURM, PBS, etc.). The KMC index for a human-scale "
+    "database needs ~20-30 GB to load, plus per-thread working memory.\n"
+    "Recommended fixes:\n"
+    "  * On a SLURM cluster: request more memory (e.g. --mem=100G) and "
+    "limit threads (--cpus-per-task=16).\n"
+    "  * On a login node: move to a compute node.\n"
+    "  * On any node, pass `karyoscope annotate -t 16 ...` explicitly. "
+    "Without --threads, get_featureIDs auto-detects the machine's full "
+    "core count, which on shared nodes can be much higher than the "
+    "memory allocation supports.\n"
+)
+
+
+def _augment_with_oom_hint(
+    *,
+    cmd: list[str],
+    returncode: int,
+    stderr: str = "",
+    stdout: str = "",
+) -> ExternalToolError:
+    """Build an :class:`ExternalToolError`, appending an OOM hint for SIGKILL.
+
+    SIGKILL is unrecoverable and rare; on KaryoScope's k-mer-query
+    step it's overwhelmingly "the OS or SLURM killed the process for
+    using too much memory." Two early colleagues hit this in v0.1.0
+    testing -- both had under-allocated memory and got the bare
+    ``Error: command failed with exit code -9`` message which is
+    opaque to non-cluster-experienced users. This helper attaches an
+    actionable hint when the exit code matches.
+
+    Non-OOM exit codes (e.g. malformed input, missing files) get the
+    plain :class:`ExternalToolError` with no hint -- we don't want
+    to point at memory when the real cause is something else.
+    """
+    if returncode in _OOM_LIKE_EXIT_CODES:
+        stderr = (stderr or "") + _OOM_HINT_TEMPLATE.format(code=returncode)
+    return ExternalToolError(cmd=cmd, returncode=returncode, stderr=stderr, stdout=stdout)
+
 
 def _editable_install_candidate() -> Path | None:
     """Try to locate a developer-built binary in the source tree.
@@ -246,7 +299,19 @@ def run_get_featureids(
     if input_format is not None:
         cmd += ["--input-format", input_format]
 
-    run_tool(cmd, capture=capture)
+    try:
+        run_tool(cmd, capture=capture)
+    except ExternalToolError as e:
+        # Re-raise with an OOM hint if the exit code looks like a
+        # SIGKILL. Pass-through for everything else.
+        if e.returncode in _OOM_LIKE_EXIT_CODES:
+            raise _augment_with_oom_hint(
+                cmd=list(e.cmd),
+                returncode=e.returncode,
+                stderr=e.stderr,
+                stdout=e.stdout,
+            ) from e
+        raise
     return output_dir / f"{prefix}.combined.presmoothed.featureIDs.bed"
 
 
@@ -322,16 +387,18 @@ def _run_get_featureids_piped_from_bam(
     samtools_stderr = samtools_proc.stderr.read() if samtools_proc.stderr is not None else ""
 
     # Order matters: downstream failure (get_featureIDs) is the more
-    # actionable error to surface first.
+    # actionable error to surface first. Both paths route through
+    # _augment_with_oom_hint, which appends the OOM hint only for
+    # SIGKILL-like exit codes (plain failures pass through unchanged).
     if getfid_proc.returncode != 0:
-        raise ExternalToolError(
+        raise _augment_with_oom_hint(
             cmd=getfid_cmd,
             returncode=getfid_proc.returncode,
             stderr=getfid_proc.stderr or "",
             stdout=getfid_proc.stdout or "",
         )
     if samtools_returncode != 0:
-        raise ExternalToolError(
+        raise _augment_with_oom_hint(
             cmd=samtools_cmd,
             returncode=samtools_returncode,
             stderr=samtools_stderr,

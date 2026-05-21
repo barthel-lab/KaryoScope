@@ -694,6 +694,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Added
+- ``karyoscope annotate`` now appends an actionable hint to the error
+  message when ``get_featureIDs`` exits with SIGKILL (-9 or 137).
+  SIGKILL on the k-mer query step is overwhelmingly "the kernel
+  OOM-killer or the job scheduler killed the process for using too
+  much memory" -- the previous bare ``Error: command failed with exit
+  code -9`` was opaque to non-cluster-experienced users. The hint
+  spells out the likely cause (KMC index needs ~20-30 GB to load),
+  recommended fixes (request more memory on SLURM, limit threads, move
+  off login nodes), and the threading footgun (default ``-t 0`` auto-
+  detects the machine's full core count, which on shared nodes can be
+  much higher than the memory allocation supports). Applied to both
+  the file-input and BAM-pipe paths via a shared
+  ``_augment_with_oom_hint`` helper that only fires for SIGKILL-like
+  exit codes -- non-OOM failures (malformed input, missing files, etc.)
+  pass through with no hint to avoid misdirection. 11 new unit tests in
+  ``test_kmc_wrapper.py``.
 - ``karyoscope annotate`` smoothing now has **three** dispatch paths
   selected automatically based on ``--preserve-order`` and the input
   file extension:
