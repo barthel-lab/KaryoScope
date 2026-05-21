@@ -135,6 +135,34 @@ def _derive_input_basename(input_path: Path) -> str:
     return input_path.stem
 
 
+#: Read-level input extensions. Used to pick the right smoothing
+#: dispatch path: read-level inputs (FASTQ, BAM) with preserve-order
+#: get the streaming-ordered path (no per-sequence temp files), while
+#: assemblies get the per-sequence temp-files path. See
+#: :func:`_smooth_all_feature_sets` for the dispatch.
+_READS_INPUT_EXTENSIONS: tuple[str, ...] = (
+    ".fastq.gz",
+    ".fq.gz",
+    ".fastq",
+    ".fq",
+    ".bam",
+)
+
+
+def _is_reads_input(input_path: Path) -> bool:
+    """True if ``input_path`` looks like read-level data (FASTQ or BAM).
+
+    Pure extension check. Long-read FASTA files (millions of reads with
+    a ``.fasta`` extension) are technically read-level data but will
+    return ``False`` here -- users with that case should pass
+    ``--no-preserve-order`` to opt out of the per-sequence temp files
+    explicitly. We don't try to detect by content because pre-scanning
+    a multi-GB input would be slow.
+    """
+    name_lower = input_path.name.lower()
+    return any(name_lower.endswith(ext) for ext in _READS_INPUT_EXTENSIONS)
+
+
 def resolve_database(
     db_root: Path,
     db_id: str | None,
@@ -375,6 +403,7 @@ def _smooth_all_feature_sets(
     threads: int,
     chunk_size: int = 50000,
     preserve_input_order: bool = True,
+    is_reads_input: bool = False,
 ) -> None:
     """Stream ``combined_bed`` through ONE pool that handles every FS.
 
@@ -400,17 +429,29 @@ def _smooth_all_feature_sets(
     ``--no-keep-presmoothed`` / ``--no-smooth``) but not both. The
     caller is responsible for that check.
 
-    Selected by ``preserve_input_order``:
+    Three codepaths, selected by ``(preserve_input_order, is_reads_input)``:
 
-    * **True (default)** -- *assembly mode*. Workers write each
+    * **(True, False)** -- *assembly + preserve*. Workers write each
       ``(fs, seq)`` pair's output directly to a per-feature-set temp
       directory; the main process concatenates the per-sequence
       files in input-FASTA order at the end. Output is
-      byte-equivalent to the legacy per-FS code.
-    * **False** -- *reads mode*. Workers return output lines via
-      IPC; the main process appends to per-feature-set BEDs in
-      worker-completion order. Cheap because reads produce small
-      per-chunk outputs.
+      byte-equivalent to the legacy per-FS code. Per-sequence temp
+      files are essential here because a single chunk (e.g. chr1)
+      can produce hundreds of MB of output BED lines that would
+      overload the IPC pipe.
+    * **(True, True)** -- *reads + preserve*. Streaming dispatch via
+      :meth:`Pool.imap` (ordered): workers return BED lines via IPC,
+      main writes in input order. No per-sequence temp files, because
+      per-read temp files would scale catastrophically (millions of
+      tiny files). Safe because read chunks are uniform-size, so the
+      ordered iterator doesn't stall waiting for a single slow chunk
+      and per-chunk IPC payloads stay small.
+    * **(False, *)** -- *no preserve*. Streaming dispatch via
+      :meth:`Pool.imap_unordered`: sequences appear in
+      worker-completion order. Fastest path when order doesn't
+      matter downstream. Used for reads when output order is
+      irrelevant, or for long-read FASTA where the user opted out of
+      the temp-file machinery.
     """
     if not presmoothed_paths and not smoothed_paths:
         raise KaryoscopeError(
@@ -426,7 +467,9 @@ def _smooth_all_feature_sets(
     # -v, but stay silent at the default WARNING level.
     worker_log_level = logging.getLogger().level
 
-    if preserve_input_order:
+    if preserve_input_order and not is_reads_input:
+        # Assembly + preserve: per-sequence temp files (chunks can be
+        # multi-GB; can't return via IPC without blowing memory).
         _smooth_with_per_sequence_tempfiles(
             combined_bed=combined_bed,
             feature_sets=feature_sets,
@@ -440,7 +483,10 @@ def _smooth_all_feature_sets(
             chunk_size=chunk_size,
         )
     else:
-        _smooth_streaming_unordered(
+        # Reads (preserve or not) or assembly + no-preserve:
+        # streaming. The ordered flag picks pool.imap vs
+        # pool.imap_unordered.
+        _smooth_streaming(
             combined_bed=combined_bed,
             feature_sets=feature_sets,
             indices=indices,
@@ -451,10 +497,11 @@ def _smooth_all_feature_sets(
             pool_size=pool_size,
             worker_log_level=worker_log_level,
             chunk_size=chunk_size,
+            ordered=preserve_input_order,
         )
 
 
-def _smooth_streaming_unordered(
+def _smooth_streaming(
     *,
     combined_bed: Path,
     feature_sets: list[str],
@@ -466,13 +513,32 @@ def _smooth_streaming_unordered(
     pool_size: int,
     worker_log_level: int,
     chunk_size: int,
+    ordered: bool,
 ) -> None:
-    """Reads-mode smoothing: ``imap_unordered`` direct to per-FS BEDs.
+    """Streaming smoothing: workers return BED lines via IPC, main writes.
 
-    Sequences appear in each output BED in worker-completion order,
-    not input order. Acceptable when the caller has set
-    ``preserve_input_order=False`` (i.e. input is sequencing reads,
-    not an assembly, and order is irrelevant downstream).
+    No per-(fs, seq) temp files -- workers return their BED lines as
+    dicts via the IPC pipe, and the main process writes them straight
+    to the per-feature-set output BEDs. Appropriate for inputs where
+    each chunk's returned data is small (read-level FASTQ/BAM with
+    ~50k reads per chunk = a few MB per chunk per FS), as opposed to
+    assembly inputs where a chunk can be a whole chromosome's worth
+    of intervals (hundreds of MB per FS, which would overload IPC and
+    motivated the per-sequence temp-files codepath).
+
+    Two ordering modes, selected by ``ordered``:
+
+    * **``ordered=True``** -- uses :meth:`Pool.imap`. Chunk results
+      are yielded in *input* order regardless of worker-completion
+      order; the output BED preserves input-FASTQ/BAM order. Safe for
+      reads because all chunks are roughly the same size, so the
+      ordered iterator doesn't stall waiting for a single slow chunk.
+      Used when ``preserve_input_order=True`` on a FASTQ/BAM input.
+
+    * **``ordered=False``** -- uses :meth:`Pool.imap_unordered`.
+      Sequences appear in worker-completion order, which is faster
+      because workers don't wait on the head-of-queue chunk but loses
+      input order. Used when ``preserve_input_order=False``.
     """
     pre_handles = {fs: presmoothed_paths[fs].open("w") for fs in presmoothed_paths}
     smo_handles = {fs: smoothed_paths[fs].open("w") for fs in smoothed_paths}
@@ -484,7 +550,11 @@ def _smooth_streaming_unordered(
         ) as pool:
             stop_event = _spawn_pool_watchdog(pool)
             try:
-                for chunk_result in pool.imap_unordered(
+                # pool.imap preserves input order; pool.imap_unordered
+                # yields whichever result is ready first. Both consume
+                # the same chunk iterator.
+                map_method = pool.imap if ordered else pool.imap_unordered
+                for chunk_result in map_method(
                     process_seq_chunk,
                     chunked_seq_reader(combined_bed, chunk_size),
                 ):
@@ -885,15 +955,18 @@ def annotate(
     # When smoothing is off we use the simpler in-process splitter
     # (no need to fork workers for a one-line translation).
     if smooth:
+        is_reads = _is_reads_input(input_path)
         logger.info(
             "smoothing pass: %d feature set(s), threads=%d",
             len(requested),
             threads,
         )
         logger.debug(
-            "smoothing pass with threads=%d, preserve_input_order=%s, feature_sets=%s",
+            "smoothing pass with threads=%d, preserve_input_order=%s, "
+            "is_reads_input=%s, feature_sets=%s",
             threads,
             preserve_input_order,
+            is_reads,
             requested,
         )
         t_smooth_start = time.perf_counter()
@@ -906,6 +979,7 @@ def annotate(
             smoothed_paths=smoothed_paths,
             threads=threads,
             preserve_input_order=preserve_input_order,
+            is_reads_input=is_reads,
         )
         logger.info("smoothing pass complete in %.1fs", time.perf_counter() - t_smooth_start)
     else:

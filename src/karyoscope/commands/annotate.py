@@ -61,9 +61,8 @@ logger = logging.getLogger(__name__)
     help="Input sequence file. Accepts FASTA (.fasta/.fa/.fna, plain "
     "or .gz), FASTQ (.fastq/.fq, plain or .gz), or BAM (.bam). BAM "
     "inputs are piped through `samtools fasta` (requires samtools on "
-    "PATH); no intermediate file is written. For read-level inputs "
-    "(FASTQ/BAM with many short sequences), also pass "
-    "--no-preserve-order for substantially faster writes.",
+    "PATH); no intermediate file is written. See --preserve-order for "
+    "how the smoothing implementation adapts to the input type.",
 )
 @click.option(
     "--outdir",
@@ -132,11 +131,15 @@ logger = logging.getLogger(__name__)
     "preserve_input_order",
     default=True,
     show_default=True,
-    help="Write output BEDs with sequences in the same order as the input FASTA. "
-    "Default is appropriate for assemblies (tens of sequences). Pass "
-    "--no-preserve-order for long-read FASTA / future FASTQ-or-BAM inputs "
-    "(millions of sequences) where input order is irrelevant -- speeds up "
-    "writes and avoids the per-sequence temp-file overhead.",
+    help="Write output BEDs with sequences in the same order as the input. "
+    "The implementation strategy is chosen automatically based on the "
+    "input file extension: FASTA inputs use per-sequence temp files "
+    "(safe for whole-chromosome chunks); FASTQ/BAM inputs use streaming "
+    "ordered dispatch (no temp files, scales to millions of reads). "
+    "Pass --no-preserve-order for the fastest path when order doesn't "
+    "matter downstream -- typically read data where you'll aggregate "
+    "the results anyway, or long-read FASTA where the per-sequence "
+    "temp files would scale poorly.",
 )
 def cmd(
     input_path: Path,

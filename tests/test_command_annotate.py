@@ -778,6 +778,68 @@ def test_annotate_accepts_fastq_gz_input(
 # --- scaffold rejects read-level inputs ----------------------------------
 
 
+def test_annotate_fastq_preserve_order_keeps_input_order(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """FASTQ + --preserve-order routes to the streaming-ordered path
+    (no per-sequence temp files) and still produces output in input
+    order.
+
+    With FASTQ extension detection, the dispatch picks pool.imap
+    (ordered) instead of the per-sequence temp-files codepath that
+    FASTA + preserve-order uses. Verifies the output BED has reads
+    in the same order they appeared in the input FASTQ -- the
+    contract the user expects when comparing against an archive run.
+    """
+    runner, db_root, _ = cli_with_populated_db
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"
+
+    # Three reads with deliberately non-alphabetical names so input
+    # order != alphabetical order. Use --threads 2 so multiple workers
+    # can finish out of order (which the ordered path must correct).
+    fq_path = tmp_path / "reads.fastq"
+    fq_path.write_text(
+        f"@z_first\n{seed}\n+\n" + ("I" * len(seed)) + "\n"
+        f"@m_middle\n{seed}\n+\n" + ("I" * len(seed)) + "\n"
+        f"@a_last\n{seed}\n+\n" + ("I" * len(seed)) + "\n"
+    )
+
+    outdir = tmp_path / "out"
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(fq_path),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "2",
+            "--no-bgzip",
+            "--feature-set",
+            "region",
+            "--preserve-order",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    bed = (outdir / "reads.KS_dummy_test_v1.region.smoothed.bed").read_text()
+    seen: list[str] = []
+    for line in bed.splitlines():
+        if not line:
+            continue
+        seq = line.split("\t", 1)[0]
+        if seq not in seen:
+            seen.append(seq)
+    assert seen == ["z_first", "m_middle", "a_last"], (
+        f"FASTQ + --preserve-order should keep input order; got {seen}"
+    )
+
+
 def test_scaffold_rejects_fastq_input(
     cli_runner: CliRunner,
     populated_db_root: Path,

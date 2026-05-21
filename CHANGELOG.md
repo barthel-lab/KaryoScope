@@ -694,6 +694,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Added
+- ``karyoscope annotate`` smoothing now has **three** dispatch paths
+  selected automatically based on ``--preserve-order`` and the input
+  file extension:
+
+    * **Assembly (FASTA) + ``--preserve-order``** (default): per-(fs, seq)
+      temp files + concat in input order. Unchanged. Essential for
+      whole-chromosome chunks that produce hundreds of MB of BED
+      lines per FS that would overload the IPC pipe.
+    * **Reads (FASTQ/BAM) + ``--preserve-order``** (NEW): streaming
+      dispatch via ``Pool.imap`` (ordered), workers return BED lines
+      via IPC, main writes in input order. No per-sequence temp
+      files -- per-read temp files would scale catastrophically
+      (millions of tiny files, file-descriptor exhaustion). Safe
+      because read chunks are uniform-size, so the ordered iterator
+      doesn't stall waiting for a single slow chunk and per-chunk
+      IPC payloads stay small (a few MB).
+    * **Anything + ``--no-preserve-order``**: streaming dispatch via
+      ``Pool.imap_unordered``. Fastest path when output order doesn't
+      matter downstream.
+
+  Detection is by extension (``.fastq``, ``.fq``, ``.fastq.gz``,
+  ``.fq.gz``, ``.bam``); long-read FASTA users with millions of
+  sequences should pass ``--no-preserve-order`` explicitly to opt
+  out of the per-sequence temp-files path.
+
+  Internally, the previous ``_smooth_streaming_unordered`` helper was
+  generalised to ``_smooth_streaming(*, ordered: bool, ...)`` so both
+  the ordered (reads + preserve) and unordered (any + no-preserve)
+  paths share the same body modulo the choice of ``Pool.imap`` vs
+  ``Pool.imap_unordered``.
 - ``karyoscope annotate`` now accepts **FASTQ** (``.fastq``, ``.fq``,
   ``.fastq.gz``, ``.fq.gz``) and **BAM** (``.bam``) inputs in addition
   to FASTA. FASTQ is read by the C++ ``get_featureIDs`` binary natively;
