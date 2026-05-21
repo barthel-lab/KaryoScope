@@ -29,10 +29,12 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import os
+import shutil
 import sys
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
@@ -523,7 +525,6 @@ def _smooth_with_per_sequence_tempfiles(
     to the same filename component are detected here (real genomes
     don't trigger this).
     """
-    import shutil
     import tempfile
 
     # Temp dir lives next to the output so cleanup happens on the
@@ -591,28 +592,69 @@ def _smooth_with_per_sequence_tempfiles(
                 stop_event.set()
 
         # Concatenate per-(fs, seq) temp files in input sequence order
-        # to produce each feature set's final BEDs.
+        # to produce each feature set's final BEDs. Each (fs, kind)
+        # target is independent (writes a distinct output file from a
+        # distinct source temp dir), so we parallelise across the 6 x 2
+        # = 12 typical-case targets with a thread pool. Pure I/O work,
+        # so threads are fine -- the GIL is released across the
+        # blocking read/write inside shutil.copyfileobj, and we get
+        # genuine parallel disk throughput on /scratch SSD.
+        concat_tasks: list[tuple[Path, Path, str]] = []
         for fs in feature_sets:
             fs_dir = tmpdir_by_fs[fs]
-            smo_path = smoothed_paths.get(fs)
-            pre_path = presmoothed_paths.get(fs)
-            if smo_path is not None:
-                with smo_path.open("wb") as out_h:
-                    for seq in input_seq_order:
-                        p = fs_dir / f"{safe_filename(seq)}.smo"
-                        if not p.exists():
-                            continue
-                        with p.open("rb") as src:
-                            shutil.copyfileobj(src, out_h)
-            if pre_path is not None:
-                with pre_path.open("wb") as out_h:
-                    for seq in input_seq_order:
-                        p = fs_dir / f"{safe_filename(seq)}.pre"
-                        if not p.exists():
-                            continue
-                        with p.open("rb") as src:
-                            shutil.copyfileobj(src, out_h)
+            if fs in smoothed_paths:
+                concat_tasks.append((smoothed_paths[fs], fs_dir, ".smo"))
+            if fs in presmoothed_paths:
+                concat_tasks.append((presmoothed_paths[fs], fs_dir, ".pre"))
+        concat_threads = min(pool_size, len(concat_tasks)) if concat_tasks else 1
+        logger.info(
+            "concat pass: %d temp-file group(s) (threads=%d)",
+            len(concat_tasks),
+            concat_threads,
+        )
+        t_concat_start = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=concat_threads) as exe:
+            # list() forces .result() on each future, so any worker
+            # exception is re-raised here rather than silently swallowed.
+            list(
+                exe.map(
+                    lambda task: _concat_per_sequence_to_bed(
+                        task[0], task[1], task[2], input_seq_order
+                    ),
+                    concat_tasks,
+                )
+            )
+        logger.info("concat pass complete in %.1fs", time.perf_counter() - t_concat_start)
         # tmpdir cleaned up automatically on context manager exit
+
+
+def _concat_per_sequence_to_bed(
+    dest: Path,
+    fs_dir: Path,
+    ext: str,
+    input_seq_order: list[str],
+) -> None:
+    """Concatenate per-(fs, seq) temp files into one BED in input order.
+
+    Streams ``{fs_dir}/{safe_filename(seq)}{ext}`` for each ``seq`` in
+    ``input_seq_order`` via :func:`shutil.copyfileobj` (64 KB block
+    streaming -- never holds a whole file in memory). Missing temp
+    files are skipped silently: a sequence may have produced no
+    output for this feature set if every interval merged away.
+
+    Pulled out so the bgzip-pass / concat-pass parallelisation in
+    :func:`_smooth_with_per_sequence_tempfiles` can call it from a
+    thread pool -- each (feature_set, kind) target reads a distinct
+    temp dir and writes a distinct output file, so there is no
+    cross-task contention to worry about.
+    """
+    with dest.open("wb") as out_h:
+        for seq in input_seq_order:
+            p = fs_dir / f"{safe_filename(seq)}{ext}"
+            if not p.exists():
+                continue
+            with p.open("rb") as src:
+                shutil.copyfileobj(src, out_h)
 
 
 def _human_bytes(n: int) -> str:

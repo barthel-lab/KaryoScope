@@ -694,6 +694,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Changed
+- ``annotate`` now parallelises the per-(feature_set, kind) temp-file
+  concatenation phase via a :class:`ThreadPoolExecutor` of
+  ``--threads`` workers. Each (fs, kind) target reads a distinct
+  per-FS temp directory and writes a distinct output file, so there's
+  no cross-task contention -- pure I/O work that benefits from
+  /scratch SSD parallel throughput. On HG002 the concat phase was a
+  ~3 min single-threaded tail at the end of the smoothing pass; with
+  ``-t 16`` it should drop to closer to 30 s. Threads (not processes)
+  are right here: ``shutil.copyfileobj`` releases the GIL across the
+  blocking read/write so we get real parallelism. New
+  ``concat pass: N temp-file group(s) (threads=M)`` /
+  ``concat pass complete in Xs`` log lines surface the timing.
 - ``_bgzip_file`` now forwards the caller's ``--threads`` to bgzip as
   ``-@ N``, parallelising single-file compression. Wired through every
   bgzip caller: ``annotate`` (per-feature-set presmoothed / smoothed
