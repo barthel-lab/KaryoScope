@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-21
+
 ### Added
 - ``karyoscope download`` now validates registry-entry metadata up
   front (``url``, ``sha256``, ``karyoscope_min_version``) and fires a
@@ -1004,7 +1006,8 @@ Use the following sections when adding entries:
 
 For releases, copy the [Unreleased] section to a new heading like:
 
-## [1.0.0] - 2026-MM-DD
+## [1.1.0] - YYYY-MM-DD
 -->
 
-[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/HEAD...HEAD
+[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.0.0
