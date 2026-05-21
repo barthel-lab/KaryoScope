@@ -36,7 +36,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 ### Why alignment-free?
 
-- **Pangenome-scale throughput.** Annotates a complete human haplotype in ~8 minutes on a standard workstation, scaling to cohorts of hundreds of phased assemblies.
+- **Pangenome-scale throughput.** Annotates a single feature set on a complete human haplotype in ~8 minutes on a standard workstation, or the full six-feature-set pipeline for a diploid sample in ~30 minutes at 16 threads — scaling to cohorts of hundreds of phased assemblies. The in-progress migration to the [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend will further reduce runtime and memory footprint.
 - **Base-pair resolution across the entire genome.** Performs well in the satellite-dense centromeres, subtelomeres, and acrocentric short arms where alignment-based pipelines suffer from reference bias and ambiguous mappings.
 - **Multiple feature classes in a single pass.** The same *k*-mer can carry labels across feature sets simultaneously, so a single position can be annotated as belonging to a specific chromosome, satellite family, repeat class, and gene at once.
 - **Extensible.** Any annotation that tiles a reference of interest can serve as a feature set.
@@ -149,6 +149,8 @@ Building your own database is supported via `karyoscope build` (coming in v1.0).
 ## Pre-computed annotations
 
 KaryoScope outputs for the [HPRC Release 2](https://humanpangenome.org/) pangenome samples are hosted by the Human Pangenome Reference Consortium at the [`TGen_HPRCv2_KaryoScope` S3 bucket](https://s3-us-west-2.amazonaws.com/human-pangenomics/index.html?prefix=submissions/B5FC8EB1-5B2A-49FE-8421-6D938943DFC9--TGen_HPRCv2_KaryoScope/). Use these to explore HPRC karyotypes without running the pipeline yourself, or as references for downstream analysis.
+
+> **Note**: the currently hosted annotations were generated against a previous version of the KaryoScope database. Updated annotations using the current release will be uploaded as they become available.
 
 Per sample, the bucket contains:
 
