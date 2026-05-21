@@ -138,17 +138,61 @@ class RenderInput:
 # --- sex-aware hap filtering --------------------------------------------
 
 
+def _infer_heterogametic_hap(
+    sex_chromosomes: list[str],
+    sequences_per_chrom_hap: dict[str, dict[str, list[str]]] | None,
+) -> str | None:
+    """Infer which hap holds the heterogametic chromosome from the data.
+
+    Looks at which haps actually have data for the heterogametic
+    chromosome (chrY in XY, chrW in ZW). Returns the hap name when
+    exactly one hap has data; ``None`` when zero or multiple haps
+    have data (ambiguous), or when no per-chrom-hap map was provided.
+
+    This sidesteps the sort-order assumption baked into the archive's
+    original logic: the archive treats ``haplotypes[0]`` as the
+    heterogametic hap, which works for ``hap1``/``hap2`` labelling
+    (where ``hap1`` conventionally holds chrY) but is backwards for
+    biologically-meaningful labels like ``maternal``/``paternal``
+    sorted alphabetically (chrY is paternal, not maternal). Inferring
+    from data Just Works for any labelling scheme.
+    """
+    if sequences_per_chrom_hap is None or not sex_chromosomes:
+        return None
+    het_chrom = sex_chromosomes[0]
+    seqs_by_hap = sequences_per_chrom_hap.get(het_chrom, {})
+    haps_with_data = [h for h, seqs in seqs_by_hap.items() if seqs]
+    if len(haps_with_data) == 1:
+        return haps_with_data[0]
+    return None
+
+
 def get_expected_haps(
     chromosome: str,
     sex: str | None,
     haplotypes: list[str],
     sex_determination_system: str | dict,
+    sequences_per_chrom_hap: dict[str, dict[str, list[str]]] | None = None,
 ) -> list[str]:
     """Return the haplotypes that should appear for ``chromosome``.
 
-    Direct port of the archive's logic. When ``sex`` is ``None`` the
-    sex chromosomes get no expectations (so they only appear if there
-    is actual data); autosomes get the full haplotype list.
+    When ``sex`` is ``None`` (``--sex unknown``) the sex chromosomes
+    get no expectations -- they only appear if there is actual data,
+    keeping unknown-sex assemblies clean (no spurious empty columns).
+    Autosomes always get the full haplotype list.
+
+    When a heterogametic ``sex`` is given (e.g. ``male`` in XY), the
+    function tries to infer which hap holds the heterogametic
+    chromosome from the data via :func:`_infer_heterogametic_hap`.
+    Falls back to ``haplotypes[0]`` (the archive's sort-order
+    convention) when inference is ambiguous (e.g. a cancer sample
+    where chrY is lost).
+
+    ``sequences_per_chrom_hap`` is the same ``{chrom: {hap: [seqs]}}``
+    dict the renderer builds from its inputs. Passing it enables the
+    data-driven inference; pass ``None`` to keep the legacy
+    sort-order behaviour (used by the existing unit tests that don't
+    have an assembly in hand).
     """
     if isinstance(sex_determination_system, str):
         system = PREDEFINED_SEX_SYSTEMS.get(sex_determination_system.upper())
@@ -179,10 +223,24 @@ def get_expected_haps(
         return haplotypes
     is_heterogametic = sex_lower == heterogametic_sex.lower()
     if is_heterogametic:
+        # Try data-driven inference first; this correctly handles
+        # biologically-meaningful labels (maternal/paternal) where
+        # alphabetical sort doesn't match the heterogametic convention.
+        het_hap = _infer_heterogametic_hap(sex_chromosomes, sequences_per_chrom_hap)
         try:
             idx = sex_chromosomes.index(chromosome)
         except ValueError:
             return []
+        if het_hap is not None and het_hap in haplotypes:
+            # chromosome at idx=0 is the heterogametic chrom (e.g. chrY);
+            # idx=1 is the homogametic chrom (e.g. chrX in male).
+            if idx == 0:
+                return [het_hap]
+            # The other hap holds chrX in a male assembly.
+            other_haps = [h for h in haplotypes if h != het_hap]
+            return [other_haps[0]] if other_haps else []
+        # Fall back to the archive's sort-order convention (works for
+        # ``hap1``/``hap2``; degenerate when chrY is lost in cancer).
         return [haplotypes[idx]] if idx < len(haplotypes) else []
     return haplotypes if chromosome == homogametic_chromosome else []
 
@@ -198,13 +256,86 @@ def _telomere_flags_from_stats(stats: str) -> tuple[bool, bool]:
     return has_start, has_stop
 
 
+# --- Legend sort key (extracted to module level so it's unit-testable) ---
+
+
+def _legend_sort_key(
+    name: str,
+    feature_order: list[str] | None = None,
+) -> tuple[int, int, int, str]:
+    """Sort key for the legend rows in :func:`render_karyotype`.
+
+    Buckets, top to bottom:
+
+      -2. ``chr*`` chromosome names, natural order (chr1, chr2, ...,
+          chr22, then chrX, chrY, chrM, etc. alphabetical). Always at
+          the very top of the legend so the chromosome feature set's
+          legend reads cleanly: chromosomes first, then the
+          higher-level groupings, then novel.
+      -1. ``"categorized"`` (the hierarchy root). Pinned just below
+          the chromosomes -- it's never in ``feature_order`` because
+          it only appears as a parent in hierarchy.tsv, so without
+          the pin it would sink into the unranked tail.
+      0..N-1. Hierarchy entries in the order ``feature_order`` gives
+          (when provided). For the chromosome feature set in the
+          production CHM13 v2 database this is "autosome",
+          "acrocentric", "metacentric", "submetacentric", "sex".
+      N. Unranked features (in the data but not in
+          ``feature_order``), sorted alphabetically.
+      10**9. ``"novel"`` (k-mer-not-in-index sentinel). Always last.
+
+    When ``feature_order`` is ``None``, the hierarchy-order bucket
+    isn't used; non-special features just fall into the alphabetical
+    unranked tail. Useful for tests and for cases where the renderer
+    is invoked without a parsed hierarchy.
+    """
+    # Chromosomes always pin to the very top, in natural order.
+    if name.startswith("chr"):
+        suffix = name[3:]
+        if suffix.isdigit():
+            return (-2, 0, int(suffix), "")
+        return (-2, 1, 0, suffix)
+    if name == "categorized":
+        return (-1, 0, 0, "")
+    if name == "novel":
+        return (10**9, 0, 0, "")
+    if feature_order:
+        try:
+            return (feature_order.index(name), 0, 0, name)
+        except ValueError:
+            return (len(feature_order), 0, 0, name)
+    # No hierarchy hint -- everything non-special goes alphabetical.
+    return (0, 0, 0, name)
+
+
 def _haps_natural_sort_key(hap: str) -> tuple[int, int, str]:
-    """Order haplotypes naturally: hap1, hap2, ..., then alphabetical, then 'unassigned' last."""
+    """Order haplotypes naturally.
+
+    Buckets, in order:
+      0. ``hapN`` (numeric, ascending)
+      1. biological pedigree labels in HPRC convention: ``paternal`` (= hap1)
+         before ``maternal`` (= hap2)
+      2. anything else, alphabetical
+      3. ``unassigned`` (always last)
+
+    The HPRC convention (paternal first, then maternal) matters for two
+    reasons: (a) the rendered karyotype columns appear in this order,
+    so users see paternal-on-the-left matching how HPRC distributes
+    its assemblies; (b) :func:`get_expected_haps` falls back to
+    ``haplotypes[0]`` as the heterogametic hap when data-driven
+    inference is ambiguous (e.g. cancer with chrY loss), and the
+    fallback is biologically correct only when ``haplotypes[0]`` is
+    paternal.
+    """
     if hap == "unassigned":
-        return (2, 0, "")
+        return (3, 0, "")
     if hap.startswith("hap") and hap[3:].isdigit():
         return (0, int(hap[3:]), "")
-    return (1, 0, hap)
+    if hap == "paternal":
+        return (1, 1, "")  # hap1 in HPRC convention
+    if hap == "maternal":
+        return (1, 2, "")  # hap2 in HPRC convention
+    return (2, 0, hap)
 
 
 # --- main renderer -------------------------------------------------------
@@ -395,9 +526,12 @@ def render_karyotype(
     # Legend band (optional, drawn at the right margin). The total
     # width is computed dynamically after the feature pre-pass below,
     # so the canvas stays tight against the longest legend label.
-    legend_row_height = 16
-    legend_swatch_size = 12
-    legend_text_size = 11
+    # Text size matches the chromosome/hap label size (14 pt) so the
+    # legend reads with the same visual weight as the chromosome
+    # columns; the swatch and row height are scaled to match.
+    legend_row_height = 20
+    legend_swatch_size = 14
+    legend_text_size = 14
 
     P_Q_ARM_GAP = 50
     if mode == "subtelomere":
@@ -464,51 +598,15 @@ def render_karyotype(
             for _, _, feature in intervals:
                 features_in_data.add(feature)
 
-    # Legend sort. Two special cases applied in both the
-    # feature_order-given and the natural-fallback paths:
-    #
-    #   * ``"categorized"`` (the hierarchy root) always pins to the
-    #     top. It only appears in the parent column of hierarchy.tsv
-    #     so it's never in ``feature_order``; without the pin it
-    #     would sink to the bottom (or sort alphabetically among
-    #     unranked entries).
-    #   * ``"novel"`` (the k-mer-not-in-index sentinel) always pins
-    #     to the bottom. It's never in the hierarchy. Without the
-    #     pin it would sort between hierarchy entries and other
-    #     unranked entries alphabetically -- noise we don't want.
-    #
-    # Everything else: hierarchy file order if ``feature_order`` is
-    # given, otherwise the natural chr-then-alpha fallback.
-    _TOP = -1
-    _BOTTOM = 10**9
-
-    if feature_order:
-        order_index = {f: i for i, f in enumerate(feature_order)}
-        sentinel = len(feature_order)
-
-        def _key(f: str) -> tuple[int, str]:
-            if f == "categorized":
-                return (_TOP, "")
-            if f == "novel":
-                return (_BOTTOM, "")
-            return (order_index.get(f, sentinel), f)
-
-        sorted_legend_features = sorted(features_in_data, key=_key)
-    else:
-
-        def _legend_sort_key(name: str) -> tuple[int, int, str]:
-            if name == "categorized":
-                return (_TOP, 0, "")
-            if name == "novel":
-                return (_BOTTOM, 0, "")
-            if name.startswith("chr"):
-                suffix = name[3:]
-                if suffix.isdigit():
-                    return (0, int(suffix), "")
-                return (1, 0, suffix)
-            return (2, 0, name)
-
-        sorted_legend_features = sorted(features_in_data, key=_legend_sort_key)
+    # Legend sort: see :func:`_legend_sort_key` for the full rule.
+    # Briefly: chromosomes (chr*) at the top in natural order, then
+    # "categorized", then hierarchy-order features (autosome /
+    # acrocentric / etc.), then unranked features alphabetical,
+    # "novel" at the bottom.
+    sorted_legend_features = sorted(
+        features_in_data,
+        key=lambda f: _legend_sort_key(f, feature_order),
+    )
 
     # --- group by chromosome and haplotype ---------------------------
 
@@ -528,7 +626,17 @@ def render_karyotype(
     current_x = initial_x
 
     for chromosome in CHROMOSOMES:
-        expected_haps = get_expected_haps(chromosome, sex, HAPLOTYPES, sex_determination_system)
+        # Pass sequences_per_chrom_hap so get_expected_haps can infer
+        # which hap holds the heterogametic chromosome from the data
+        # (correctly handles maternal/paternal labelling; see
+        # _infer_heterogametic_hap docstring).
+        expected_haps = get_expected_haps(
+            chromosome,
+            sex,
+            HAPLOTYPES,
+            sex_determination_system,
+            sequences_per_chrom_hap=sequences_per_chrom_hap,
+        )
         actual_haps_with_data = [
             h for h, seqs in sequences_per_chrom_hap.get(chromosome, {}).items() if seqs
         ]
@@ -570,10 +678,11 @@ def render_karyotype(
     # Legend sizing. ``legend_band_width`` is computed dynamically
     # from the longest feature label so the canvas stays tight; the
     # old fixed-width approach left tens of pixels of empty space.
-    # Rough text-width estimate: 6 px per char for 11pt sans-serif.
+    # Rough text-width estimate: 8 px per char for 14pt sans-serif
+    # (was 6 px/char back when the legend was 11 pt).
     if show_legend and sorted_legend_features:
         max_label_chars = max(len(label) for label in sorted_legend_features)
-        legend_text_px = max(20, max_label_chars * 6)
+        legend_text_px = max(25, max_label_chars * 8)
         legend_inner_width = legend_swatch_size + 4 + legend_text_px
         legend_right_pad = 10  # small padding to the SVG right edge
         legend_band_width = chrom_gap + legend_inner_width + legend_right_pad

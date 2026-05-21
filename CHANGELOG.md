@@ -760,6 +760,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Previously a FASTQ/BAM input would silently produce zero contigs.
 
 ### Changed
+- ``karyoscope karyotype`` legend sort now pins chromosomes (``chr*``)
+  to the very top in natural order (chr1, chr2, ..., chr22, then
+  alphabetical for chrX/chrY/chrM), then ``"categorized"`` (the
+  hierarchy root), then any hierarchy-order categorical groupings
+  (e.g. ``autosome``, ``acrocentric``, ``metacentric``,
+  ``submetacentric``, ``sex`` for the production CHM13 chromosome
+  feature set), then unranked features alphabetical, then ``"novel"``
+  at the very bottom. Previously ``"categorized"`` pinned above the
+  chromosomes, which read awkwardly for the chromosome feature set
+  -- the parent category appeared before the leaves it parents.
+  Helper extracted to a module-level ``_legend_sort_key`` for
+  testability; 6 new unit tests cover the layout including the
+  production chromosome FS, the "future database with unranked
+  features" fallback, and the chr-natural-order subcase.
+- ``karyoscope karyotype`` now orders ``paternal`` before ``maternal``
+  in the rendered hap columns (matching HPRC's convention of
+  ``hap1 = paternal``, ``hap2 = maternal``). Previously the alphabetical
+  sort put ``maternal`` first, which placed the maternal column on the
+  left of every chromosome cell -- backwards from the standard HPRC
+  layout. Numeric ``hapN`` labels still sort numerically (``hap1`` →
+  ``hap2`` → ``hap10``), other labels still sort alphabetically,
+  ``unassigned`` is still last.
+- ``karyoscope karyotype`` legend text now renders at 14 pt (was
+  11 pt) to match the chromosome and hap labels. Swatch (14 px) and
+  row height (20 px) scaled in proportion; legend-band width estimate
+  updated to 8 px/char (was 6 px/char) so the canvas stays tight
+  against the longest label.
+- ``karyoscope karyotype`` heterogametic-hap detection (which hap
+  holds the heterogametic chromosome, e.g. chrY in XY male) now
+  infers from data first, falling back to the sort-order convention.
+  The archive's logic assumed ``haplotypes[0]`` was the heterogametic
+  hap -- correct for ``hap1``/``hap2`` labels where ``hap1`` holds
+  chrY by convention, but **backwards for the conventional
+  ``maternal``/``paternal`` labels** (chrY is paternal, not maternal).
+  The data-driven inference looks at which hap actually has chrY
+  records in the scaffold map and uses that as the heterogametic
+  hap; ``chrX`` (homogametic chromosome in male) gets the other hap.
+  Falls back to ``haplotypes[0]`` only when inference is ambiguous
+  (no chrY data, e.g. cancer with chrY loss; or chrY present in
+  multiple haps from mis-labelled contigs). Combined with the
+  HPRC-aligned sort order above, the fallback now also produces the
+  biologically correct labelling for the conventional human case.
+  Fixes the rendering bug where HG002 (male) drew empty extra
+  columns on chrX and chrY with the wrong hap labels.
 - ``karyoscope karyotype`` now defaults its output filename base to the
   first ``--input``'s stem (e.g. ``hg002v1.1.<dbid>.<mode>.<fs>.karyotype.svg``)
   instead of the previous literal ``karyotype`` (e.g.

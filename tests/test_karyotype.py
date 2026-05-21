@@ -14,6 +14,8 @@ from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.karyotype import (
     PREDEFINED_SEX_SYSTEMS,
     RenderInput,
+    _haps_natural_sort_key,
+    _legend_sort_key,
     convert_svg,
     get_expected_haps,
     render_karyotype,
@@ -67,6 +69,286 @@ class TestGetExpectedHaps:
         # Custom dict matching the predefined schema.
         custom = PREDEFINED_SEX_SYSTEMS["XY"]
         assert get_expected_haps("chrY", "male", self.haps, custom) == ["hap1"]
+
+
+class TestLegendSortKey:
+    """The legend in the karyotype SVG sorts feature names with a
+    specific layout: chromosomes (chr*) at the very top in natural
+    order, then "categorized" (hierarchy root), then hierarchy-order
+    features, then any unranked features alphabetical, then "novel"
+    at the very bottom.
+    """
+
+    @staticmethod
+    def _sorted(names: list[str], feature_order: list[str] | None = None) -> list[str]:
+        return sorted(names, key=lambda f: _legend_sort_key(f, feature_order))
+
+    def test_chromosome_fs_production_layout(self) -> None:
+        """Production CHM13 chromosome feature set: chromosomes first
+        in natural order, then categorized, then the categorical
+        groupings in hierarchy.tsv order, then novel."""
+        # The order the hierarchy file gives for the chromosome FS's
+        # non-leaf categories.
+        hierarchy_order = [
+            "autosome",
+            "acrocentric",
+            "metacentric",
+            "submetacentric",
+            "sex",
+        ]
+        # Simulated set of features seen in data for chromosome FS.
+        seen = [
+            "novel",
+            "chr1",
+            "chr22",
+            "chr2",
+            "chrX",
+            "chrY",
+            "autosome",
+            "acrocentric",
+            "metacentric",
+            "submetacentric",
+            "sex",
+            "categorized",
+        ]
+        result = self._sorted(seen, feature_order=hierarchy_order)
+        assert result == [
+            # Chromosomes natural-ordered at the very top
+            "chr1",
+            "chr2",
+            "chr22",
+            "chrX",
+            "chrY",
+            # Then "categorized" (hierarchy root, pinned)
+            "categorized",
+            # Then categorical groupings in hierarchy.tsv order
+            "autosome",
+            "acrocentric",
+            "metacentric",
+            "submetacentric",
+            "sex",
+            # Novel at the very bottom
+            "novel",
+        ]
+
+    def test_unknown_features_alphabetical_after_hierarchy_entries(self) -> None:
+        """Future-database fallback: features in data but not in
+        hierarchy_order end up between known hierarchy entries and
+        novel, sorted alphabetically."""
+        hierarchy_order = ["alpha", "beta"]
+        seen = ["zeta", "alpha", "novel", "beta", "gamma", "delta"]
+        result = self._sorted(seen, feature_order=hierarchy_order)
+        # alpha, beta first (hierarchy order); delta/gamma/zeta
+        # alphabetical at the end (unknown bucket); novel last.
+        assert result == ["alpha", "beta", "delta", "gamma", "zeta", "novel"]
+
+    def test_no_feature_order_alphabetical(self) -> None:
+        """When feature_order is None (e.g. caller doesn't have a
+        hierarchy), non-special features fall into one alphabetical
+        bucket between chromosomes-and-categorized and novel."""
+        seen = ["zeta", "alpha", "novel", "categorized", "chrX", "chr1", "beta"]
+        result = self._sorted(seen)
+        assert result == [
+            "chr1",
+            "chrX",
+            "categorized",
+            "alpha",
+            "beta",
+            "zeta",
+            "novel",
+        ]
+
+    def test_chromosomes_natural_chrM_after_numeric(self) -> None:
+        # Non-numeric chr* suffixes (chrM, chrW, chrZ etc.) sort
+        # alphabetically AFTER chr1..chr22.
+        assert self._sorted(["chr1", "chrM", "chr2", "chrY", "chrX"]) == [
+            "chr1",
+            "chr2",
+            "chrM",
+            "chrX",
+            "chrY",
+        ]
+
+    def test_categorized_above_other_features(self) -> None:
+        """``"categorized"`` (hierarchy root) goes immediately after
+        chromosomes, before any other category."""
+        seen = ["acrocentric", "categorized", "autosome", "chr1"]
+        result = self._sorted(seen, feature_order=["autosome", "acrocentric"])
+        assert result == ["chr1", "categorized", "autosome", "acrocentric"]
+
+    def test_novel_always_last(self) -> None:
+        # Even with a feature_order that doesn't mention novel, it
+        # pins to the bottom.
+        assert self._sorted(["novel", "alpha", "chr1"], feature_order=["alpha"]) == [
+            "chr1",
+            "alpha",
+            "novel",
+        ]
+
+
+class TestHapsNaturalSortKey:
+    """Hap column ordering follows the HPRC convention: paternal first
+    (= hap1), maternal second (= hap2). Numeric hapN forms come before
+    biological labels; ``unassigned`` is always last.
+    """
+
+    @staticmethod
+    def _sorted(haps: list[str]) -> list[str]:
+        return sorted(haps, key=_haps_natural_sort_key)
+
+    def test_paternal_before_maternal(self) -> None:
+        # HPRC convention: paternal = hap1 (first column).
+        assert self._sorted(["maternal", "paternal"]) == ["paternal", "maternal"]
+
+    def test_hap1_before_hap2(self) -> None:
+        assert self._sorted(["hap2", "hap1"]) == ["hap1", "hap2"]
+
+    def test_hap_numbers_ordered_numerically(self) -> None:
+        # Lexical sort would put "hap10" before "hap2"; we want numeric.
+        assert self._sorted(["hap2", "hap10", "hap1"]) == ["hap1", "hap2", "hap10"]
+
+    def test_unassigned_always_last(self) -> None:
+        assert self._sorted(["unassigned", "paternal", "maternal"]) == [
+            "paternal",
+            "maternal",
+            "unassigned",
+        ]
+
+    def test_hapN_comes_before_biological_labels(self) -> None:
+        assert self._sorted(["paternal", "hap1"]) == ["hap1", "paternal"]
+
+    def test_other_labels_alphabetical(self) -> None:
+        assert self._sorted(["zeta", "alpha", "beta"]) == ["alpha", "beta", "zeta"]
+
+
+class TestGetExpectedHapsWithDataDrivenInference:
+    """When per-chrom-hap data is passed, the heterogametic chromosome's
+    expected hap is inferred from where chrY actually lives, not from
+    haplotypes[0]. Fixes the maternal/paternal labelling bug where
+    sort order puts ``maternal`` first but chrY is actually paternal.
+    """
+
+    # HG002-style: maternal/paternal labels, chrY lives in paternal,
+    # chrX lives in maternal (XY male). Hap order follows the HPRC
+    # convention (paternal = hap1 first, maternal = hap2 second);
+    # matches what ``_haps_natural_sort_key`` produces for this set.
+    hg002_haps: ClassVar[list[str]] = ["paternal", "maternal"]
+    hg002_seqs: ClassVar[dict[str, dict[str, list[str]]]] = {
+        "chr1": {"paternal": ["chr1_PATERNAL"], "maternal": ["chr1_MATERNAL"]},
+        "chrX": {"paternal": [], "maternal": ["chrX_MATERNAL"]},
+        "chrY": {"paternal": ["chrY_PATERNAL"], "maternal": []},
+    }
+
+    def test_male_hg002_chrY_inferred_to_paternal(self) -> None:
+        result = get_expected_haps(
+            "chrY",
+            "male",
+            self.hg002_haps,
+            "XY",
+            sequences_per_chrom_hap=self.hg002_seqs,
+        )
+        assert result == ["paternal"], (
+            "data-driven inference should put chrY on paternal, "
+            f"not the alphabetical-first hap; got {result}"
+        )
+
+    def test_male_hg002_chrX_inferred_to_maternal(self) -> None:
+        result = get_expected_haps(
+            "chrX",
+            "male",
+            self.hg002_haps,
+            "XY",
+            sequences_per_chrom_hap=self.hg002_seqs,
+        )
+        assert result == ["maternal"], (
+            f"data-driven inference should put chrX on maternal; got {result}"
+        )
+
+    def test_autosomes_unaffected_by_inference(self) -> None:
+        # chr1 should still return both haps regardless of inference.
+        result = get_expected_haps(
+            "chr1",
+            "male",
+            self.hg002_haps,
+            "XY",
+            sequences_per_chrom_hap=self.hg002_seqs,
+        )
+        assert result == self.hg002_haps
+
+    def test_unknown_sex_unaffected_by_inference(self) -> None:
+        # With sex=None, sex chromosomes still get [] (data-driven only).
+        # The inference parameter is irrelevant.
+        for chrom in ("chrX", "chrY"):
+            result = get_expected_haps(
+                chrom,
+                None,
+                self.hg002_haps,
+                "XY",
+                sequences_per_chrom_hap=self.hg002_seqs,
+            )
+            assert result == [], (
+                f"sex=None should always return [] for sex chromosomes; got {result} for {chrom}"
+            )
+
+    def test_falls_back_to_sort_order_when_no_chrY_data(self) -> None:
+        """Cancer case: --sex male but chrY is lost. Inference can't
+        determine the heterogametic hap, so fall back to haplotypes[0].
+        With the HPRC sort order (paternal first), the fallback lands
+        on the biologically-correct hap -- the empty chrY column is
+        labelled paternal as a real chrY would be.
+        """
+        cancer_seqs = {
+            "chrX": {"paternal": ["chrX_PATERNAL"], "maternal": ["chrX_MATERNAL"]},
+            "chrY": {"paternal": [], "maternal": []},  # chrY lost
+        }
+        result_y = get_expected_haps(
+            "chrY",
+            "male",
+            self.hg002_haps,
+            "XY",
+            sequences_per_chrom_hap=cancer_seqs,
+        )
+        # Fall-back to haplotypes[0] = "paternal" (HPRC convention).
+        assert result_y == ["paternal"]
+
+    def test_falls_back_to_sort_order_when_chrY_in_both_haps(self) -> None:
+        """Ambiguous case: chrY data appears in both haps (unusual but
+        possible with mis-labelled contigs). Inference returns None;
+        fall back to haplotypes[0]."""
+        weird_seqs = {
+            "chrY": {"paternal": ["chrY_PATERNAL"], "maternal": ["chrY_MATERNAL"]},
+        }
+        result = get_expected_haps(
+            "chrY",
+            "male",
+            self.hg002_haps,
+            "XY",
+            sequences_per_chrom_hap=weird_seqs,
+        )
+        # Ambiguous → fall back to haplotypes[0] = "paternal".
+        assert result == ["paternal"]
+
+    def test_hap1_hap2_convention_still_works(self) -> None:
+        """For the conventional ``hap1``/``hap2`` labelling, chrY
+        should still end up on hap1 -- via inference when data shows
+        it there, via the fallback otherwise."""
+        haps = ["hap1", "hap2"]
+        seqs = {
+            "chrX": {"hap1": [], "hap2": ["chrX_seq"]},
+            "chrY": {"hap1": ["chrY_seq"], "hap2": []},
+        }
+        assert get_expected_haps("chrY", "male", haps, "XY", sequences_per_chrom_hap=seqs) == [
+            "hap1"
+        ]
+        assert get_expected_haps("chrX", "male", haps, "XY", sequences_per_chrom_hap=seqs) == [
+            "hap2"
+        ]
+
+    def test_no_per_chrom_hap_passed_keeps_legacy_behaviour(self) -> None:
+        """Calls without the new parameter should behave identically
+        to the original archive logic (backward compat)."""
+        assert get_expected_haps("chrY", "male", ["hap1", "hap2"], "XY") == ["hap1"]
+        assert get_expected_haps("chrX", "male", ["hap1", "hap2"], "XY") == ["hap2"]
 
 
 # --- render_karyotype: unit-level (no external tools) ---------------
@@ -367,10 +649,13 @@ class TestLegend:
         # (top of legend), then rA, then novel (bottom).
         assert pos_categorized < pos_ra < pos_novel
 
-    def test_fallback_sort_also_pins_categorized_and_novel(self, tmp_path: Path) -> None:
-        # When feature_order is None the fallback chr-then-alpha
-        # sort applies; the categorized/novel pins should still
-        # take effect.
+    def test_fallback_sort_pins_chromosomes_top_then_categorized_then_novel(
+        self, tmp_path: Path
+    ) -> None:
+        # When feature_order is None the chr-then-alpha sort applies.
+        # Under the HPRC-aligned layout chromosomes (chr*) pin to the
+        # very top, then "categorized" (hierarchy root), then any
+        # other features alphabetical, then "novel" at the bottom.
         ri = RenderInput(
             map_rows=[
                 _row("chr1_h1_a", chrom="chr1", hap="hap1", length=30_000_000),
@@ -394,9 +679,13 @@ class TestLegend:
         )
         text = out.read_text()
         pos_categorized = text.find("categorized")
-        pos_chr1_legend = text.rfind("chr1")  # last occurrence is the legend label
+        # The last "chr1" occurrence is the legend label; the earlier
+        # ones are chromosome-column labels above the karyotype.
+        pos_chr1_legend = text.rfind("chr1")
         pos_novel = text.find("novel")
-        assert pos_categorized < pos_chr1_legend < pos_novel
+        # chr1 (legend) appears before categorized, which appears
+        # before novel.
+        assert pos_chr1_legend < pos_categorized < pos_novel
 
     def test_title_uses_database_and_feature_set_nouns(self, tmp_path: Path) -> None:
         ri = RenderInput(
