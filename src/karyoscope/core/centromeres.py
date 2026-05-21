@@ -432,7 +432,7 @@ def centromeres_run(
         with plain.open("w") as h:
             for contig, (cstart, cend) in ranges.items():
                 h.write(f"{contig}\t{cstart}\t{cend}\n")
-        final = _bgzip_file(plain) if bgzip else plain
+        final = _bgzip_file(plain, threads=threads) if bgzip else plain
 
         results[spec.path.name] = CentromereResult(
             input_path=spec.path,

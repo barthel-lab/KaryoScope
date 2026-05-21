@@ -572,7 +572,7 @@ def scaffold_run(
                 t_rb = time.perf_counter()
                 rewrite_bed(src, out_plain, map_rows=per_input_rows, gzip_out=False)
                 logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
-                out_final = _bgzip_file(out_plain) if bgzip else out_plain
+                out_final = _bgzip_file(out_plain, threads=threads) if bgzip else out_plain
                 scaffolded_beds[fs] = out_final
 
         scaffolded_fasta: Path | None = None
@@ -595,7 +595,7 @@ def scaffold_run(
                 gzip_out=False,
             )
             logger.info("wrote %s in %.1fs", fasta_plain.name, time.perf_counter() - t_rf)
-            scaffolded_fasta = _bgzip_file(fasta_plain) if bgzip else fasta_plain
+            scaffolded_fasta = _bgzip_file(fasta_plain, threads=threads) if bgzip else fasta_plain
 
         results[r.spec.path.name] = ScaffoldResult(
             input_path=r.spec.path,

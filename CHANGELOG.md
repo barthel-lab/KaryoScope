@@ -694,6 +694,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while still ensuring the full pipeline is exercised in CI.
 
 ### Changed
+- ``_bgzip_file`` now forwards the caller's ``--threads`` to bgzip as
+  ``-@ N``, parallelising single-file compression. Wired through every
+  bgzip caller: ``annotate`` (per-feature-set presmoothed / smoothed
+  BEDs), ``scaffold`` (scaffolded BEDs and the scaffolded FASTA), and
+  ``centromeres`` (the centromeres BED). On HG002 the bgzip pass was
+  ~1-2 min of single-threaded compression for the 12 per-feature-set
+  BEDs; ``-t 16`` should drop that to ~10-20 s. Per-file log lines now
+  surface ``threads=N`` for visibility. When ``threads=1`` the ``-@``
+  flag is omitted entirely for cleanest subprocess invocation.
 - ``karyoscope scaffold -v``, ``karyoscope centromeres -v``, and
   ``karyoscope karyotype -v`` now bookend every major phase with
   start + end INFO lines, matching the depth of the annotate logging.

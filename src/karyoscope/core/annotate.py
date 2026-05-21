@@ -622,13 +622,20 @@ def _human_bytes(n: int) -> str:
     return f"{n / 1024**2:.1f} MB"
 
 
-def _bgzip_file(path: Path) -> Path:
+def _bgzip_file(path: Path, threads: int = 1) -> Path:
     """Compress ``path`` in-place with ``bgzip``, returning the new path.
 
     ``bgzip`` removes the source file by default (matches gzip's behaviour).
     Returns ``Path(str(path) + ".gz")``. Logs per-file start + completion
     at INFO so a long bgzip pass (12 files for a 6-feature-set human
     database) doesn't look like the pipeline has hung.
+
+    ``threads`` is forwarded as ``bgzip -@``; the htslib bgzip compresses
+    a single file in parallel when given more than one thread. We
+    process files sequentially within the bgzip pass, so passing the
+    user's full ``--threads`` here is the right call (no contention
+    with concurrent file compressions). ``threads=1`` (the default)
+    omits ``-@`` entirely for cleanest subprocess invocation.
     """
     bgzip = require_tool(
         "bgzip",
@@ -636,9 +643,13 @@ def _bgzip_file(path: Path) -> Path:
         "or rerun with --no-bgzip to skip compression.",
     )
     orig_size = path.stat().st_size
-    logger.info("bgzipping %s (%s)", path.name, _human_bytes(orig_size))
+    logger.info("bgzipping %s (%s, threads=%d)", path.name, _human_bytes(orig_size), threads)
     t0 = time.perf_counter()
-    run_tool([bgzip, "-f", str(path)])
+    cmd = [bgzip, "-f"]
+    if threads > 1:
+        cmd.extend(["-@", str(threads)])
+    cmd.append(str(path))
+    run_tool(cmd)
     out_path = Path(str(path) + ".gz")
     out_size = out_path.stat().st_size if out_path.is_file() else 0
     dt = time.perf_counter() - t0
@@ -856,13 +867,13 @@ def annotate(
         n_to_bgzip = sum(1 for fs in requested if fs in presmoothed_paths) + sum(
             1 for fs in requested if fs in smoothed_paths
         )
-        logger.info("bgzip pass: %d BED(s)", n_to_bgzip)
+        logger.info("bgzip pass: %d BED(s) (threads=%d each)", n_to_bgzip, threads)
         t_bgzip_start = time.perf_counter()
         for fs in requested:
             if fs in presmoothed_paths:
-                presmoothed_paths[fs] = _bgzip_file(presmoothed_paths[fs])
+                presmoothed_paths[fs] = _bgzip_file(presmoothed_paths[fs], threads=threads)
             if fs in smoothed_paths:
-                smoothed_paths[fs] = _bgzip_file(smoothed_paths[fs])
+                smoothed_paths[fs] = _bgzip_file(smoothed_paths[fs], threads=threads)
         logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
 
     # Tidy up the combined intermediate unless asked to keep it.
