@@ -671,3 +671,141 @@ def test_annotate_preserve_order_with_multiple_sequences_keeps_input_order(
         if seq not in seen:
             seen.append(seq)
     assert seen == ["z_first", "m_middle", "a_last"]
+
+
+# --- FASTQ input support --------------------------------------------------
+
+
+def test_annotate_accepts_fastq_input(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """``annotate`` accepts ``.fastq`` input and produces equivalent
+    presmoothed output to the FASTA case.
+
+    The C++ binary reads FASTQ natively; our wrapper just needs to
+    recognise the extension when deriving the output prefix.
+    """
+    runner, db_root, _ = cli_with_populated_db
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"  # same 21-mers as the FASTA fixture
+
+    # Hand-write a tiny FASTQ. Quality string length must match sequence.
+    fq_path = tmp_path / "reads.fastq"
+    fq_path.write_text(
+        f"@seq_with_features\n{seed}\n+\n" + ("I" * len(seed)) + "\n"
+        f"@seq_novel\n{'A' * 33}\n+\n" + ("I" * 33) + "\n"
+    )
+
+    outdir = tmp_path / "out"
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(fq_path),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+            "--no-smooth",
+            "--feature-set",
+            "region",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    # Prefix should be derived as "reads" (the FASTQ extension stripped).
+    expected = outdir / "reads.KS_dummy_test_v1.region.presmoothed.bed"
+    assert expected.is_file(), f"missing {expected}; got: {list(outdir.iterdir())}"
+
+    # Same k-mer content as the FASTA fixture would produce; verifies
+    # FASTQ parsing actually ran through the pipeline.
+    bed = _read_bed(expected)
+    features = [r[3] for r in bed]
+    assert "rA" in features
+    assert "rB" in features
+    assert "rC" in features
+    assert "novel" in features
+
+
+def test_annotate_accepts_fastq_gz_input(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """Gzipped FASTQ (``.fastq.gz``) is also accepted; prefix derivation
+    strips the full ``.fastq.gz`` suffix (not just ``.gz``)."""
+    runner, db_root, _ = cli_with_populated_db
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"
+
+    fq_text = (
+        f"@seq_with_features\n{seed}\n+\n" + ("I" * len(seed)) + "\n"
+        f"@seq_novel\n{'A' * 33}\n+\n" + ("I" * 33) + "\n"
+    )
+    fq_gz_path = tmp_path / "myreads.fastq.gz"
+    fq_gz_path.write_bytes(gzip.compress(fq_text.encode()))
+
+    outdir = tmp_path / "out"
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(fq_gz_path),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+            "--no-smooth",
+            "--feature-set",
+            "region",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+    # Prefix is "myreads" -- full ".fastq.gz" stripped, not just ".gz".
+    expected = outdir / "myreads.KS_dummy_test_v1.region.presmoothed.bed"
+    assert expected.is_file()
+
+
+# --- scaffold rejects read-level inputs ----------------------------------
+
+
+def test_scaffold_rejects_fastq_input(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    tmp_path: Path,
+) -> None:
+    """``scaffold`` requires a FASTA assembly; passing reads should
+    fail cleanly with a message pointing the user at ``annotate``.
+
+    Lives in test_command_annotate.py because the input-format
+    validation lives in scaffold_run.py alongside the annotate
+    cascade entry point; the scaffold command tests are organised
+    around scaffold-specific behaviour rather than input rejection.
+    """
+    fq_path = tmp_path / "reads.fastq"
+    fq_path.write_text("@r1\nACGT\n+\nIIII\n")
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "scaffold",
+            "-i",
+            str(fq_path),
+            "--db-root",
+            str(populated_db_root),
+        ],
+    )
+    assert result.exit_code != 0
+    # The error message should mention FASTQ and point at annotate.
+    output_lower = result.output.lower()
+    assert "fasta" in output_lower
+    assert "annotate" in output_lower

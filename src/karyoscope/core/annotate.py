@@ -65,15 +65,24 @@ from karyoscope.manifest import validate_database_layout
 logger = logging.getLogger(__name__)
 
 
-#: FASTA extensions we recognise when deriving the output basename.
-#: Order matters — longer extensions first so they win over shorter ones.
-_FASTA_EXTENSIONS: tuple[str, ...] = (
+#: Input extensions we recognise when deriving the output basename.
+#: Order matters — longer extensions first so they win over shorter
+#: ones. Includes FASTQ (read by ``get_featureIDs`` directly) and
+#: BAM (piped through ``samtools fastq``); see
+#: :func:`karyoscope.core.io.kmc.run_get_featureids` for the BAM
+#: streaming path.
+_INPUT_EXTENSIONS: tuple[str, ...] = (
     ".fasta.gz",
     ".fa.gz",
     ".fna.gz",
+    ".fastq.gz",
+    ".fq.gz",
     ".fasta",
     ".fa",
     ".fna",
+    ".fastq",
+    ".fq",
+    ".bam",
 )
 
 
@@ -111,14 +120,16 @@ class AnnotateResult:
 
 
 def _derive_input_basename(input_path: Path) -> str:
-    """Strip recognised FASTA extensions from a path's filename.
+    """Strip recognised FASTA/FASTQ/BAM extensions from a path's filename.
 
-    ``my_assembly.fa.gz`` -> ``my_assembly``. Falls back to the raw
-    stem if no known extension matches.
+    ``my_assembly.fa.gz`` -> ``my_assembly``,
+    ``reads.fastq.gz`` -> ``reads``,
+    ``aln.bam`` -> ``aln``.
+    Falls back to the raw stem if no known extension matches.
     """
     name = input_path.name
     name_lower = name.lower()
-    for ext in _FASTA_EXTENSIONS:
+    for ext in _INPUT_EXTENSIONS:
         if name_lower.endswith(ext):
             return name[: -len(ext)]
     return input_path.stem

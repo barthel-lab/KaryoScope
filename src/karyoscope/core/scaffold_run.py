@@ -89,6 +89,40 @@ def _input_stem(path: Path) -> str:
     return path.stem
 
 
+#: Read-level input extensions that ``scaffold`` / ``karyotype`` /
+#: ``centromeres`` reject up front. These pipelines need contig names
+#: from a FASTA; reads have no chromosome-scale "contig" concept. The
+#: error message points the user at ``karyoscope annotate``, which
+#: does accept FASTQ/BAM.
+_READ_INPUT_EXTS: tuple[str, ...] = (
+    ".fastq.gz",
+    ".fq.gz",
+    ".fastq",
+    ".fq",
+    ".bam",
+    ".sam",
+)
+
+
+def _reject_read_input(path: Path) -> None:
+    """Raise :class:`ScaffoldError` if ``path`` looks like reads, not a FASTA.
+
+    Pure-extension check -- if a user has a misnamed file, the
+    downstream FASTA parser will catch it. We just want to give a
+    clean error for the common "I passed reads by mistake" case.
+    """
+    lower = path.name.lower()
+    for ext in _READ_INPUT_EXTS:
+        if lower.endswith(ext):
+            raise ScaffoldError(
+                f"`karyoscope scaffold` / `karyotype` / `centromeres` require "
+                f"a FASTA assembly input (got {path.name!r}, which looks like "
+                f"{ext}). Reads have no chromosome-scale contig concept, so "
+                f"scaffolding / karyotype rendering doesn't apply. Use "
+                f"`karyoscope annotate` to annotate FASTQ/BAM read data."
+            )
+
+
 @dataclass
 class InputSpec:
     """One ``-i`` argument plus its optional ``--telo`` companion."""
@@ -453,6 +487,7 @@ def scaffold_run(
     for r in resolved:
         if not r.spec.path.is_file():
             raise ScaffoldError(f"input file not found: {r.spec.path}")
+        _reject_read_input(r.spec.path)
         _ensure_annotated(
             r,
             db_root=db_root,

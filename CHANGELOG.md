@@ -693,6 +693,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit-test workflow fast and friendly for Python-only contributors,
   while still ensuring the full pipeline is exercised in CI.
 
+### Added
+- ``karyoscope annotate`` now accepts **FASTQ** (``.fastq``, ``.fq``,
+  ``.fastq.gz``, ``.fq.gz``) and **BAM** (``.bam``) inputs in addition
+  to FASTA. FASTQ is read by the C++ ``get_featureIDs`` binary natively;
+  BAM is streamed through ``samtools fasta`` (not ``samtools fastq`` --
+  KaryoScope only needs the sequence, not the quality string, and FASTA
+  is smaller and slightly faster to write). The BAM path is a streaming
+  pipe -- no intermediate file is created and memory stays bounded.
+  ``samtools`` is required on ``$PATH`` for BAM inputs; the wrapper
+  raises ``ToolNotFoundError`` with an actionable install hint when
+  missing. For read-level inputs (many short sequences), also pass
+  ``--no-preserve-order`` to skip the per-sequence temp-file machinery
+  designed for assembly-scale inputs.
+- ``karyoscope scaffold`` / ``karyotype`` / ``centromeres`` now reject
+  FASTQ, BAM, and SAM inputs up front with a clean error message
+  pointing the user at ``karyoscope annotate``. These pipelines need
+  contig names from a FASTA; reads have no chromosome-scale "contig"
+  concept, so scaffolding and karyotype rendering don't apply.
+  Previously a FASTQ/BAM input would silently produce zero contigs.
+
 ### Changed
 - ``karyoscope karyotype`` now defaults its output filename base to the
   first ``--input``'s stem (e.g. ``hg002v1.1.<dbid>.<mode>.<fs>.karyotype.svg``)

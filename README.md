@@ -48,9 +48,11 @@ KaryoScope requires Python ≥3.10 and several external tools (`KMC`, `bgzip`, `
 git clone https://github.com/barthel-lab/KaryoScope.git
 cd KaryoScope
 
-# Create a dedicated environment with Python and the bioinformatics tools
+# Create a dedicated environment with Python and the bioinformatics tools.
+# `samtools` is only needed if you plan to annotate BAM inputs; drop it
+# if you only work with FASTA or FASTQ.
 conda create -n karyoscope -c conda-forge -c bioconda \
-    python=3.12 pip kmc htslib seqtk cairo zlib compilers
+    python=3.12 pip kmc htslib samtools seqtk cairo zlib compilers
 conda activate karyoscope
 
 # Install KaryoScope
@@ -82,6 +84,10 @@ curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblie
 #    of RAM for human-scale inputs (HG002 runs in ~30 min at -t 16).
 #    --no-bgzip keeps the per-feature-set BEDs as plain text for easy
 #    inspection; drop it to get the default bgzipped outputs.
+#    Accepts FASTA, FASTQ (plain or .gz), and BAM. For BAM, samtools
+#    must be on PATH (it's invoked as `samtools fasta` to stream into
+#    get_featureIDs). For read-level inputs also pass --no-preserve-order
+#    for substantially faster writes.
 karyoscope annotate --input hg002v1.1.fasta.gz --outdir results/ --threads 16 --no-bgzip
 
 # 4. Render the three primary karyotype views.

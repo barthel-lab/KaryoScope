@@ -29,9 +29,16 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-from karyoscope.core.external import ToolNotFoundError, run_tool
+from karyoscope.core.external import (
+    ExternalToolError,
+    ToolNotFoundError,
+    require_tool,
+    run_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +116,48 @@ def get_featureids_binary() -> str:
     )
 
 
+#: Extensions stripped from the input filename when deriving an
+#: output prefix. Order matters: longer suffixes first so they win
+#: over the bare-extension fallback. Includes BAM so that BAM inputs
+#: (piped through ``samtools fastq``) get a clean prefix.
+_INPUT_EXTENSIONS: tuple[str, ...] = (
+    ".fasta.gz",
+    ".fa.gz",
+    ".fna.gz",
+    ".fastq.gz",
+    ".fq.gz",
+    ".fasta",
+    ".fa",
+    ".fna",
+    ".fastq",
+    ".fq",
+    ".bam",
+)
+
+
+def _infer_prefix(input_path: Path, db_path: Path) -> str:
+    """Compute the prefix ``get_featureIDs`` would derive by default.
+
+    Mirrors the C++ binary's ``get_fasta_prefix`` logic so callers can
+    compute the same output filename without having to ask the binary
+    to do it. Used both to reconstruct the output path after a normal
+    file-input run and to pass ``--prefix`` explicitly when reading
+    from stdin (the BAM pipe path).
+    """
+    input_basename = input_path.name
+    for ext in _INPUT_EXTENSIONS:
+        if input_basename.lower().endswith(ext):
+            input_basename = input_basename[: -len(ext)]
+            break
+    kmc_basename = Path(str(db_path)).name
+    # If db_path pointed at a file like "features.kmc_pre", strip the suffix.
+    for suffix in (".kmc_pre", ".kmc_suf"):
+        if kmc_basename.endswith(suffix):
+            kmc_basename = kmc_basename[: -len(suffix)]
+            break
+    return f"{input_basename}.{kmc_basename}"
+
+
 def run_get_featureids(
     *,
     db_path: Path,
@@ -128,8 +177,11 @@ def run_get_featureids(
         ``.kmc_pre``/``.kmc_suf`` suffix), at one of the index files
         directly, or at the directory containing the pair.
     input_path
-        FASTA/FASTQ input file. Pass ``Path("-")`` for stdin (and set
-        ``input_format``).
+        FASTA, FASTQ, or BAM input file. Plain or gzipped is fine for
+        FASTA/FASTQ; ``.bam`` is detected by extension and routed
+        through ``samtools fasta`` as a streaming pipe (no temp file
+        and no quality strings, since k-mer counting doesn't need
+        them). Pass ``Path("-")`` for stdin (and set ``input_format``).
     output_dir
         Directory where the combined BED will be written. Created if
         absent.
@@ -138,8 +190,8 @@ def run_get_featureids(
         get_featureIDs decide based on hardware concurrency."
     prefix
         Optional override for the output filename prefix. If ``None``,
-        ``get_featureIDs`` derives the prefix from the input FASTA
-        basename plus the KMC database basename.
+        ``_infer_prefix`` derives the prefix from the input basename
+        plus the KMC database basename.
     input_format
         ``"fasta"`` or ``"fastq"``. Required only when reading from
         stdin; otherwise the format is inferred from the input filename.
@@ -156,13 +208,27 @@ def run_get_featureids(
     Raises
     ------
     ToolNotFoundError
-        If the binary cannot be located.
+        If the binary cannot be located (or, for BAM inputs, if
+        ``samtools`` is not on ``$PATH``).
     ExternalToolError
         If the subprocess exits with a non-zero status.
     """
     binary = get_featureids_binary()
-
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if prefix is None:
+        prefix = _infer_prefix(input_path, db_path)
+
+    if input_path.suffix.lower() == ".bam":
+        return _run_get_featureids_piped_from_bam(
+            binary=binary,
+            db_path=db_path,
+            bam_path=input_path,
+            output_dir=output_dir,
+            threads=threads,
+            prefix=prefix,
+            capture=capture,
+        )
 
     cmd: list[str] = [
         binary,
@@ -174,43 +240,111 @@ def run_get_featureids(
         str(output_dir),
         "--threads",
         str(threads),
+        "--prefix",
+        prefix,
     ]
-    if prefix is not None:
-        cmd += ["--prefix", prefix]
     if input_format is not None:
         cmd += ["--input-format", input_format]
 
     run_tool(cmd, capture=capture)
+    return output_dir / f"{prefix}.combined.presmoothed.featureIDs.bed"
 
-    # Reconstruct the expected output filename so callers don't need to
-    # know the internal naming convention.
-    if prefix is not None:
-        base = prefix
-    else:
-        # Mirrors get_featureIDs' get_fasta_prefix + kmc basename logic.
-        # Strip known FASTA/FASTQ extensions in the same order the C++ does.
-        input_basename = input_path.name
-        for ext in (
-            ".fasta.gz",
-            ".fa.gz",
-            ".fna.gz",
-            ".fastq.gz",
-            ".fq.gz",
-            ".fasta",
-            ".fa",
-            ".fna",
-            ".fastq",
-            ".fq",
-        ):
-            if input_basename.lower().endswith(ext):
-                input_basename = input_basename[: -len(ext)]
-                break
-        kmc_basename = Path(str(db_path)).name
-        # If db_path pointed at a file like "features.kmc_pre", strip the suffix.
-        for suffix in (".kmc_pre", ".kmc_suf"):
-            if kmc_basename.endswith(suffix):
-                kmc_basename = kmc_basename[: -len(suffix)]
-                break
-        base = f"{input_basename}.{kmc_basename}"
 
-    return output_dir / f"{base}.combined.presmoothed.featureIDs.bed"
+def _run_get_featureids_piped_from_bam(
+    *,
+    binary: str,
+    db_path: Path,
+    bam_path: Path,
+    output_dir: Path,
+    threads: int,
+    prefix: str,
+    capture: bool,
+) -> Path:
+    """Stream ``samtools fasta <bam>`` into ``get_featureIDs --input -``.
+
+    BAM inputs aren't read by the C++ binary directly; we convert
+    on the fly via ``samtools fasta`` (not ``fastq`` -- KaryoScope
+    only needs the sequence, not the quality string, and FASTA is
+    smaller and slightly faster to write). The pipe is streaming,
+    so no temp file is created and memory stays bounded.
+
+    Error handling: if ``get_featureIDs`` exits non-zero we report
+    that (it's the more informative failure for the user). If it
+    succeeds but ``samtools`` exited non-zero we report the samtools
+    error (rare; usually a malformed BAM).
+    """
+    samtools = require_tool(
+        "samtools",
+        install_hint="Install samtools to use BAM inputs:\n"
+        "  conda install -c bioconda samtools\n"
+        "Or convert the BAM to FASTA first with:\n"
+        "  samtools fasta input.bam | gzip > input.fasta.gz",
+    )
+
+    samtools_cmd = [samtools, "fasta", str(bam_path)]
+    getfid_cmd = [
+        binary,
+        "--db",
+        str(db_path),
+        "--input",
+        "-",
+        "--input-format",
+        "fasta",
+        "--output",
+        str(output_dir),
+        "--threads",
+        str(threads),
+        "--prefix",
+        prefix,
+    ]
+    logger.debug("piping: %s | %s", " ".join(samtools_cmd), " ".join(getfid_cmd))
+
+    samtools_proc = subprocess.Popen(
+        samtools_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        getfid_proc = subprocess.run(
+            getfid_cmd,
+            stdin=samtools_proc.stdout,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        # Closing the read end before wait() lets samtools see SIGPIPE
+        # cleanly if get_featureIDs exited early.
+        if samtools_proc.stdout is not None:
+            samtools_proc.stdout.close()
+    samtools_returncode = samtools_proc.wait()
+    samtools_stderr = samtools_proc.stderr.read() if samtools_proc.stderr is not None else ""
+
+    # Order matters: downstream failure (get_featureIDs) is the more
+    # actionable error to surface first.
+    if getfid_proc.returncode != 0:
+        raise ExternalToolError(
+            cmd=getfid_cmd,
+            returncode=getfid_proc.returncode,
+            stderr=getfid_proc.stderr or "",
+            stdout=getfid_proc.stdout or "",
+        )
+    if samtools_returncode != 0:
+        raise ExternalToolError(
+            cmd=samtools_cmd,
+            returncode=samtools_returncode,
+            stderr=samtools_stderr,
+        )
+
+    if not capture:
+        # Forward subprocess output to our own stdout/stderr so the
+        # user sees it just like with the file-input path.
+        if getfid_proc.stdout:
+            sys.stdout.write(getfid_proc.stdout)
+        if getfid_proc.stderr:
+            sys.stderr.write(getfid_proc.stderr)
+        if samtools_stderr:
+            sys.stderr.write(samtools_stderr)
+
+    return output_dir / f"{prefix}.combined.presmoothed.featureIDs.bed"

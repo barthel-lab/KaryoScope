@@ -58,7 +58,12 @@ logger = logging.getLogger(__name__)
     "input_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
-    help="Input FASTA file (plain or gzipped).",
+    help="Input sequence file. Accepts FASTA (.fasta/.fa/.fna, plain "
+    "or .gz), FASTQ (.fastq/.fq, plain or .gz), or BAM (.bam). BAM "
+    "inputs are piped through `samtools fasta` (requires samtools on "
+    "PATH); no intermediate file is written. For read-level inputs "
+    "(FASTQ/BAM with many short sequences), also pass "
+    "--no-preserve-order for substantially faster writes.",
 )
 @click.option(
     "--outdir",
