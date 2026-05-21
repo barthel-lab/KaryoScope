@@ -96,7 +96,7 @@ karyoscope annotate --input hg002v1.1.fasta.gz --outdir results/ --threads 16 --
 #    applied at bin time so the renders are equivalent.
 #    The first invocation runs the full scaffold + bin + render cascade;
 #    the next two reuse the cached intermediates and finish much faster.
-COMMON="--input hg002v1.1.fasta.gz --outdir results/ --threads 16 --sex male --no-scaffolding"
+COMMON="--input hg002v1.1.fasta.gz --outdir results/ --threads 16 --sex male --no-scaffolding --no-bgzip"
 karyoscope karyotype $COMMON --mode genome      --feature-set chromosome
 karyoscope karyotype $COMMON --mode centromere  --feature-set region
 karyoscope karyotype $COMMON --mode subtelomere --feature-set subtelomeric
