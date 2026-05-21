@@ -7,10 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from karyoscope.download import install_database, is_installed
+from karyoscope.download import (
+    _looks_like_sha256,
+    _looks_like_url,
+    _looks_like_version,
+    install_database,
+    is_installed,
+)
 from karyoscope.exceptions import (
     ChecksumError,
     DatabaseLayoutError,
+    FetchError,
     IncompatibleVersionError,
 )
 from karyoscope.installed import load
@@ -204,4 +211,161 @@ def test_install_rejects_wrong_toplevel_dir(tmp_path: Path) -> None:
     entry = _entry_from_dummy(archive.absolute().as_uri(), sha, id="expected_id")
 
     with pytest.raises(DatabaseLayoutError, match="expected top-level"):
+        install_database(entry, db_root, show_progress=False)
+
+
+# --- Registry hygiene checks (fire before any network or filesystem work) -
+
+
+class TestLooksLikeUrl:
+    """Coarse URL format check used by the registry hygiene guard."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/db.tar.gz",
+            "http://example.com/db.tar.gz",
+            "file:///local/db.tar.gz",  # tests + cached-local-download path
+        ],
+    )
+    def test_accepts_known_schemes(self, url: str) -> None:
+        assert _looks_like_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "PLACEHOLDER",
+            "",
+            "example.com/db.tar.gz",  # missing scheme
+            "ftp://example.com/db.tar.gz",  # not supported by fetch
+            "s3://my-bucket/db.tar.gz",
+            "/local/path",
+        ],
+    )
+    def test_rejects_bad_values(self, url: str) -> None:
+        assert not _looks_like_url(url)
+
+
+class TestLooksLikeSha256:
+    def test_accepts_lowercase_hex(self) -> None:
+        assert _looks_like_sha256("a" * 64)
+
+    def test_accepts_uppercase_hex(self) -> None:
+        assert _looks_like_sha256("A" * 64)
+
+    def test_accepts_mixed_case_hex(self) -> None:
+        assert _looks_like_sha256("aB" * 32)
+
+    @pytest.mark.parametrize(
+        "s",
+        [
+            "PLACEHOLDER",
+            "",
+            "a" * 63,  # too short
+            "a" * 65,  # too long
+            "g" * 64,  # non-hex char
+            "a" * 63 + "z",
+        ],
+    )
+    def test_rejects_bad_values(self, s: str) -> None:
+        assert not _looks_like_sha256(s)
+
+
+class TestLooksLikeVersion:
+    @pytest.mark.parametrize(
+        "v",
+        ["1.0.0", "0.1.0.dev0", "2.0.0a1", "10.20.30"],
+    )
+    def test_accepts_real_versions(self, v: str) -> None:
+        assert _looks_like_version(v)
+
+    @pytest.mark.parametrize(
+        "v",
+        ["PLACEHOLDER", "", "v1.0.0", "latest", ".1.0"],
+    )
+    def test_rejects_bad_values(self, v: str) -> None:
+        assert not _looks_like_version(v)
+
+
+def test_install_rejects_placeholder_url(tmp_path: Path) -> None:
+    """A registry entry with ``PLACEHOLDER`` for ``url`` is detected
+    BEFORE any network or filesystem work. No need to mock the network
+    -- the validation fires up front."""
+    db_root = tmp_path / "db_root"
+    entry = _entry_from_dummy(url="PLACEHOLDER", sha256="a" * 64)
+    with pytest.raises(FetchError, match="usable download URL"):
+        install_database(entry, db_root, show_progress=False)
+
+
+def test_install_rejects_placeholder_url_protects_existing_install(
+    tmp_path: Path,
+) -> None:
+    """Critical safety property: the URL validation fires BEFORE the
+    rmtree step that prepares the target directory for force-reinstall.
+    A malformed registry entry must never destroy an existing install
+    just because the URL turned out to be bogus.
+    """
+    db_root = tmp_path / "db_root"
+    # Pre-create a directory the installer would normally remove.
+    existing = db_root / "KS_dummy_test_v1"
+    existing.mkdir(parents=True)
+    sentinel = existing / "important.txt"
+    sentinel.write_text("do not delete me")
+
+    entry = _entry_from_dummy(url="PLACEHOLDER", sha256="a" * 64)
+    with pytest.raises(FetchError):
+        install_database(entry, db_root, show_progress=False, force=True)
+    # The pre-existing directory and file are intact.
+    assert sentinel.is_file()
+    assert sentinel.read_text() == "do not delete me"
+
+
+def test_install_rejects_placeholder_sha256(tmp_path: Path) -> None:
+    db_root = tmp_path / "db_root"
+    entry = _entry_from_dummy(url="https://example.com/db.tar.gz", sha256="PLACEHOLDER")
+    with pytest.raises(FetchError, match="invalid SHA-256"):
+        install_database(entry, db_root, show_progress=False)
+
+
+def test_install_skips_sha256_check_when_verification_disabled(
+    tmp_path: Path,
+) -> None:
+    """When --no-checksum is passed, the SHA-256 hygiene check is
+    skipped (the sha256 isn't used in that mode anyway). The URL
+    check still fires; we test that here by giving a placeholder URL
+    so we know the URL check ran but didn't get to the sha256 step."""
+    db_root = tmp_path / "db_root"
+    entry = _entry_from_dummy(url="PLACEHOLDER", sha256="PLACEHOLDER")
+    # URL check fires first; sha256 check is moot in --no-checksum mode.
+    with pytest.raises(FetchError, match="usable download URL"):
+        install_database(entry, db_root, show_progress=False, verify_checksum=False)
+
+
+def test_install_rejects_placeholder_min_version(tmp_path: Path) -> None:
+    """A PLACEHOLDER karyoscope_min_version silently parses to (0,)
+    in :func:`_check_version_compatibility`, which always passes. The
+    hygiene check catches this so a malformed entry doesn't bypass
+    the compat guard entirely."""
+    db_root = tmp_path / "db_root"
+    entry = _entry_from_dummy(
+        url="https://example.com/db.tar.gz",
+        sha256="a" * 64,
+        karyoscope_min_version="PLACEHOLDER",
+    )
+    with pytest.raises(FetchError, match="invalid karyoscope_min_version"):
+        install_database(entry, db_root, show_progress=False)
+
+
+def test_install_version_compat_fires_before_hygiene(tmp_path: Path) -> None:
+    """When both checks would fail, the version-compat error wins --
+    it's a more user-actionable message (you can upgrade KaryoScope)
+    than the registry-hygiene one (which mostly means "wait")."""
+    db_root = tmp_path / "db_root"
+    entry = _entry_from_dummy(
+        url="PLACEHOLDER",  # would fail hygiene check
+        sha256="PLACEHOLDER",
+        karyoscope_min_version="999.0.0",  # would fail compat check
+    )
+    # Compat error fires first.
+    with pytest.raises(IncompatibleVersionError, match=r"999\.0\.0"):
         install_database(entry, db_root, show_progress=False)

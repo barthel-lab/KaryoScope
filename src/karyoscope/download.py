@@ -22,6 +22,7 @@ from karyoscope._fetch import fetch
 from karyoscope._version import __version__
 from karyoscope.exceptions import (
     DatabaseLayoutError,
+    FetchError,
     IncompatibleVersionError,
     KaryoscopeError,
 )
@@ -65,6 +66,83 @@ def _check_version_compatibility(entry: DatabaseEntry) -> None:
             f"database '{entry.id}' requires KaryoScope >= "
             f"{entry.karyoscope_min_version}, but this is {__version__}. "
             "Upgrade KaryoScope to install this database."
+        )
+
+
+#: URL schemes the downloader knows how to handle. Anything not
+#: matching these prefixes (including the literal "PLACEHOLDER" we
+#: ship in incomplete registry entries) gets rejected up front with
+#: an actionable message rather than an opaque urllib error.
+#: Matches the schemes :func:`karyoscope._fetch.fetch` supports;
+#: keep in sync if that grows new ones.
+_VALID_URL_PREFIXES: tuple[str, ...] = ("http://", "https://", "file://")
+
+
+def _looks_like_url(s: str) -> bool:
+    return any(s.startswith(prefix) for prefix in _VALID_URL_PREFIXES)
+
+
+def _looks_like_sha256(s: str) -> bool:
+    """64-char lowercase or uppercase hex digest."""
+    return len(s) == 64 and all(c in "0123456789abcdefABCDEF" for c in s)
+
+
+def _looks_like_version(s: str) -> bool:
+    """Coarse "starts with a digit" version-string check.
+
+    Doesn't try to be strict PEP 440 -- the goal is just to catch
+    ``"PLACEHOLDER"``, empty-string, and typo cases that would
+    otherwise silently parse to ``(0,)`` (defeating the compat check).
+    Real versions always start with a digit.
+    """
+    return bool(s) and s[0].isdigit()
+
+
+def _check_registry_entry_publishable(entry: DatabaseEntry, *, verify_checksum: bool) -> None:
+    """Validate that a registry entry has usable download metadata.
+
+    Complementary to :func:`_check_version_compatibility`: that
+    function validates the *installed* KaryoScope is new enough for
+    the entry; this one validates that the entry itself has the
+    fields it needs to be downloaded at all.
+
+    Catches three "registry-side" issues with one actionable error
+    each, so users see a clear "the registry entry isn't ready yet"
+    message instead of an opaque urllib / HTTP failure:
+
+    * ``url`` is missing, empty, ``"PLACEHOLDER"``, or doesn't have
+      a known URL scheme.
+    * ``karyoscope_min_version`` is missing, ``"PLACEHOLDER"``, or
+      doesn't start with a digit (would otherwise silently parse to
+      ``(0,)`` and bypass the compat check entirely).
+    * ``sha256`` is missing, ``"PLACEHOLDER"``, or not a 64-hex
+      digest. Skipped when the caller passed ``--no-checksum``,
+      since the sha256 isn't used in that mode.
+
+    All three checks fire *before* the destructive ``rmtree`` step
+    in :func:`install_database`, so a malformed entry can never
+    destroy an existing install.
+    """
+    if not _looks_like_url(entry.url):
+        raise FetchError(
+            f"database {entry.id!r} doesn't have a usable download URL "
+            f"(got {entry.url!r}). The registry entry may not yet be "
+            f"finalised -- check "
+            f"https://github.com/barthel-lab/KaryoScope-registry for "
+            f"publication status, or wait until the upload completes."
+        )
+    if not _looks_like_version(entry.karyoscope_min_version):
+        raise FetchError(
+            f"database {entry.id!r} has an invalid karyoscope_min_version "
+            f"(got {entry.karyoscope_min_version!r}). The registry entry "
+            f"may not yet be finalised -- check the registry repo."
+        )
+    if verify_checksum and not _looks_like_sha256(entry.sha256):
+        raise FetchError(
+            f"database {entry.id!r} has an invalid SHA-256 "
+            f"(got {entry.sha256!r}). Either wait for the registry "
+            f"entry to be finalised, or pass --no-checksum to skip "
+            f"verification (not recommended for production use)."
         )
 
 
@@ -173,6 +251,9 @@ def install_database(
         On network or filesystem errors during the download.
     """
     _check_version_compatibility(entry)
+    # Registry-hygiene check fires BEFORE the rmtree step below, so a
+    # malformed registry entry can never destroy an existing install.
+    _check_registry_entry_publishable(entry, verify_checksum=verify_checksum)
     db_root.mkdir(parents=True, exist_ok=True)
     target_dir = db_root / entry.id
 

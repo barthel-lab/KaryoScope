@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- ``karyoscope download`` now validates registry-entry metadata up
+  front (``url``, ``sha256``, ``karyoscope_min_version``) and fires a
+  clean, actionable error if the entry is incomplete -- before any
+  network or filesystem work. Catches three real-world cases:
+
+    * ``url`` is missing, empty, ``"PLACEHOLDER"``, or doesn't have
+      a known URL scheme (``http://``, ``https://``, ``file://``).
+      Previously the user saw an opaque ``urllib`` error like
+      ``unknown url type: 'PLACEHOLDER'``; now they see a message
+      pointing at the KaryoScope-registry repo for publication
+      status.
+    * ``sha256`` is missing, ``"PLACEHOLDER"``, or not a 64-hex
+      digest. Skipped when ``--no-checksum`` was passed.
+    * ``karyoscope_min_version`` is missing or ``"PLACEHOLDER"``.
+      Previously these silently parsed to ``(0,)`` in
+      ``_check_version_compatibility`` and bypassed the compat
+      guard entirely; now the hygiene check catches them.
+
+  Critically, the hygiene check fires BEFORE the destructive
+  ``shutil.rmtree`` step in ``install_database``, so a malformed
+  registry entry can never destroy an existing install just
+  because the URL turned out to be bogus. Validates at download
+  time (not parse time) so ``karyoscope download --list`` and
+  ``--info`` still work for in-progress registry entries -- users
+  can see what's coming even if it's not yet downloadable. 33
+  new unit tests in ``test_download_core.py``.
 - Initial project scaffold with command-line interface skeleton.
 - `karyoscope` console entry point with subcommand dispatch.
 - Foundational documentation: `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
