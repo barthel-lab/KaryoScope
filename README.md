@@ -109,9 +109,9 @@ This produces three SVGs under `results/`:
 
 | File | View | Feature set |
 |---|---|---|
-| `hg002v1.1.KS_human_CHM13_v2.genome.chromosome.karyotype.svg` | Genome view | chromosome |
-| `hg002v1.1.KS_human_CHM13_v2.centromere.region.karyotype.svg` | Centromere view | region |
-| `hg002v1.1.KS_human_CHM13_v2.subtelomere.subtelomeric.karyotype.svg` | Subtelomere view | subtelomeric |
+| `hg002v1.1.KS_human_CHM13_v2.genome.chromosome.smoothed.karyotype.svg` | Genome view | chromosome |
+| `hg002v1.1.KS_human_CHM13_v2.centromere.region.smoothed.karyotype.svg` | Centromere view | region |
+| `hg002v1.1.KS_human_CHM13_v2.subtelomere.subtelomeric.smoothed.karyotype.svg` | Subtelomere view | subtelomeric |
 
 Pass `--format pdf` or `--format png` (repeatable) to additionally produce those formats from the SVG.
 

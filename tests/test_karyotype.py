@@ -900,7 +900,7 @@ def test_karyotype_centromere_mode_against_dummy_db(
     # inputs. The dummy db's rA/rB/rC region features all classify as
     # centromere via get_simple_region, so we should get a non-empty SVG.
     assert result.exit_code == 0, result.output
-    svgs = list(out_dir.glob("*.centromere.region.karyotype.svg"))
+    svgs = list(out_dir.glob("*.centromere.region.smoothed.karyotype.svg"))
     assert svgs
 
 

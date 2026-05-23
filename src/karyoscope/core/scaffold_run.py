@@ -205,20 +205,23 @@ def _resolve_roles(manifest_roles: dict[str, str], available: list[str]) -> tupl
     return chrom_set, region_set
 
 
-def _smoothed_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
-    """The canonical path for ``annotate``'s smoothed BED output."""
-    # annotate writes .bed.gz by default; we look for either.
-    gz = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed.gz"
+def _annotation_bed_path(
+    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
+) -> Path:
+    """Path to an ``annotate``-produced BED (smoothed or presmoothed)."""
+    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed.gz"
     if gz.is_file():
         return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed"
+    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed"
     if plain.is_file():
         return plain
     return gz  # default to expecting .gz
 
 
-def _binned_bed_path(out_dir: Path, stem: str, db_id: str, fs: str, bin_size: int) -> Path:
-    return out_dir / f"{stem}.{db_id}.{fs}.smoothed.binned{bin_size}.bed.gz"
+def _binned_bed_path(
+    out_dir: Path, stem: str, db_id: str, fs: str, bin_size: int, variant: str = "smoothed"
+) -> Path:
+    return out_dir / f"{stem}.{db_id}.{fs}.{variant}.binned{bin_size}.bed.gz"
 
 
 def _telo_path(out_dir: Path, stem: str) -> Path:
@@ -249,7 +252,7 @@ def _ensure_annotated(
     missing = [
         fs
         for fs in feature_sets
-        if not _smoothed_bed_path(spec.out_dir, spec.stem, db_id, fs).is_file()
+        if not _annotation_bed_path(spec.out_dir, spec.stem, db_id, fs).is_file()
     ]
     if not missing:
         return
@@ -318,7 +321,7 @@ def _ensure_binned(
             f"bin size {bin_size} (expected at {out}). Re-run with auto-derive "
             f"enabled."
         )
-    src = _smoothed_bed_path(spec.out_dir, spec.stem, db_id, fs)
+    src = _annotation_bed_path(spec.out_dir, spec.stem, db_id, fs)
     if not src.is_file():
         raise ScaffoldError(
             f"can't bin {fs!r} for {spec.spec.path.name}: smoothed BED missing "
@@ -372,6 +375,7 @@ def scaffold_run(
     auto: bool = True,
     output_dir: Path | None = None,
     write_scaffolded_beds: bool = True,
+    annotation_variant: str = "smoothed",
 ) -> dict[str, ScaffoldResult]:
     """Run the full ``karyoscope scaffold`` pipeline.
 
@@ -601,16 +605,22 @@ def scaffold_run(
         scaffolded_beds: dict[str, Path] = {}
         if mode in ("bed", "both") and write_scaffolded_beds:
             for fs in requested:
-                src = _smoothed_bed_path(r.out_dir, r.stem, db_id_resolved, fs)
+                src = _annotation_bed_path(
+                    r.out_dir, r.stem, db_id_resolved, fs, variant=annotation_variant
+                )
                 if not src.is_file():
                     logger.warning(
-                        "smoothed BED for %s / %s not found at %s; skipping",
+                        "%s BED for %s / %s not found at %s; skipping",
+                        annotation_variant,
                         r.spec.path.name,
                         fs,
                         src,
                     )
                     continue
-                out_plain = r.out_dir / f"{r.stem}.{db_id_resolved}.{fs}.smoothed.scaffolded.bed"
+                out_plain = (
+                    r.out_dir
+                    / f"{r.stem}.{db_id_resolved}.{fs}.{annotation_variant}.scaffolded.bed"
+                )
                 logger.info(
                     "rewriting scaffolded BED for %s / %s -> %s",
                     r.spec.path.name,

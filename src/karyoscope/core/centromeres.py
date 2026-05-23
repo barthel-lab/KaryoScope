@@ -198,29 +198,33 @@ class CentromereResult:
     num_contigs: int
 
 
-def _scaffolded_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
+def _scaffolded_bed_path(
+    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
+) -> Path:
     """The conventional path scaffold writes for a per-feature-set BED."""
-    gz = out_dir / f"{stem}.{db_id}.{fs}.smoothed.scaffolded.bed.gz"
+    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.bed.gz"
     if gz.is_file():
         return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.scaffolded.bed"
+    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.bed"
     if plain.is_file():
         return plain
     return gz  # default to expecting .gz
 
 
-def _smoothed_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
-    """The annotate-produced (unscaffolded) smoothed BED path.
+def _annotation_bed_path(
+    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
+) -> Path:
+    """The annotate-produced BED path (smoothed or presmoothed).
 
     Looked at only on the ``write_scaffolded_beds=False`` codepath
     (when scaffolding skipped writing per-FS scaffolded BEDs). The
     binning step then runs against this file and the scaffold map is
     applied post-bin via :func:`rewrite_bed`.
     """
-    gz = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed.gz"
+    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed.gz"
     if gz.is_file():
         return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed"
+    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed"
     if plain.is_file():
         return plain
     return gz  # default to expecting .gz
@@ -232,8 +236,9 @@ def _binned_scaffolded_bed_path(
     db_id: str,
     fs: str,
     bin_size: int,
+    variant: str = "smoothed",
 ) -> Path:
-    return out_dir / f"{stem}.{db_id}.{fs}.smoothed.scaffolded.binned{bin_size}.bed.gz"
+    return out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.binned{bin_size}.bed.gz"
 
 
 def _load_binned_bed(path: Path) -> OrderedDict[str, list[Interval]]:
@@ -316,7 +321,7 @@ def _ensure_binned_scaffolded(
             f"{scaffolded_src} and no scaffold map provided for post-bin "
             f"renaming."
         )
-    smoothed_src = _smoothed_bed_path(out_dir, stem, db_id, fs)
+    smoothed_src = _annotation_bed_path(out_dir, stem, db_id, fs)
     if not smoothed_src.is_file():
         raise CentromereError(
             f"cannot bin {fs!r} for {input_name}: smoothed BED missing at "

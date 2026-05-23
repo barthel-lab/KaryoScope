@@ -95,27 +95,31 @@ def _input_stem(path: Path) -> str:
     return path.stem
 
 
-def _scaffolded_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
-    gz = out_dir / f"{stem}.{db_id}.{fs}.smoothed.scaffolded.bed.gz"
+def _scaffolded_bed_path(
+    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
+) -> Path:
+    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.bed.gz"
     if gz.is_file():
         return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.scaffolded.bed"
+    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.bed"
     if plain.is_file():
         return plain
     return gz
 
 
-def _smoothed_bed_path(out_dir: Path, stem: str, db_id: str, fs: str) -> Path:
-    """The annotate-produced (unscaffolded) smoothed BED path.
+def _annotation_bed_path(
+    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
+) -> Path:
+    """The annotate-produced BED path (smoothed or presmoothed).
 
     Used on the ``--no-scaffolding`` codepath where scaffolding skipped
     writing per-FS scaffolded BEDs. We bin this file and apply the
     scaffold map at bin time via :func:`rewrite_bed`.
     """
-    gz = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed.gz"
+    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed.gz"
     if gz.is_file():
         return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed"
+    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed"
     if plain.is_file():
         return plain
     return gz
@@ -127,8 +131,9 @@ def _binned_scaffolded_bed_path(
     db_id: str,
     fs: str,
     bin_size: int,
+    variant: str = "smoothed",
 ) -> Path:
-    return out_dir / f"{stem}.{db_id}.{fs}.smoothed.scaffolded.binned{bin_size}.bed.gz"
+    return out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.binned{bin_size}.bed.gz"
 
 
 def _load_binned_bed(path: Path) -> OrderedDict[str, list[Interval]]:
@@ -183,6 +188,7 @@ def _ensure_binned_scaffolded(
     input_name: str,
     threads: int,
     map_rows: list[MapRow] | None = None,
+    variant: str = "smoothed",
 ) -> Path:
     """Return the binned scaffolded BED path, building it if missing.
 
@@ -190,15 +196,15 @@ def _ensure_binned_scaffolded(
 
     * **Scaffolded BED on disk** (the historical path): bin it directly.
     * **Scaffolded BED missing but a map is available** (the
-      ``--no-scaffolding`` path): bin the *smoothed* (unscaffolded)
-      BED at the requested ``bin_size``, then stream the binned output
-      through :func:`rewrite_bed` to apply the map (rename contigs +
-      mirror coordinates for flipped contigs). Skipping the
-      full-resolution scaffold BED rewrite is the whole point of
-      ``--no-scaffolding`` -- the map application on binned data is
-      microseconds rather than the minutes the smoothed rewrite costs.
+      ``--no-scaffolding`` path): bin the annotation (smoothed or
+      presmoothed) BED at the requested ``bin_size``, then stream the
+      binned output through :func:`rewrite_bed` to apply the map
+      (rename contigs + mirror coordinates for flipped contigs).
+
+    ``variant`` selects whether we read the smoothed or presmoothed
+    annotation BEDs and produce correspondingly named intermediates.
     """
-    out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size)
+    out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size, variant=variant)
     if out.is_file():
         return out
     if not auto:
@@ -207,10 +213,8 @@ def _ensure_binned_scaffolded(
             f"{fs!r}, bin size {bin_size} (expected at {out}). Re-run with "
             "auto-derive enabled."
         )
-    scaffolded_src = _scaffolded_bed_path(out_dir, stem, db_id, fs)
+    scaffolded_src = _scaffolded_bed_path(out_dir, stem, db_id, fs, variant=variant)
     if scaffolded_src.is_file():
-        # bin_features logs its own start (with leaf_set + threads) and
-        # completion lines; no need for a redundant announcement here.
         bin_features(
             scaffolded_src,
             out,
@@ -220,24 +224,24 @@ def _ensure_binned_scaffolded(
         )
         return out
 
-    # Fallback: bin the smoothed BED, then apply the scaffold map.
+    # Fallback: bin the annotation BED, then apply the scaffold map.
     if map_rows is None:
         raise KaryotypeError(
             f"cannot bin {fs!r} for {input_name}: scaffolded BED missing at "
             f"{scaffolded_src} and no scaffold map provided for post-bin "
             f"renaming."
         )
-    smoothed_src = _smoothed_bed_path(out_dir, stem, db_id, fs)
-    if not smoothed_src.is_file():
+    annotation_src = _annotation_bed_path(out_dir, stem, db_id, fs, variant=variant)
+    if not annotation_src.is_file():
         raise KaryotypeError(
-            f"cannot bin {fs!r} for {input_name}: smoothed BED missing at "
-            f"{smoothed_src} (and scaffolded BED also missing)"
+            f"cannot bin {fs!r} for {input_name}: {variant} BED missing at "
+            f"{annotation_src} (and scaffolded BED also missing)"
         )
     tmpdir = Path(tempfile.mkdtemp(prefix="ks_karyo_bin_", dir=out_dir))
     try:
         tmp_binned = tmpdir / "binned.bed.gz"
         bin_features(
-            smoothed_src,
+            annotation_src,
             tmp_binned,
             bin_size=bin_size,
             leaf_set=leaf_set or None,
@@ -304,6 +308,7 @@ def karyotype_run(
     auto: bool = True,
     bgzip: bool = True,
     scaffolding: bool = True,
+    annotation_variant: str = "smoothed",
     output_dir: Path | None = None,
     output_path: Path | None = None,
     seed_human_chromosomes: bool = True,
@@ -415,6 +420,7 @@ def karyotype_run(
         auto=auto,
         output_dir=output_dir,
         write_scaffolded_beds=scaffolding,
+        annotation_variant=annotation_variant,
     )
 
     # For centromere mode, also ensure the centromere coordinates file
@@ -505,6 +511,7 @@ def karyotype_run(
                     input_name=spec.path.name,
                     threads=threads,
                     map_rows=map_rows,
+                    variant=annotation_variant,
                 )
                 binned_bed = _load_binned_bed(binned_path)
 
@@ -526,7 +533,9 @@ def karyotype_run(
                 )
 
             flat_colors = colors_for_set(colors, fs)
-            stem_for_paths = f"{base_name}.{db_id_resolved}.{current_mode}.{fs}.karyotype"
+            stem_for_paths = (
+                f"{base_name}.{db_id_resolved}.{current_mode}.{fs}.{annotation_variant}.karyotype"
+            )
             svg_path = results_dir / f"{stem_for_paths}.svg"
             logger.info(
                 "rendering karyotype: mode=%s, feature_set=%s -> %s",
@@ -548,7 +557,7 @@ def karyotype_run(
                 sample_label=sample_label,
                 database_id=db_id_resolved,
                 feature_set_label=fs,
-                smoothed=True,
+                smoothed=(annotation_variant == "smoothed"),
                 show_title=show_title,
                 show_legend=show_legend,
                 feature_order=fs_feature_order,

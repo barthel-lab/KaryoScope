@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ``karyoscope karyotype`` now accepts ``--smoothed/--presmoothed``
+  (default ``--smoothed``). ``--presmoothed`` renders from the raw
+  (unsmoothed) annotation BEDs instead of the hierarchy-smoothed
+  ones, so users can visually compare the effect of smoothing. Both
+  variants are produced by ``karyoscope annotate``.
+
+### Changed
+- Karyotype SVG filenames now include the annotation variant
+  (``smoothed`` or ``presmoothed``) so both can coexist on disk:
+  ``<stem>.<dbid>.<mode>.<fs>.smoothed.karyotype.svg`` (was
+  ``<stem>.<dbid>.<mode>.<fs>.karyotype.svg``). All intermediate
+  BED filenames (scaffolded, binned-scaffolded) also include the
+  variant. This is a naming change from v1.0.0; existing scripts
+  that glob for ``*.karyotype.svg`` will still match.
+
 ## [1.0.0] - 2026-05-21
 
 ### Added

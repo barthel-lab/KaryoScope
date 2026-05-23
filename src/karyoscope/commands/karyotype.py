@@ -228,6 +228,15 @@ logger = logging.getLogger(__name__)
     "materialised as a side artifact.",
 )
 @click.option(
+    "--smoothed/--presmoothed",
+    "use_smoothed",
+    default=True,
+    show_default=True,
+    help="Which annotation variant to render. Default --smoothed uses the "
+    "hierarchy-smoothed BEDs; --presmoothed uses the raw (unsmoothed) "
+    "annotations. Both variants are produced by `karyoscope annotate`.",
+)
+@click.option(
     "--outdir",
     "-o",
     "output_dir",
@@ -268,6 +277,7 @@ def cmd(
     auto: bool,
     bgzip: bool,
     scaffolding: bool,
+    use_smoothed: bool,
     output_dir: Path | None,
     output_path: Path | None,
 ) -> None:
@@ -372,6 +382,7 @@ def cmd(
             auto=auto,
             bgzip=bgzip,
             scaffolding=scaffolding,
+            annotation_variant="smoothed" if use_smoothed else "presmoothed",
             output_dir=output_dir,
             output_path=output_path,
             seed_human_chromosomes=not no_human_chroms,
