@@ -26,6 +26,7 @@ to do.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -33,6 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from karyoscope._version import __version__
 from karyoscope.core.external import (
     ExternalToolError,
     ToolNotFoundError,
@@ -44,6 +46,25 @@ logger = logging.getLogger(__name__)
 
 #: The bare command name we search for on ``$PATH``.
 BINARY_NAME = "get_featureIDs"
+
+#: Filename suffix the C++ helper always appends after the user/derived
+#: prefix. Centralised so the combined-BED path is computed in exactly
+#: one place.
+COMBINED_BED_SUFFIX = ".combined.presmoothed.featureIDs.bed"
+
+#: Suffix of the sidecar completion marker written next to the combined
+#: BED (``<combined>.done``). The marker is written only after
+#: ``get_featureIDs`` exits 0, so its presence -- together with a
+#: matching size/mtime -- is what lets a rerun safely *reuse* an
+#: existing combined BED instead of regenerating it. A combined BED left
+#: behind by a killed run has no marker (or a mismatched one) and is
+#: never silently trusted. See :func:`combined_bed_is_complete`.
+_MARKER_SUFFIX = ".done"
+
+#: Bump if the marker payload schema changes incompatibly; an older or
+#: unrecognised schema makes :func:`combined_bed_is_complete` fail
+#: closed (regenerate) rather than trust a stale layout.
+_MARKER_SCHEMA = 1
 
 #: Environment variable users can set to override the binary location.
 ENV_OVERRIDE = "KARYOSCOPE_GET_FEATUREIDS"
@@ -211,6 +232,87 @@ def _infer_prefix(input_path: Path, db_path: Path) -> str:
     return f"{input_basename}.{kmc_basename}"
 
 
+def combined_bed_path(output_dir: Path, prefix: str) -> Path:
+    """Return the combined-BED path ``get_featureIDs`` writes for ``prefix``.
+
+    The single source of truth for the output filename, used both to
+    locate the result after a run and to test for a reusable one before
+    a run (resume).
+    """
+    return output_dir / f"{prefix}{COMBINED_BED_SUFFIX}"
+
+
+def combined_marker_path(combined_bed: Path) -> Path:
+    """Path of the completion marker sidecar for ``combined_bed``."""
+    return combined_bed.with_name(combined_bed.name + _MARKER_SUFFIX)
+
+
+def write_combined_marker(
+    combined_bed: Path,
+    *,
+    prefix: str,
+    db_path: Path,
+    input_path: Path,
+) -> Path:
+    """Write the ``<combined>.done`` marker recording a successful run.
+
+    Records the combined BED's size and mtime so a later run can detect
+    a file that was truncated or otherwise modified after the marker was
+    written, plus provenance (input, db, version) for debugging. Call
+    only after ``get_featureIDs`` has exited 0.
+    """
+    st = combined_bed.stat()
+    payload = {
+        "schema": _MARKER_SCHEMA,
+        "karyoscope_version": __version__,
+        "combined_bed": combined_bed.name,
+        "size_bytes": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "prefix": prefix,
+        "db_path": str(db_path),
+        "input": str(input_path),
+    }
+    marker = combined_marker_path(combined_bed)
+    marker.write_text(json.dumps(payload, indent=2) + "\n")
+    logger.debug("wrote combined-BED completion marker %s", marker)
+    return marker
+
+
+def clear_combined_marker(combined_bed: Path) -> None:
+    """Remove the completion marker for ``combined_bed`` if present.
+
+    Called before a (re)run so that a crash mid-write can never leave a
+    marker pointing at a half-written BED, and alongside deletion of the
+    combined intermediate so no dangling marker is left behind.
+    """
+    combined_marker_path(combined_bed).unlink(missing_ok=True)
+
+
+def combined_bed_is_complete(combined_bed: Path) -> bool:
+    """True if ``combined_bed`` exists and its completion marker matches.
+
+    Returns ``True`` only when the BED is present, its sidecar marker is
+    present and parses, the schema matches, and the recorded size and
+    mtime equal the file's current size and mtime. Any mismatch, missing
+    file, or unreadable marker returns ``False`` -- failing closed so a
+    partial or post-hoc-modified file is regenerated rather than trusted.
+    """
+    if not combined_bed.is_file():
+        return False
+    marker = combined_marker_path(combined_bed)
+    try:
+        data = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        return False
+    if data.get("schema") != _MARKER_SCHEMA:
+        return False
+    try:
+        st = combined_bed.stat()
+    except OSError:
+        return False
+    return data.get("size_bytes") == st.st_size and data.get("mtime_ns") == st.st_mtime_ns
+
+
 def run_get_featureids(
     *,
     db_path: Path,
@@ -272,8 +374,15 @@ def run_get_featureids(
     if prefix is None:
         prefix = _infer_prefix(input_path, db_path)
 
+    out_path = combined_bed_path(output_dir, prefix)
+    # Clear any stale completion marker up front: if this run is killed
+    # mid-write, the leftover (partial) BED must NOT keep an old marker
+    # that a resume would then wrongly trust. The fresh marker is
+    # written only after the binary exits 0, below.
+    clear_combined_marker(out_path)
+
     if input_path.suffix.lower() == ".bam":
-        return _run_get_featureids_piped_from_bam(
+        out_path = _run_get_featureids_piped_from_bam(
             binary=binary,
             db_path=db_path,
             bam_path=input_path,
@@ -282,6 +391,8 @@ def run_get_featureids(
             prefix=prefix,
             capture=capture,
         )
+        write_combined_marker(out_path, prefix=prefix, db_path=db_path, input_path=input_path)
+        return out_path
 
     cmd: list[str] = [
         binary,
@@ -312,7 +423,8 @@ def run_get_featureids(
                 stdout=e.stdout,
             ) from e
         raise
-    return output_dir / f"{prefix}.combined.presmoothed.featureIDs.bed"
+    write_combined_marker(out_path, prefix=prefix, db_path=db_path, input_path=input_path)
+    return out_path
 
 
 def _run_get_featureids_piped_from_bam(
@@ -414,4 +526,4 @@ def _run_get_featureids_piped_from_bam(
         if samtools_stderr:
             sys.stderr.write(samtools_stderr)
 
-    return output_dir / f"{prefix}.combined.presmoothed.featureIDs.bed"
+    return combined_bed_path(output_dir, prefix)

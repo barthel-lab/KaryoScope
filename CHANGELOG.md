@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- ``karyoscope annotate`` is now resumable across the expensive
+  ``get_featureIDs`` (k-mer query) step. On success that step writes a
+  small ``<input>.<dbid>.combined.presmoothed.featureIDs.bed.done``
+  completion marker recording the combined BED's size and mtime. On a
+  rerun, if a complete-and-verified combined BED is already present,
+  ``annotate`` skips ``get_featureIDs`` and resumes straight into the
+  smoothing pass -- the common recovery path after smoothing workers
+  are OOM-killed: rerun with fewer ``--threads`` (or more RAM) and the
+  k-mer query is not repeated. Pass the new ``--force`` flag to
+  regenerate the intermediate unconditionally.
+
+  A combined BED left behind by a *killed* run (truncated / partial)
+  has no matching marker and is **never** silently reused -- it is
+  regenerated -- so resume cannot produce wrong annotations from a
+  half-written intermediate. Previously a rerun unconditionally re-ran
+  ``get_featureIDs``, overwriting an already-completed combined BED in
+  place (and, if that rerun was itself OOM-killed mid-write, destroying
+  the good file).
 - ``karyoscope karyotype`` now accepts ``--smoothed/--presmoothed``
   (default ``--smoothed``). ``--presmoothed`` renders from the raw
   (unsmoothed) annotation BEDs instead of the hierarchy-smoothed
@@ -34,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picking up the inference fix would have had to manually delete the
   derived ``*.scaffolded.binned*.bed.gz`` files to see the corrected
   karyotype.
+- The smoothing pass no longer floods stderr with benign
+  ``BrokenPipeError`` / ``EOFError`` tracebacks when a worker is
+  OOM-killed. Those came from ``multiprocessing.Pool``'s daemon helper
+  threads writing to the dead worker's pipe in the window before the
+  watchdog fired; they are now suppressed for the duration of the
+  smoothing pass so the watchdog's single actionable ``FATAL`` message
+  stands on its own.
 
 ### Changed
 - Karyotype SVG filenames now include the annotation variant

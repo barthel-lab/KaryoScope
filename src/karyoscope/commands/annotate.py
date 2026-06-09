@@ -121,6 +121,16 @@ logger = logging.getLogger(__name__)
     help="Keep the combined .featureIDs.bed from the C++ step (useful for debugging).",
 )
 @click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Regenerate the combined intermediate even if a complete one already "
+    "exists. By default a rerun reuses a verified combined BED left by a "
+    "previous (e.g. OOM-killed) run and skips the get_featureIDs step, "
+    "resuming straight into smoothing. A partial file from a killed run is "
+    "never reused regardless of this flag.",
+)
+@click.option(
     "--bgzip/--no-bgzip",
     default=True,
     show_default=True,
@@ -153,6 +163,7 @@ def cmd(
     keep_intermediates: bool,
     bgzip: bool,
     preserve_input_order: bool,
+    force: bool,
 ) -> None:
     """Run the annotate pipeline for ``--input``.
 
@@ -189,6 +200,7 @@ def cmd(
             keep_intermediates=keep_intermediates,
             bgzip=bgzip,
             preserve_input_order=preserve_input_order,
+            force=force,
         )
     except (
         DatabaseNotFoundError,

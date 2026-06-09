@@ -15,6 +15,7 @@ from click.testing import CliRunner
 from karyoscope.cli import main
 from karyoscope.core.annotate import _derive_input_basename, _split_combined_bed
 from karyoscope.core.io.features import parse_features
+from karyoscope.core.io.kmc import combined_bed_is_complete, write_combined_marker
 
 pytestmark = pytest.mark.integration
 
@@ -303,6 +304,119 @@ def test_annotate_with_keep_intermediates(
 
     combined = outdir / "my_query.KS_dummy_test_v1.combined.presmoothed.featureIDs.bed"
     assert combined.is_file()
+
+
+_COMBINED_NAME = "my_query.KS_dummy_test_v1.combined.presmoothed.featureIDs.bed"
+_REGION_PRE_NAME = "my_query.KS_dummy_test_v1.region.presmoothed.bed"
+
+
+def _run_annotate(
+    runner: CliRunner, db_root: Path, query_fasta: Path, outdir: Path, *extra: str
+) -> None:
+    """Invoke ``annotate`` with the region set, no smooth/bgzip, plus extras."""
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(query_fasta),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+            "--no-smooth",
+            "--feature-set",
+            "region",
+            *extra,
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_annotate_writes_completion_marker(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """A successful run leaves a verified ``.done`` marker next to the
+    kept combined BED."""
+    runner, db_root, query_fasta = cli_with_populated_db
+    outdir = tmp_path / "out"
+    _run_annotate(runner, db_root, query_fasta, outdir, "--keep-intermediates")
+
+    combined = outdir / _COMBINED_NAME
+    assert combined.is_file()
+    assert combined_bed_is_complete(combined), "marker should verify the kept combined BED"
+
+
+def test_annotate_reuses_complete_combined_bed(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """A rerun reuses a complete combined BED instead of regenerating it.
+
+    We prove reuse by tampering the kept combined BED with content the
+    real binary would never emit, refreshing its marker so it still
+    validates, then rerunning: the per-feature-set output must reflect
+    the *tampered* intermediate (so get_featureIDs was skipped). A final
+    ``--force`` run must restore the real content.
+    """
+    runner, db_root, query_fasta = cli_with_populated_db
+    outdir = tmp_path / "out"
+    _run_annotate(runner, db_root, query_fasta, outdir, "--keep-intermediates")
+
+    combined = outdir / _COMBINED_NAME
+    # featureID 3 -> region rC in the dummy db; a sequence name the real
+    # query could never produce.
+    combined.write_text("tamperedSeq\t0\t10\t3\n")
+    write_combined_marker(
+        combined,
+        prefix="my_query.KS_dummy_test_v1",
+        db_path=Path("db"),
+        input_path=query_fasta,
+    )
+    assert combined_bed_is_complete(combined)
+
+    # Rerun WITHOUT --force: must reuse the tampered combined BED.
+    _run_annotate(runner, db_root, query_fasta, outdir, "--keep-intermediates")
+    region = _read_bed(outdir / _REGION_PRE_NAME)
+    assert region == [("tamperedSeq", 0, 10, "rC")], (
+        f"expected output from the reused (tampered) combined BED, got {region}"
+    )
+
+    # Rerun WITH --force: regenerates, so the real content returns.
+    _run_annotate(runner, db_root, query_fasta, outdir, "--keep-intermediates", "--force")
+    region2 = _read_bed(outdir / _REGION_PRE_NAME)
+    assert all(r[0] != "tamperedSeq" for r in region2), "--force should regenerate the combined BED"
+    assert any(r[0] == "seq_with_features" for r in region2)
+
+
+def test_annotate_does_not_reuse_partial_combined_bed(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """A combined BED modified after its marker (e.g. truncated by a
+    killed run) is treated as untrusted and regenerated, not silently
+    reused -- the safety property that makes default-on resume sound."""
+    runner, db_root, query_fasta = cli_with_populated_db
+    outdir = tmp_path / "out"
+    _run_annotate(runner, db_root, query_fasta, outdir, "--keep-intermediates")
+
+    combined = outdir / _COMBINED_NAME
+    # Tamper WITHOUT refreshing the marker: size/mtime now disagree.
+    combined.write_text("tamperedSeq\t0\t10\t3\n")
+    assert not combined_bed_is_complete(combined)
+
+    # Rerun without --force: the stale partial must be regenerated.
+    _run_annotate(runner, db_root, query_fasta, outdir, "--keep-intermediates")
+    region = _read_bed(outdir / _REGION_PRE_NAME)
+    assert all(r[0] != "tamperedSeq" for r in region), (
+        "a partial combined BED (no matching marker) must not be reused"
+    )
+    assert any(r[0] == "seq_with_features" for r in region)
 
 
 def test_annotate_filters_by_feature_set(
