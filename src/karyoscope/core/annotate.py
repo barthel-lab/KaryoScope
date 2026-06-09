@@ -26,6 +26,7 @@ threads.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import multiprocessing as mp
 import os
@@ -47,7 +48,12 @@ from karyoscope.core.io.hierarchy import (
     parse_hierarchy,
     validate_hierarchy,
 )
-from karyoscope.core.io.kmc import run_get_featureids
+from karyoscope.core.io.kmc import (
+    clear_combined_marker,
+    combined_bed_is_complete,
+    combined_bed_path,
+    run_get_featureids,
+)
 from karyoscope.core.smooth import (
     HierarchyIndex,
     chunked_seq_reader,
@@ -390,6 +396,36 @@ def _spawn_pool_watchdog(
     t = threading.Thread(target=_watch, daemon=True, name="ks-pool-watchdog")
     t.start()
     return stop_event
+
+
+@contextlib.contextmanager
+def _quiet_worker_pipe_errors() -> Iterator[None]:
+    """Suppress benign ``BrokenPipeError`` / ``EOFError`` from pool threads.
+
+    When a smoothing worker is killed (most often by the OOM-killer),
+    ``multiprocessing.Pool``'s internal ``_handle_tasks`` /
+    ``_handle_results`` daemon threads raise ``BrokenPipeError`` (or
+    ``EOFError``) trying to talk to the dead worker's pipe, in the
+    window before the watchdog (:func:`_spawn_pool_watchdog`) fires.
+    Python's default ``threading.excepthook`` dumps a full traceback per
+    such thread -- a wall of noise on top of the watchdog's single
+    actionable FATAL message. We install a scoped hook that drops *only*
+    those two exception types and delegates everything else to the
+    previous hook, restoring it on exit. Scoped to the smoothing pass,
+    where the pool threads are the only plausible source of these.
+    """
+    previous = threading.excepthook
+
+    def _hook(args: threading.ExceptHookArgs) -> None:
+        if args.exc_type is not None and issubclass(args.exc_type, (BrokenPipeError, EOFError)):
+            return
+        previous(args)
+
+    threading.excepthook = _hook
+    try:
+        yield
+    finally:
+        threading.excepthook = previous
 
 
 def _smooth_all_feature_sets(
@@ -802,6 +838,7 @@ def annotate(
     keep_intermediates: bool = False,
     bgzip: bool = True,
     preserve_input_order: bool = True,
+    force: bool = False,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
 
@@ -832,6 +869,14 @@ def annotate(
         the C++ step. Default: delete after processing.
     bgzip
         bgzip the per-feature-set output BEDs. Default: yes.
+    force
+        Regenerate the combined intermediate even when a complete one
+        already exists on disk. Default: ``False`` -- a rerun reuses a
+        verified combined BED from a previous (possibly crashed) run and
+        skips the expensive ``get_featureIDs`` step. "Verified" means the
+        BED is present and its ``.done`` completion marker matches its
+        size/mtime; a partial file left by a killed run has no matching
+        marker and is regenerated regardless of this flag.
 
     Raises
     ------
@@ -910,32 +955,50 @@ def annotate(
                 )
             indices[fs] = HierarchyIndex.from_hierarchy(hierarchy, fs)
 
-    # Run the C++ helper.
+    # Run the C++ helper -- unless a complete combined BED from a prior
+    # run is already on disk. get_featureIDs is the most expensive and
+    # most memory-hungry step; reusing a verified result lets a user who
+    # was OOM-killed during smoothing simply rerun (e.g. with fewer
+    # --threads) and resume straight into the smoothing pass, instead of
+    # paying for -- and risking another OOM in -- the k-mer query again.
+    # The combined BED is feature-set- and thread-count-agnostic, so
+    # reuse stays correct even if those args changed between runs.
     input_basename = _derive_input_basename(input_path)
     prefix = f"{input_basename}.{db_id_resolved}"
     kmc_db_basename = db_dir / manifest.index.basename
-    logger.info(
-        "running get_featureIDs on %s (threads=%d); this may take several minutes",
-        input_path.name,
-        threads,
-    )
-    t_kmc_start = time.perf_counter()
-    combined_bed = run_get_featureids(
-        db_path=kmc_db_basename,
-        input_path=input_path,
-        output_dir=output_dir,
-        threads=threads,
-        prefix=prefix,
-        capture=True,
-    )
-    if not combined_bed.is_file():
-        raise KaryoscopeError(f"get_featureIDs did not produce expected output at {combined_bed}")
-    combined_size = combined_bed.stat().st_size
-    logger.info(
-        "ran get_featureIDs in %.1fs (combined BED: %s)",
-        time.perf_counter() - t_kmc_start,
-        _human_bytes(combined_size),
-    )
+    combined_bed = combined_bed_path(output_dir, prefix)
+
+    if not force and combined_bed_is_complete(combined_bed):
+        logger.info(
+            "reusing existing combined BED from a previous run (%s): %s "
+            "-- skipping get_featureIDs. Pass --force to regenerate.",
+            _human_bytes(combined_bed.stat().st_size),
+            combined_bed,
+        )
+    else:
+        logger.info(
+            "running get_featureIDs on %s (threads=%d); this may take several minutes",
+            input_path.name,
+            threads,
+        )
+        t_kmc_start = time.perf_counter()
+        combined_bed = run_get_featureids(
+            db_path=kmc_db_basename,
+            input_path=input_path,
+            output_dir=output_dir,
+            threads=threads,
+            prefix=prefix,
+            capture=True,
+        )
+        if not combined_bed.is_file():
+            raise KaryoscopeError(
+                f"get_featureIDs did not produce expected output at {combined_bed}"
+            )
+        logger.info(
+            "ran get_featureIDs in %.1fs (combined BED: %s)",
+            time.perf_counter() - t_kmc_start,
+            _human_bytes(combined_bed.stat().st_size),
+        )
     logger.debug("combined BED at %s", combined_bed)
 
     # Compute output paths (uncompressed names; bgzip later if requested).
@@ -970,17 +1033,21 @@ def annotate(
             requested,
         )
         t_smooth_start = time.perf_counter()
-        _smooth_all_feature_sets(
-            combined_bed=combined_bed,
-            feature_sets=requested,
-            features=features,
-            indices=indices,
-            presmoothed_paths=presmoothed_paths,
-            smoothed_paths=smoothed_paths,
-            threads=threads,
-            preserve_input_order=preserve_input_order,
-            is_reads_input=is_reads,
-        )
+        # Quiet the benign BrokenPipe/EOF tracebacks the pool's daemon
+        # threads emit if a worker is OOM-killed, so the watchdog's
+        # FATAL message isn't buried under a wall of noise.
+        with _quiet_worker_pipe_errors():
+            _smooth_all_feature_sets(
+                combined_bed=combined_bed,
+                feature_sets=requested,
+                features=features,
+                indices=indices,
+                presmoothed_paths=presmoothed_paths,
+                smoothed_paths=smoothed_paths,
+                threads=threads,
+                preserve_input_order=preserve_input_order,
+                is_reads_input=is_reads,
+            )
         logger.info("smoothing pass complete in %.1fs", time.perf_counter() - t_smooth_start)
     else:
         # Only presmoothed output, no smoothing.
@@ -1003,10 +1070,13 @@ def annotate(
                 smoothed_paths[fs] = _bgzip_file(smoothed_paths[fs], threads=threads)
         logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
 
-    # Tidy up the combined intermediate unless asked to keep it.
+    # Tidy up the combined intermediate unless asked to keep it. Remove
+    # its completion marker alongside it so no dangling marker is left
+    # pointing at a deleted file.
     if not keep_intermediates:
         try:
             combined_bed.unlink()
+            clear_combined_marker(combined_bed)
             combined_kept: Path | None = None
             logger.debug("removed combined intermediate %s", combined_bed)
         except OSError as e:
