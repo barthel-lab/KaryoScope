@@ -4,8 +4,9 @@ Real-world assemblies arrive in many shapes:
 
 * one file per haplotype (the pangenome convention) — easy.
 * one combined file with hap-tagged contig names (HG002 distributed as
-  one FASTA, with hifiasm ``h1tg...`` / ``h2tg...`` or verkko
-  ``MATERNAL`` / ``PATERNAL`` markings) — needs splitting.
+  one FASTA, with hifiasm ``h1tg...`` / ``h2tg...``, ``haplotype1...`` /
+  ``haplotype2...``, or verkko ``MATERNAL`` / ``PATERNAL`` markings) —
+  needs splitting.
 * one file for a haploid assembly (CHM13) — single label.
 * mixed: a hap1.fa.gz + hap2.fa.gz + unassigned.fa.gz triple — needs
   per-file labels.
@@ -80,6 +81,13 @@ def _compile(pat: str) -> re.Pattern[str]:
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # hifiasm dual/trio: h1tg..., h2tg...
     (_compile(r"^h([12])tg"), r"hap\1"),
+    # full word "haplotype1" / "haplotype2" (e.g. "haplotype1-0000001",
+    # as emitted by some long-read assemblers). Listed before the
+    # generic hap1/hap2 rule below because that rule's `hap([12])`
+    # cannot match here ("hap" is followed by "l"), so the full word
+    # needs its own pattern. Bounded by the trailing class so
+    # "haplotype10" is not read as "hap1".
+    (_compile(r"(?:^|[._\-/])haplotype([12])(?:[._\-/]|$)"), r"hap\1"),
     # explicit hap1/hap2 anywhere, bounded by word edges or .-_/
     (_compile(r"(?:^|[._\-/])hap([12])(?:[._\-/]|$)"), r"hap\1"),
     # h1/h2 alone (rare — accepts H1, H2 too)

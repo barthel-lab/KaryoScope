@@ -28,6 +28,23 @@ class TestInferFromContig:
     def test_explicit_hap2_case_insensitive(self) -> None:
         assert infer_hap_from_contig("chr1.HAP2.001") == "hap2"
 
+    def test_full_word_haplotype1(self) -> None:
+        # Some long-read assemblers emit contig names like
+        # "haplotype1-0000001"; the bare "hap([12])" rule can't catch
+        # these ("hap" is followed by "l"), so they need the full-word
+        # pattern.
+        assert infer_hap_from_contig("haplotype1-0000001") == "hap1"
+
+    def test_full_word_haplotype2(self) -> None:
+        assert infer_hap_from_contig("haplotype2-0000029") == "hap2"
+
+    def test_full_word_haplotype_case_insensitive(self) -> None:
+        assert infer_hap_from_contig("HAPLOTYPE2-5") == "hap2"
+
+    def test_full_word_haplotype_does_not_overmatch(self) -> None:
+        # "haplotype10" must not be read as hap1 (trailing boundary).
+        assert infer_hap_from_contig("haplotype10-0001") is None
+
     def test_maternal_short(self) -> None:
         assert infer_hap_from_contig("chr1_MAT_contig01") == "maternal"
 
@@ -162,6 +179,21 @@ class TestClassifyContigsSingleInput:
             "h1tg000002l": "hap1",
             "h2tg000003l": "hap2",
             "h2tg000004l": "hap2",
+        }
+
+    def test_packed_diploid_split_full_word_haplotype(self) -> None:
+        # Combined file whose contigs are named "haplotype1-..." /
+        # "haplotype2-..." (the case that previously collapsed to a
+        # single hap1, so the karyotype drew no h1/h2 split).
+        result = classify_contigs(
+            ["haplotype1-0000001", "haplotype1-0000002", "haplotype2-0000029"],
+            file_level_label="hap1",
+            is_only_input=True,
+        )
+        assert result == {
+            "haplotype1-0000001": "hap1",
+            "haplotype1-0000002": "hap1",
+            "haplotype2-0000029": "hap2",
         }
 
     def test_packed_diploid_with_unmatched_gets_default(self) -> None:
