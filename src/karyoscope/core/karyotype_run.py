@@ -40,7 +40,7 @@ from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.centromeres import centromeres_run
 from karyoscope.core.io.colors import colors_for_set, parse_colors, validate_colors
 from karyoscope.core.io.hierarchy import parse_hierarchy
-from karyoscope.core.io.scaffold_map import MapRow, read_map
+from karyoscope.core.io.scaffold_map import MapRow, map_signature, read_map
 from karyoscope.core.karyotype import (
     DEFAULT_HUMAN_CHROMOSOMES,
     RenderInput,
@@ -136,6 +136,45 @@ def _binned_scaffolded_bed_path(
     return out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.binned{bin_size}.bed.gz"
 
 
+def _binned_mapsig_path(binned: Path) -> Path:
+    """Sidecar path recording the scaffold-map signature a binned BED was built from."""
+    return binned.with_name(binned.name + ".mapsig")
+
+
+def _binned_bed_is_current(binned: Path, map_rows: list[MapRow] | None) -> bool:
+    """True if ``binned`` was built from the same scaffold map as ``map_rows``.
+
+    The binned-scaffolded BED bakes in the scaffold map's rename and
+    orientation (its sequence names are the encoded
+    ``<chrom>_<hap>_<contig>`` names, and coordinates may be flipped).
+    Reusing it after the map changed -- e.g. after hap inference was
+    corrected so a contig moved from ``hap1`` to ``hap2`` -- would serve
+    a stale haplotype layout. We compare the current map's signature
+    against the one recorded in the ``.mapsig`` sidecar when the binned
+    BED was written.
+
+    Fails closed: a missing or unreadable sidecar (e.g. a binned BED
+    from before this guard existed) is treated as not-current, so it is
+    rebuilt once. ``map_rows is None`` means the caller cannot supply a
+    map to check against; we preserve the legacy reuse-if-present
+    behaviour in that case rather than force an un-checkable rebuild.
+    """
+    if map_rows is None:
+        return True
+    try:
+        recorded = _binned_mapsig_path(binned).read_text().strip()
+    except OSError:
+        return False
+    return recorded == map_signature(map_rows)
+
+
+def _write_binned_mapsig(binned: Path, map_rows: list[MapRow] | None) -> None:
+    """Record the scaffold-map signature next to a freshly built binned BED."""
+    if map_rows is None:
+        return
+    _binned_mapsig_path(binned).write_text(map_signature(map_rows) + "\n")
+
+
 def _load_binned_bed(path: Path) -> OrderedDict[str, list[Interval]]:
     opener = gzip.open if path.suffix == ".gz" else open
     out: OrderedDict[str, list[Interval]] = OrderedDict()
@@ -190,7 +229,15 @@ def _ensure_binned_scaffolded(
     map_rows: list[MapRow] | None = None,
     variant: str = "smoothed",
 ) -> Path:
-    """Return the binned scaffolded BED path, building it if missing.
+    """Return the binned scaffolded BED path, building it if missing or stale.
+
+    An existing binned BED is reused only when it is also *current* with
+    respect to the scaffold map (see :func:`_binned_bed_is_current`): the
+    binned BED bakes the map's rename + orientation into its contents, so
+    a map that changed since it was built (e.g. corrected hap inference
+    moving a contig to a different haplotype) forces a rebuild rather
+    than serving a stale layout. Each freshly built binned BED records
+    the map signature it was built from in a ``.mapsig`` sidecar.
 
     Two construction paths:
 
@@ -205,13 +252,22 @@ def _ensure_binned_scaffolded(
     annotation BEDs and produce correspondingly named intermediates.
     """
     out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size, variant=variant)
-    if out.is_file():
+    if out.is_file() and _binned_bed_is_current(out, map_rows):
         return out
     if not auto:
+        # File absent, or present but built from a superseded scaffold
+        # map (e.g. hap inference was corrected since). We were told not
+        # to auto-derive, so we can't fix it here -- but silently
+        # serving a stale haplotype layout is exactly the bug this guard
+        # exists to prevent, so fail loudly instead.
+        stale = out.is_file()
         raise KaryotypeError(
-            f"missing binned scaffolded BED for {input_name}, feature set "
-            f"{fs!r}, bin size {bin_size} (expected at {out}). Re-run with "
-            "auto-derive enabled."
+            f"{'stale' if stale else 'missing'} binned scaffolded BED for "
+            f"{input_name}, feature set {fs!r}, bin size {bin_size} "
+            f"(at {out}). "
+            + ("The scaffold map changed since it was built. " if stale else "")
+            + "Re-run with auto-derive enabled"
+            + (f" (or delete {out.name} and its .mapsig)." if stale else ".")
         )
     scaffolded_src = _scaffolded_bed_path(out_dir, stem, db_id, fs, variant=variant)
     if scaffolded_src.is_file():
@@ -222,6 +278,7 @@ def _ensure_binned_scaffolded(
             leaf_set=leaf_set or None,
             threads=threads,
         )
+        _write_binned_mapsig(out, map_rows)
         return out
 
     # Fallback: bin the annotation BED, then apply the scaffold map.
@@ -250,6 +307,7 @@ def _ensure_binned_scaffolded(
         rewrite_bed(tmp_binned, out, map_rows=map_rows)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+    _write_binned_mapsig(out, map_rows)
     return out
 
 

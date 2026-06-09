@@ -8,6 +8,7 @@ import pytest
 
 from karyoscope.core.io.scaffold_map import (
     MapRow,
+    map_signature,
     read_map,
     write_legacy_stats,
     write_map,
@@ -114,3 +115,38 @@ class TestLegacyStats:
         p = tmp_path / "stats.tsv"
         write_legacy_stats(rows, p)
         assert p.read_text() == "chr1_hap1_ctg1\tTPCQT\nchr2_hap2_ctg2_rc\tQC\n"
+
+
+class TestMapSignature:
+    """The signature backs binned-scaffolded BED cache invalidation:
+    same map content -> same digest; any change -> a different digest."""
+
+    def test_identical_maps_match(self) -> None:
+        a = [_row(), _row(new_name="chr2_hap1_ctg3", original_name="ctg3", chromosome="chr2")]
+        b = [_row(), _row(new_name="chr2_hap1_ctg3", original_name="ctg3", chromosome="chr2")]
+        assert map_signature(a) == map_signature(b)
+
+    def test_row_order_does_not_matter(self) -> None:
+        r1 = _row()
+        r2 = _row(new_name="chr2_hap1_ctg3", original_name="ctg3", chromosome="chr2")
+        assert map_signature([r1, r2]) == map_signature([r2, r1])
+
+    def test_changed_hap_changes_signature(self) -> None:
+        # The exact scenario the guard protects: a contig moves from
+        # hap1 to hap2 (which also flips its encoded new_name).
+        before = [_row(new_name="chr1_hap1_ctg1", hap="hap1")]
+        after = [_row(new_name="chr1_hap2_ctg1", hap="hap2")]
+        assert map_signature(before) != map_signature(after)
+
+    def test_changed_orientation_changes_signature(self) -> None:
+        before = [_row(flipped=False)]
+        after = [_row(flipped=True)]
+        assert map_signature(before) != map_signature(after)
+
+    def test_added_contig_changes_signature(self) -> None:
+        one = [_row()]
+        two = [_row(), _row(new_name="chr2_hap1_ctg3", original_name="ctg3", chromosome="chr2")]
+        assert map_signature(one) != map_signature(two)
+
+    def test_empty_map_is_stable(self) -> None:
+        assert map_signature([]) == map_signature([])

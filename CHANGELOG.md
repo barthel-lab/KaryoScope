@@ -33,6 +33,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variants are produced by ``karyoscope annotate``.
 
 ### Fixed
+- Haplotype inference now recognises contig names of the form
+  ``haplotype1...`` / ``haplotype2...`` (e.g. ``haplotype1-0000001``,
+  as emitted by some long-read assemblers) and maps them to
+  ``hap1`` / ``hap2``. Previously these matched no built-in pattern, so
+  a single combined dual-haplotype FASTA collapsed to one haplotype and
+  the karyotype drew no h1/h2 split. The trailing boundary keeps
+  ``haplotype10`` from being misread as hap1.
+- The karyotype no longer reuses a **stale binned-scaffolded BED** when
+  the scaffold map has changed since that BED was built (for example
+  after the haplotype-inference fix above moves a contig from ``hap1``
+  to ``hap2``). The binned-scaffolded BED bakes the map's rename and
+  orientation into its contents, so each one now records a signature of
+  the scaffold map it was built from in a ``.mapsig`` sidecar; on a
+  later run the binned BED is rebuilt when that signature no longer
+  matches the current map (with ``--no-auto``, a clear error is raised
+  instead of silently rendering a stale layout). Without this, a user
+  picking up the inference fix would have had to manually delete the
+  derived ``*.scaffolded.binned*.bed.gz`` files to see the corrected
+  karyotype.
 - The smoothing pass no longer floods stderr with benign
   ``BrokenPipeError`` / ``EOFError`` tracebacks when a worker is
   OOM-killed. Those came from ``multiprocessing.Pool``'s daemon helper

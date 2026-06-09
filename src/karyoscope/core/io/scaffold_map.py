@@ -31,6 +31,7 @@ any script that consumed the old output. See
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -139,6 +140,41 @@ def read_map(path: Path) -> list[MapRow]:
                 )
             )
     return rows
+
+
+def map_signature(rows: list[MapRow]) -> str:
+    """Return a stable content signature of a scaffold map.
+
+    SHA-256 over every field of every row, so the digest captures the
+    full rename/orientation contract (and therefore any change to it:
+    a corrected hap label flips ``hap`` and the ``new_name`` it is
+    encoded into; a re-classified chromosome or re-decided orientation
+    likewise changes a field). Downstream caches that bake the map into
+    their output -- the binned-scaffolded BEDs -- record this signature
+    so they can detect when they were built from a now-superseded map
+    and rebuild instead of silently serving stale haplotype layouts.
+
+    Rows are sorted first, so the signature depends only on the mapping
+    content, not on the order rows happen to be written in.
+    """
+    h = hashlib.sha256()
+    for r in sorted(rows, key=lambda row: (row.original_name, row.new_name)):
+        h.update(
+            "\t".join(
+                (
+                    r.new_name,
+                    r.original_name,
+                    r.input_file,
+                    r.hap,
+                    r.chromosome,
+                    "yes" if r.flipped else "no",
+                    str(r.length),
+                    r.stats,
+                )
+            ).encode()
+        )
+        h.update(b"\n")
+    return h.hexdigest()
 
 
 def write_legacy_stats(rows: list[MapRow], path: Path) -> None:
