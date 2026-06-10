@@ -395,3 +395,161 @@ def test_drop_unscaffolded_omits_leftover_contigs(
     fa_out = read_fasta_records(out_dir / "asm.KS_dummy_test_v1.scaffolded.fa")
     # decoy_junk should not appear under its original name.
     assert "decoy_junk" not in fa_out
+
+
+# --- combine-chromosomes (Stage 5d) ---------------------------------
+
+
+def test_combine_chromosomes_mode_bed_rejected(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    """--combine-chromosomes needs a FASTA output; --mode bed errors cleanly."""
+    fa = tmp_path / "x.fa"
+    fa.write_text(">a\nACGT\n")
+    result = cli_runner.invoke(
+        main,
+        ["scaffold", "-i", f"hap1={fa}", "--mode", "bed", "--combine-chromosomes"],
+    )
+    assert result.exit_code != 0
+    assert "combine-chromosomes" in result.output.lower()
+    assert "bed" in result.output.lower()
+
+
+def test_negative_scaffold_gap_size_rejected(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    fa = tmp_path / "x.fa"
+    fa.write_text(">a\nACGT\n")
+    result = cli_runner.invoke(
+        main,
+        ["scaffold", "-i", f"hap1={fa}", "--combine-chromosomes", "--scaffold-gap-size", "-1"],
+    )
+    assert result.exit_code != 0
+    assert "scaffold-gap-size" in result.output.lower()
+
+
+def test_help_lists_combine_flags(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(main, ["scaffold", "--help"])
+    assert result.exit_code == 0
+    assert "--combine-chromosomes" in result.output
+    assert "--scaffold-gap-size" in result.output
+    assert "--combine-acrocentrics" in result.output
+
+
+@pytest.fixture
+def two_chr1_assembly_fasta(tmp_path: Path) -> Path:
+    """A FASTA with two chr1 contigs and one chr2 contig.
+
+    Lets the combine path concatenate the two chr1 contigs into a single
+    ``chr1_hap1`` record with an N gap between them. 21-mer positions in
+    the dummy seed: pos 0 -> featureID 1 (chr1/rA), pos 1 -> featureID 2
+    (chr1/rB), pos 2 -> featureID 3 (chr2/rC).
+    """
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"
+    fa = tmp_path / "asm.fa"
+    fa.write_text(
+        f">chr1_part_a\n{seed[0:21]}\n"  # chr1/rA
+        f">chr1_part_b\n{seed[1:22]}\n"  # chr1/rB
+        f">chr2_part\n{seed[2:23]}\n"  # chr2/rC
+    )
+    return fa
+
+
+@pytestmark_required
+@pytest.mark.integration
+def test_combine_chromosomes_fasta_and_agp(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    two_chr1_assembly_fasta: Path,
+    tmp_path: Path,
+) -> None:
+    """--combine-chromosomes writes a combined FASTA + AGP, with N gaps."""
+    from karyoscope.core.io.fasta import read_fasta_records
+
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "scaffold",
+            "-i",
+            f"hap1={two_chr1_assembly_fasta}",
+            "--outdir",
+            str(out_dir),
+            "--mode",
+            "fasta",
+            "--combine-chromosomes",
+            "--scaffold-gap-size",
+            "10",
+            "--min-scaffold-length",
+            "1",
+            "--bin-size",
+            "10",
+            "--no-bgzip",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    base = "asm.KS_dummy_test_v1"
+    fa_out = out_dir / f"{base}.scaffolded.combined_chromosomes.fa"
+    agp_out = out_dir / f"{base}.scaffolded.combined_chromosomes.agp"
+    assert fa_out.is_file(), list(out_dir.iterdir())
+    assert agp_out.is_file()
+    # The plain (non-combined) scaffolded FASTA must NOT be written.
+    assert not (out_dir / f"{base}.scaffolded.fa").exists()
+
+    recs = read_fasta_records(fa_out)
+    # The two chr1 contigs combined into one chr1_hap1 record with an N run.
+    assert "chr1_hap1" in recs
+    assert "N" * 10 in recs["chr1_hap1"]
+    # chr2 is its own (single-contig) object, renamed, no N gap.
+    assert "chr2_hap1" in recs
+    assert "N" not in recs["chr2_hap1"]
+
+    agp = agp_out.read_text()
+    assert agp.startswith("##agp-version\t2.1")
+    # Exactly one N (gap) row, for the chr1 junction.
+    n_rows = [ln for ln in agp.splitlines() if ln.split("\t")[4:5] == ["N"]]
+    assert len(n_rows) == 1
+    assert n_rows[0].split("\t")[5] == "10"  # gap_length
+    assert n_rows[0].split("\t")[8] == "align_genus"
+
+
+@pytestmark_required
+@pytest.mark.integration
+def test_combine_both_writes_only_combined_beds(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    two_chr1_assembly_fasta: Path,
+    tmp_path: Path,
+) -> None:
+    """--mode both --combine-chromosomes writes combined BEDs, not plain ones."""
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "scaffold",
+            "-i",
+            f"hap1={two_chr1_assembly_fasta}",
+            "--outdir",
+            str(out_dir),
+            "--mode",
+            "both",
+            "--combine-chromosomes",
+            "--scaffold-gap-size",
+            "10",
+            "--min-scaffold-length",
+            "1",
+            "--bin-size",
+            "10",
+            "--no-bgzip",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert list(out_dir.glob("*.smoothed.scaffolded.combined_chromosomes.bed"))
+    # The plain scaffolded BEDs must NOT be produced in a combine run.
+    plain = [
+        p for p in out_dir.glob("*.smoothed.scaffolded.bed") if "combined_chromosomes" not in p.name
+    ]
+    assert not plain

@@ -12,6 +12,7 @@ from karyoscope.core.io.telo import TeloFlags
 from karyoscope.core.scaffold import (
     ContigInput,
     Interval,
+    _to_agp_objects,
     assign_main_chromosome,
     category_index,
     chromosome_sort_key,
@@ -21,9 +22,12 @@ from karyoscope.core.scaffold import (
     get_simple_region,
     half_region_totals,
     need_to_flip,
+    plan_combined_layout,
     rewrite_bed,
+    rewrite_bed_combined,
     rewrite_fasta,
     scaffold_region_majority,
+    write_combined_fasta,
 )
 
 # --- pure helpers ---------------------------------------------------
@@ -545,3 +549,255 @@ class TestRewriteFasta:
         rows = [MapRow("chr1_h1_ctgA", "ctgA", "in.fa.gz", "h1", "chr1", False, 4, "P")]
         rewrite_fasta(src, dst, map_rows=rows, keep_unscaffolded=False)
         assert read_fasta_records(dst)["chr1_h1_ctgA"] == "ACGT"
+
+
+# --- combined-chromosome layout ------------------------------------
+
+
+def _row(
+    new_name: str,
+    original: str,
+    chrom: str,
+    hap: str,
+    *,
+    flipped: bool = False,
+    length: int = 100,
+) -> MapRow:
+    return MapRow(new_name, original, "in.fa", hap, chrom, flipped, length, "P")
+
+
+class TestPlanCombinedLayout:
+    def test_two_contigs_one_object_with_offsets(self) -> None:
+        # E_A=7 (L=10), E_B=5 (L=8), gap=5 -> B starts at 10+5=15.
+        rows = [
+            _row("chr1_hap1_A", "A", "chr1", "hap1", length=7),
+            _row("chr1_hap1_B", "B", "chr1", "hap1", length=5),
+        ]
+        true_lengths = {"A": 10, "B": 8}
+        objs = plan_combined_layout(
+            rows, true_lengths, gap_size=5, acrocentrics=set(), combine_acrocentrics=False
+        )
+        assert len(objs) == 1
+        obj = objs[0]
+        assert obj.name == "chr1_hap1"
+        assert obj.combined is True
+        assert [c.object_start for c in obj.components] == [0, 15]
+        assert [c.true_length for c in obj.components] == [10, 8]
+        assert [c.bed_extent for c in obj.components] == [7, 5]
+
+    def test_separate_haps_are_separate_objects(self) -> None:
+        rows = [
+            _row("chr1_hap1_A", "A", "chr1", "hap1"),
+            _row("chr1_hap2_B", "B", "chr1", "hap2"),
+        ]
+        objs = plan_combined_layout(rows, {"A": 100, "B": 100}, gap_size=10, acrocentrics=set())
+        assert [o.name for o in objs] == ["chr1_hap1", "chr1_hap2"]
+
+    def test_acrocentric_not_combined_by_default(self) -> None:
+        rows = [
+            _row("chr13_hap1_A", "A", "chr13", "hap1"),
+            _row("chr13_hap1_B", "B", "chr13", "hap1"),
+        ]
+        objs = plan_combined_layout(
+            rows,
+            {"A": 100, "B": 100},
+            gap_size=10,
+            acrocentrics={"chr13"},
+            combine_acrocentrics=False,
+        )
+        # Two singleton objects, each under its encoded name, no combining.
+        assert [o.name for o in objs] == ["chr13_hap1_A", "chr13_hap1_B"]
+        assert all(o.combined is False for o in objs)
+        assert all(len(o.components) == 1 for o in objs)
+
+    def test_acrocentric_combined_when_forced(self) -> None:
+        rows = [
+            _row("chr13_hap1_A", "A", "chr13", "hap1"),
+            _row("chr13_hap1_B", "B", "chr13", "hap1"),
+        ]
+        objs = plan_combined_layout(
+            rows,
+            {"A": 100, "B": 100},
+            gap_size=10,
+            acrocentrics={"chr13"},
+            combine_acrocentrics=True,
+        )
+        assert [o.name for o in objs] == ["chr13_hap1"]
+        assert objs[0].combined is True
+
+    def test_single_contig_group_renamed(self) -> None:
+        rows = [_row("chr2_hap1_A", "A", "chr2", "hap1")]
+        objs = plan_combined_layout(rows, {"A": 100}, gap_size=10, acrocentrics=set())
+        assert objs[0].name == "chr2_hap1"
+        assert objs[0].combined is True
+        assert len(objs[0].components) == 1
+
+    def test_contig_absent_from_fasta_skipped(self) -> None:
+        rows = [
+            _row("chr1_hap1_A", "A", "chr1", "hap1", length=7),
+            _row("chr1_hap1_Ghost", "Ghost", "chr1", "hap1", length=5),
+        ]
+        objs = plan_combined_layout(rows, {"A": 10}, gap_size=5, acrocentrics=set())
+        assert len(objs) == 1
+        assert [c.row.original_name for c in objs[0].components] == ["A"]
+
+
+# --- combined FASTA -------------------------------------------------
+
+
+class TestWriteCombinedFasta:
+    def _write_src(self, p: Path, records: dict[str, str]) -> None:
+        p.write_text("".join(f">{n}\n{s}\n" for n, s in records.items()))
+
+    def test_concatenates_with_gap(self, tmp_path: Path) -> None:
+        rows = [
+            _row("chr1_hap1_A", "A", "chr1", "hap1", length=7),
+            _row("chr1_hap1_B", "B", "chr1", "hap1", length=5),
+        ]
+        records = {"A": "ACGTACGTAC", "B": "GGGGCCCC"}  # len 10, 8
+        objs = plan_combined_layout(rows, {"A": 10, "B": 8}, gap_size=5, acrocentrics=set())
+        out = tmp_path / "out.fa"
+        leftovers = write_combined_fasta(records, objs, out, keep_unscaffolded=False)
+        res = read_fasta_records(out)
+        assert list(res.keys()) == ["chr1_hap1"]
+        assert res["chr1_hap1"] == "ACGTACGTAC" + "N" * 5 + "GGGGCCCC"
+        assert leftovers == []
+
+    def test_flipped_component_reverse_complemented(self, tmp_path: Path) -> None:
+        rows = [_row("chr1_hap1_A_rc", "A", "chr1", "hap1", flipped=True, length=3)]
+        records = {"A": "AATTCG"}  # RC = CGAATT
+        objs = plan_combined_layout(rows, {"A": 6}, gap_size=5, acrocentrics=set())
+        out = tmp_path / "out.fa"
+        write_combined_fasta(records, objs, out, keep_unscaffolded=False)
+        assert read_fasta_records(out)["chr1_hap1"] == "CGAATT"
+
+    def test_keep_unscaffolded_returns_leftovers(self, tmp_path: Path) -> None:
+        rows = [_row("chr1_hap1_A", "A", "chr1", "hap1", length=7)]
+        records = {"A": "ACGTACGTAC", "tiny": "TT"}
+        objs = plan_combined_layout(rows, {"A": 10}, gap_size=5, acrocentrics=set())
+        out = tmp_path / "out.fa"
+        leftovers = write_combined_fasta(records, objs, out, keep_unscaffolded=True)
+        res = read_fasta_records(out)
+        assert list(res.keys()) == ["chr1_hap1", "tiny"]
+        assert leftovers == [("tiny", 2)]
+
+    def test_acrocentric_singletons_kept_separate(self, tmp_path: Path) -> None:
+        rows = [
+            _row("chr13_hap1_A", "A", "chr13", "hap1", length=7),
+            _row("chr13_hap1_B", "B", "chr13", "hap1", length=5),
+        ]
+        records = {"A": "ACGTACGTAC", "B": "GGGGCCCC"}
+        objs = plan_combined_layout(rows, {"A": 10, "B": 8}, gap_size=5, acrocentrics={"chr13"})
+        out = tmp_path / "out.fa"
+        write_combined_fasta(records, objs, out, keep_unscaffolded=False)
+        res = read_fasta_records(out)
+        assert list(res.keys()) == ["chr13_hap1_A", "chr13_hap1_B"]
+        assert res["chr13_hap1_A"] == "ACGTACGTAC"
+
+
+# --- combined BED ---------------------------------------------------
+
+
+class TestRewriteBedCombined:
+    def _layout(self, gap_size: int = 5):
+        rows = [
+            _row("chr1_hap1_A", "A", "chr1", "hap1", length=7),
+            _row("chr1_hap1_B", "B", "chr1", "hap1", length=5),
+        ]
+        return plan_combined_layout(rows, {"A": 10, "B": 8}, gap_size=gap_size, acrocentrics=set())
+
+    def test_shift_and_novel_gap(self, tmp_path: Path) -> None:
+        # A tiles [0,7), B tiles [0,5). gap=5 -> B offset 15.
+        src = tmp_path / "in.bed"
+        src.write_text("A\t0\t7\tchr1\nB\t0\t5\tchr1\n")
+        out = tmp_path / "out.bed"
+        rewrite_bed_combined(src, out, objects=self._layout(), gzip_out=False)
+        lines = [tuple(x.split("\t")) for x in out.read_text().splitlines()]
+        assert lines == [
+            ("chr1_hap1", "0", "7", "chr1"),
+            ("chr1_hap1", "7", "15", "novel"),  # gap = G + (L-E) = 5 + 3 = 8
+            ("chr1_hap1", "15", "20", "chr1"),
+        ]
+
+    def test_gap_length_is_G_plus_k_minus_1(self, tmp_path: Path) -> None:
+        src = tmp_path / "in.bed"
+        src.write_text("A\t0\t7\tchr1\nB\t0\t5\tchr1\n")
+        out = tmp_path / "out.bed"
+        rewrite_bed_combined(src, out, objects=self._layout(gap_size=100), gzip_out=False)
+        gap = next(
+            x.split("\t") for x in out.read_text().splitlines() if x.split("\t")[3] == "novel"
+        )
+        # gap spans E_A(7)+offset0 .. offset_B; length = 100 + (10-7) = 103.
+        assert int(gap[2]) - int(gap[1]) == 103
+
+    def test_adjacent_novel_merges_across_junction(self, tmp_path: Path) -> None:
+        # A ends novel, B starts novel: the trailing novel, the gap, and
+        # the leading novel coalesce into a single run.
+        src = tmp_path / "in.bed"
+        src.write_text("A\t0\t4\tchr1\nA\t4\t7\tnovel\nB\t0\t2\tnovel\nB\t2\t5\tchr1\n")
+        out = tmp_path / "out.bed"
+        rewrite_bed_combined(src, out, objects=self._layout(), gzip_out=False)
+        lines = [tuple(x.split("\t")) for x in out.read_text().splitlines()]
+        assert lines == [
+            ("chr1_hap1", "0", "4", "chr1"),
+            ("chr1_hap1", "4", "17", "novel"),  # 4..7 + gap 7..15 + 15..17
+            ("chr1_hap1", "17", "20", "chr1"),
+        ]
+
+    def test_flipped_component_mirrored(self, tmp_path: Path) -> None:
+        rows = [_row("chr1_hap1_A_rc", "A", "chr1", "hap1", flipped=True, length=7)]
+        objs = plan_combined_layout(rows, {"A": 10}, gap_size=5, acrocentrics=set())
+        src = tmp_path / "in.bed"
+        # A: [0,2) p, [2,7) q. Flipped within [0,7): q->[0,5), p->[5,7).
+        src.write_text("A\t0\t2\tp\nA\t2\t7\tq\n")
+        out = tmp_path / "out.bed"
+        rewrite_bed_combined(src, out, objects=objs, gzip_out=False)
+        lines = [tuple(x.split("\t")) for x in out.read_text().splitlines()]
+        assert lines == [
+            ("chr1_hap1", "0", "5", "q"),
+            ("chr1_hap1", "5", "7", "p"),
+        ]
+
+    def test_missing_contig_filled_with_novel(self, tmp_path: Path) -> None:
+        # B has no records in this feature set: fill its extent with novel.
+        src = tmp_path / "in.bed"
+        src.write_text("A\t0\t7\tchr1\n")
+        out = tmp_path / "out.bed"
+        rewrite_bed_combined(src, out, objects=self._layout(), gzip_out=False)
+        lines = [tuple(x.split("\t")) for x in out.read_text().splitlines()]
+        # A [0,7) chr1 ; novel gap 7..15 ; B extent filled novel 15..20 -> merges to 7..20.
+        assert lines == [
+            ("chr1_hap1", "0", "7", "chr1"),
+            ("chr1_hap1", "7", "20", "novel"),
+        ]
+
+
+# --- AGP from layout ------------------------------------------------
+
+
+class TestToAgpObjects:
+    def test_combined_object_has_gap_rows(self) -> None:
+        rows = [
+            _row("chr1_hap1_A", "A", "chr1", "hap1", length=7),
+            _row("chr1_hap1_B", "B", "chr1", "hap1", flipped=True, length=5),
+        ]
+        objs = plan_combined_layout(rows, {"A": 10, "B": 8}, gap_size=5, acrocentrics=set())
+        agp = _to_agp_objects(objs, [])
+        assert len(agp) == 1
+        parts = agp[0].parts
+        # W(A) +, N gap, W(B) -.
+        assert parts[0].component_id == "A"
+        assert parts[0].orientation == "+"
+        assert parts[0].object_end == 10
+        assert parts[1].length == 5  # literal N gap, not G+k-1
+        assert parts[1].object_start == 10 and parts[1].object_end == 15
+        assert parts[2].component_id == "B"
+        assert parts[2].orientation == "-"
+        assert parts[2].object_start == 15 and parts[2].object_end == 23
+
+    def test_leftovers_become_singleton_objects(self) -> None:
+        rows = [_row("chr1_hap1_A", "A", "chr1", "hap1", length=7)]
+        objs = plan_combined_layout(rows, {"A": 10}, gap_size=5, acrocentrics=set())
+        agp = _to_agp_objects(objs, [("tiny", 2)])
+        assert [o.name for o in agp] == ["chr1_hap1", "tiny"]
+        assert agp[1].parts[0].length == 2
