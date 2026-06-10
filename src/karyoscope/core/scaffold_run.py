@@ -51,16 +51,23 @@ from karyoscope.core.hap_inference import (
     classify_contigs,
     read_fasta_contig_names,
 )
+from karyoscope.core.io.agp import write_agp
+from karyoscope.core.io.fasta import read_fasta_records
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, write_legacy_stats, write_map
 from karyoscope.core.io.telo import TeloFlags, parse_telo_file, run_seqtk_telo
 from karyoscope.core.scaffold import (
     DEFAULT_HUMAN_ACROCENTRICS,
     DEFAULT_MIN_SCAFFOLD_LENGTH,
+    DEFAULT_SCAFFOLD_GAP_SIZE,
     ContigInput,
+    _to_agp_objects,
     classify_and_orient,
+    plan_combined_layout,
     rewrite_bed,
+    rewrite_bed_combined,
     rewrite_fasta,
+    write_combined_fasta,
 )
 from karyoscope.exceptions import ScaffoldError
 from karyoscope.manifest import validate_database_layout
@@ -161,6 +168,8 @@ class ScaffoldResult:
     stats_path: Path
     scaffolded_beds: dict[str, Path] = field(default_factory=dict)
     scaffolded_fasta: Path | None = None
+    agp_path: Path | None = None
+    combined: bool = False
 
 
 # --- helpers --------------------------------------------------------
@@ -355,6 +364,109 @@ def _load_binned_bed(path: Path) -> dict[str, list[tuple[int, int, str]]]:
     return out
 
 
+#: Filename tag distinguishing combined-chromosome outputs from the
+#: per-contig scaffolded outputs, so a user can run with and without
+#: ``--combine-chromosomes`` in the same directory without collisions.
+_COMBINED_TAG = "combined_chromosomes"
+
+
+def _write_combined_outputs(
+    r: _ResolvedInput,
+    *,
+    per_input_rows: list[MapRow],
+    db_id: str,
+    requested: list[str],
+    mode: str,
+    acrocentrics: set[str],
+    combine_acrocentrics: bool,
+    scaffold_gap_size: int,
+    keep_unscaffolded: bool,
+    annotation_variant: str,
+    bgzip: bool,
+    threads: int,
+) -> ScaffoldResult:
+    """Write combined-chromosome FASTA, AGP, and (mode 'both') BEDs for one input.
+
+    The FASTA is read once and shared: true sequence lengths drive the
+    layout offsets, and the in-memory records feed the FASTA writer. The
+    same :func:`plan_combined_layout` result drives the BED rewrite and
+    the AGP, so all three agree exactly on coordinates.
+    """
+    map_path = r.out_dir / f"{r.stem}.{db_id}.scaffold_map.tsv"
+    stats_path = r.out_dir / f"{r.stem}.{db_id}.scaffold_stats.tsv"
+
+    records = read_fasta_records(r.spec.path)
+    true_lengths = {name: len(seq) for name, seq in records.items()}
+    layout = plan_combined_layout(
+        per_input_rows,
+        true_lengths,
+        gap_size=scaffold_gap_size,
+        acrocentrics=acrocentrics,
+        combine_acrocentrics=combine_acrocentrics,
+    )
+
+    # Combined BEDs (mode 'both' only): rewrite each per-feature-set
+    # smoothed BED into the combined coordinate system. Only these
+    # (combined-tagged) BEDs are written -- not the plain scaffolded ones.
+    scaffolded_beds: dict[str, Path] = {}
+    if mode == "both":
+        for fs in requested:
+            src = _annotation_bed_path(r.out_dir, r.stem, db_id, fs, variant=annotation_variant)
+            if not src.is_file():
+                logger.warning(
+                    "%s BED for %s / %s not found at %s; skipping",
+                    annotation_variant,
+                    r.spec.path.name,
+                    fs,
+                    src,
+                )
+                continue
+            out_plain = (
+                r.out_dir
+                / f"{r.stem}.{db_id}.{fs}.{annotation_variant}.scaffolded.{_COMBINED_TAG}.bed"
+            )
+            logger.info(
+                "rewriting combined-chromosome BED for %s / %s -> %s",
+                r.spec.path.name,
+                fs,
+                out_plain.name,
+            )
+            t_rb = time.perf_counter()
+            rewrite_bed_combined(src, out_plain, objects=layout, gzip_out=False)
+            logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
+            scaffolded_beds[fs] = _bgzip_file(out_plain, threads=threads) if bgzip else out_plain
+
+    # Combined FASTA.
+    fasta_plain = r.out_dir / f"{r.stem}.{db_id}.scaffolded.{_COMBINED_TAG}.fa"
+    logger.info("writing combined-chromosome FASTA for %s -> %s", r.spec.path.name, fasta_plain)
+    t_rf = time.perf_counter()
+    leftovers = write_combined_fasta(
+        records,
+        layout,
+        fasta_plain,
+        keep_unscaffolded=keep_unscaffolded,
+        gzip_out=False,
+    )
+    logger.info("wrote %s in %.1fs", fasta_plain.name, time.perf_counter() - t_rf)
+    scaffolded_fasta = _bgzip_file(fasta_plain, threads=threads) if bgzip else fasta_plain
+
+    # AGP: complete description of the FASTA, including kept leftovers.
+    agp_path = r.out_dir / f"{r.stem}.{db_id}.scaffolded.{_COMBINED_TAG}.agp"
+    write_agp(_to_agp_objects(layout, leftovers), agp_path)
+    logger.info("wrote %s", agp_path.name)
+
+    return ScaffoldResult(
+        input_path=r.spec.path,
+        hap_label=r.hap_label,
+        map_path=map_path,
+        stats_path=stats_path,
+        scaffolded_beds=scaffolded_beds,
+        scaffolded_fasta=scaffolded_fasta,
+        agp_path=agp_path,
+        combined=True,
+    )
+
+
 # --- main entry point -----------------------------------------------
 
 
@@ -372,6 +484,9 @@ def scaffold_run(
     threads: int = 0,
     bgzip: bool = True,
     keep_unscaffolded: bool = True,
+    combine_chromosomes: bool = False,
+    scaffold_gap_size: int = DEFAULT_SCAFFOLD_GAP_SIZE,
+    combine_acrocentrics: bool = False,
     auto: bool = True,
     output_dir: Path | None = None,
     write_scaffolded_beds: bool = True,
@@ -407,6 +522,21 @@ def scaffold_run(
         Threads for any auto-run ``annotate`` invocations.
     bgzip
         bgzip the scaffolded output BEDs (default: yes).
+    combine_chromosomes
+        Concatenate the contigs of each ``(chromosome, hap)`` into one
+        ``<chrom>_<hap>`` sequence, separated by ``scaffold_gap_size``
+        Ns. Only valid for ``mode`` ``"fasta"`` / ``"both"``. Outputs
+        carry a ``combined_chromosomes`` filename tag and an AGP file;
+        in ``"both"`` mode the per-feature-set BEDs are written in the
+        combined coordinate system (and the plain scaffolded BEDs are
+        not).
+    scaffold_gap_size
+        N bases between concatenated contigs (default 100000).
+    combine_acrocentrics
+        Also combine acrocentric chromosomes. Off by default: acrocentric
+        p-arms recombine and KaryoScope's chromosome assignment there is
+        less certain, so their contigs stay as separate records unless
+        this is set.
     auto
         Auto-derive missing inputs (annotate, seqtk telo, bin).
         Disable to require every input to exist.
@@ -420,6 +550,13 @@ def scaffold_run(
         raise ScaffoldError("at least one --input is required")
     if mode not in _VALID_MODES:
         raise ScaffoldError(f"unknown mode {mode!r}; expected one of {_VALID_MODES}")
+    if combine_chromosomes and mode == "bed":
+        raise ScaffoldError(
+            "combine_chromosomes requires a FASTA output (mode 'fasta' or 'both'); "
+            "it has no meaning in mode 'bed'"
+        )
+    if combine_chromosomes and scaffold_gap_size < 0:
+        raise ScaffoldError(f"scaffold_gap_size must be >= 0, got {scaffold_gap_size}")
 
     t_scaffold_start = time.perf_counter()
     db_id_resolved, db_dir = resolve_database(db_root, db_id)
@@ -601,6 +738,23 @@ def scaffold_run(
         stats_path = r.out_dir / f"{r.stem}.{db_id_resolved}.scaffold_stats.tsv"
         write_map(per_input_rows, map_path)
         write_legacy_stats(per_input_rows, stats_path)
+
+        if combine_chromosomes:
+            results[r.spec.path.name] = _write_combined_outputs(
+                r,
+                per_input_rows=per_input_rows,
+                db_id=db_id_resolved,
+                requested=requested,
+                mode=mode,
+                acrocentrics=acros_set,
+                combine_acrocentrics=combine_acrocentrics,
+                scaffold_gap_size=scaffold_gap_size,
+                keep_unscaffolded=keep_unscaffolded,
+                annotation_variant=annotation_variant,
+                bgzip=bgzip,
+                threads=threads,
+            )
+            continue
 
         scaffolded_beds: dict[str, Path] = {}
         if mode in ("bed", "both") and write_scaffolded_beds:

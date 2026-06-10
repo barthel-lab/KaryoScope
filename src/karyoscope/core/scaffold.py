@@ -34,6 +34,7 @@ from itertools import groupby
 from pathlib import Path
 from typing import IO
 
+from karyoscope.core.io.agp import AgpComponent, AgpGap, AgpObject
 from karyoscope.core.io.fasta import (
     read_fasta_records,
     reverse_complement,
@@ -42,6 +43,12 @@ from karyoscope.core.io.fasta import (
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.io.telo import TeloFlags
 from karyoscope.exceptions import ScaffoldError
+
+#: Default number of N bases inserted between concatenated contigs when
+#: ``--combine-chromosomes`` is on. Matches the scaffold subcommand
+#: default; large enough that the per-contig smoothing's ``max_gap``
+#: (1000) never bridges it, so each gap stays a clean ``novel`` run.
+DEFAULT_SCAFFOLD_GAP_SIZE = 100_000
 
 logger = logging.getLogger(__name__)
 
@@ -745,3 +752,349 @@ def rewrite_fasta(
             out_records[name] = seq
 
     write_fasta_records(out_records, output_path, gzip_out=gzip_out, line_width=line_width)
+
+
+# --- combined-chromosome scaffolding --------------------------------
+#
+# When ``--combine-chromosomes`` is on, every contig of one
+# ``(chromosome, haplotype)`` group is concatenated into a single output
+# sequence named ``<chrom>_<hap>``, with ``gap_size`` N bases between
+# adjacent contigs. The FASTA, the per-feature-set BEDs, and the AGP all
+# derive from one shared layout (:func:`plan_combined_layout`) so their
+# coordinate systems agree exactly.
+#
+# Coordinate model (see the scaffold subcommand's design notes): each
+# per-contig BED tiles ``[0, E)`` where ``E = L - k + 1`` (``L`` = true
+# sequence length, ``k`` = k-mer size). The map's ``length`` field is
+# ``E``. We never hardcode ``k``: object offsets come from true
+# sequence lengths (read from the FASTA), and each contig's tiling end
+# comes from its own ``E``. The ``novel`` gap interval between two
+# contigs therefore spans ``[offset_i + E_i, offset_{i+1})`` -- the
+# literal N gap plus the ``k-1`` untiled tail of contig ``i`` whose
+# k-mers, in the concatenated assembly, would overlap the Ns. This is
+# byte-identical to re-annotating the combined FASTA, and stays correct
+# for a future variable-k database with no special case.
+
+
+@dataclass(frozen=True)
+class PlacedComponent:
+    """One contig placed inside a combined object.
+
+    ``object_start`` is the 0-based offset (in true bp) of the contig
+    within its output object. ``true_length`` is the contig's full
+    sequence length; ``bed_extent`` is ``E`` (where the per-contig BED
+    tiling stops, i.e. the map's ``length``).
+    """
+
+    row: MapRow
+    object_start: int
+    true_length: int
+    bed_extent: int
+
+
+@dataclass(frozen=True)
+class ScaffoldObject:
+    """One output FASTA record: a renamed singleton or a combined chromosome.
+
+    ``combined`` is True when the object concatenates a whole
+    ``(chromosome, hap)`` group under a simplified ``<chrom>_<hap>``
+    name; False for a singleton emitted under its encoded
+    ``<chrom>_<hap>_<contig>[_rc]`` name (an acrocentric group left
+    uncombined). ``gap_size`` is the N-run length between components
+    (irrelevant when there is only one).
+    """
+
+    name: str
+    components: list[PlacedComponent]
+    gap_size: int
+    combined: bool
+
+
+def plan_combined_layout(
+    map_rows: list[MapRow],
+    true_lengths: dict[str, int],
+    *,
+    gap_size: int = DEFAULT_SCAFFOLD_GAP_SIZE,
+    acrocentrics: set[str] = DEFAULT_HUMAN_ACROCENTRICS,
+    combine_acrocentrics: bool = False,
+) -> list[ScaffoldObject]:
+    """Plan the combined-chromosome output layout for one input.
+
+    Groups ``map_rows`` by ``(chromosome, hap)`` in map order (which is
+    already the canonical chromosome x hap x category x length order),
+    and turns each group into one or more :class:`ScaffoldObject`:
+
+    * A non-acrocentric group -- or an acrocentric group when
+      ``combine_acrocentrics`` is True -- becomes a single combined
+      object named ``<chrom>_<hap>`` whose components are placed at
+      cumulative offsets ``Σ(true_length + gap_size)``.
+    * An acrocentric group left uncombined becomes one singleton object
+      per contig, each under its encoded ``new_name``.
+
+    Rows whose ``original_name`` is absent from ``true_lengths`` (the
+    contig was not in the source FASTA) are skipped, mirroring the
+    forgiving semantics of :func:`rewrite_fasta` / :func:`rewrite_bed`.
+    """
+    # Group preserving first-seen order; map_rows already arrive grouped.
+    groups: dict[tuple[str, str], list[MapRow]] = {}
+    for row in map_rows:
+        groups.setdefault((row.chromosome, row.hap), []).append(row)
+
+    objects: list[ScaffoldObject] = []
+    for (chrom, hap), rows in groups.items():
+        present = [r for r in rows if r.original_name in true_lengths]
+        if not present:
+            continue
+        is_acro = chrom in acrocentrics
+        combine = not (is_acro and not combine_acrocentrics)
+
+        if combine:
+            components: list[PlacedComponent] = []
+            offset = 0
+            for r in present:
+                length = true_lengths[r.original_name]
+                components.append(
+                    PlacedComponent(
+                        row=r,
+                        object_start=offset,
+                        true_length=length,
+                        bed_extent=r.length,
+                    )
+                )
+                offset += length + gap_size
+            objects.append(
+                ScaffoldObject(
+                    name=f"{chrom}_{hap}",
+                    components=components,
+                    gap_size=gap_size,
+                    combined=True,
+                )
+            )
+        else:
+            for r in present:
+                length = true_lengths[r.original_name]
+                objects.append(
+                    ScaffoldObject(
+                        name=r.new_name,
+                        components=[
+                            PlacedComponent(
+                                row=r,
+                                object_start=0,
+                                true_length=length,
+                                bed_extent=r.length,
+                            )
+                        ],
+                        gap_size=gap_size,
+                        combined=False,
+                    )
+                )
+    return objects
+
+
+def _to_agp_objects(
+    objects: list[ScaffoldObject],
+    leftovers: list[tuple[str, int]],
+) -> list[AgpObject]:
+    """Build AGP objects from the layout plus any unscaffolded leftovers.
+
+    ``leftovers`` is ``[(name, length)]`` for contigs kept in the output
+    FASTA under their original names (``keep_unscaffolded``). Each is a
+    one-component object so the AGP fully describes the output FASTA.
+    """
+    agp: list[AgpObject] = []
+    for obj in objects:
+        parts: list[AgpComponent | AgpGap] = []
+        for i, comp in enumerate(obj.components):
+            parts.append(
+                AgpComponent(
+                    component_id=comp.row.original_name,
+                    object_start=comp.object_start,
+                    object_end=comp.object_start + comp.true_length,
+                    length=comp.true_length,
+                    orientation="-" if comp.row.flipped else "+",
+                )
+            )
+            if i + 1 < len(obj.components):
+                gap_start = comp.object_start + comp.true_length
+                gap_end = obj.components[i + 1].object_start
+                parts.append(
+                    AgpGap(
+                        object_start=gap_start,
+                        object_end=gap_end,
+                        length=gap_end - gap_start,
+                    )
+                )
+        agp.append(AgpObject(name=obj.name, parts=parts))
+
+    for name, length in leftovers:
+        agp.append(
+            AgpObject(
+                name=name,
+                parts=[
+                    AgpComponent(
+                        component_id=name,
+                        object_start=0,
+                        object_end=length,
+                        length=length,
+                        orientation="+",
+                    )
+                ],
+            )
+        )
+    return agp
+
+
+def write_combined_fasta(
+    records: dict[str, str],
+    objects: list[ScaffoldObject],
+    output_path: Path,
+    *,
+    keep_unscaffolded: bool = True,
+    gzip_out: bool | None = None,
+    line_width: int | None = None,
+) -> list[tuple[str, int]]:
+    """Write the combined-chromosome FASTA and return the leftover list.
+
+    Each :class:`ScaffoldObject` is emitted under its name as the
+    concatenation of its (oriented) component sequences joined by
+    ``gap_size`` Ns. Singleton objects join one sequence, so no gap is
+    inserted. Contigs kept by ``keep_unscaffolded`` are appended under
+    their original names.
+
+    Returns ``[(name, length)]`` for the appended leftovers, so the
+    caller can hand them to :func:`_to_agp_objects` and keep the AGP a
+    complete description of the FASTA.
+    """
+    placed: set[str] = set()
+    out_records: dict[str, str] = {}
+
+    for obj in objects:
+        gap = "N" * obj.gap_size
+        seqs: list[str] = []
+        for comp in obj.components:
+            seq = records.get(comp.row.original_name)
+            if seq is None:
+                continue
+            if comp.row.flipped:
+                seq = reverse_complement(seq)
+            seqs.append(seq)
+            placed.add(comp.row.original_name)
+        if not seqs:
+            continue
+        out_records[obj.name] = gap.join(seqs)
+
+    leftovers: list[tuple[str, int]] = []
+    if keep_unscaffolded:
+        for name, seq in records.items():
+            if name in placed:
+                continue
+            out_records[name] = seq
+            leftovers.append((name, len(seq)))
+
+    write_fasta_records(out_records, output_path, gzip_out=gzip_out, line_width=line_width)
+    return leftovers
+
+
+def _merge_adjacent(intervals: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    """Coalesce abutting intervals that carry the same 4th-column payload.
+
+    Concatenating per-contig BEDs only creates new adjacencies at the
+    junctions (e.g. a contig ending in ``novel``, the inserted ``novel``
+    gap, and the next contig starting in ``novel``). Merging them keeps
+    the combined BED identical to what annotate would emit for the
+    concatenated sequence, which merges adjacent same-name records.
+    """
+    merged: list[tuple[int, int, str]] = []
+    for start, end, rest in intervals:
+        if merged and merged[-1][1] == start and merged[-1][2] == rest:
+            ps, _, prest = merged[-1]
+            merged[-1] = (ps, end, prest)
+        else:
+            merged.append((start, end, rest))
+    return merged
+
+
+def rewrite_bed_combined(
+    input_path: Path,
+    output_path: Path,
+    *,
+    objects: list[ScaffoldObject],
+    gzip_out: bool | None = None,
+) -> None:
+    """Rewrite a per-feature-set BED into combined-chromosome coordinates.
+
+    For each :class:`ScaffoldObject`, every component's intervals are
+    shifted by the component's ``object_start`` (flipped contigs are
+    mirrored within ``[0, E)`` first, as in :func:`rewrite_bed`), and a
+    ``novel`` interval is inserted between consecutive components to
+    fill the N gap plus the untiled ``k-1`` boundary. The result tiles
+    ``[0, object_extent)`` per object with no gaps, then adjacent
+    same-label intervals are coalesced.
+
+    A component whose contig is absent from the input BED has its whole
+    ``[object_start, object_start + E)`` extent filled with ``novel`` so
+    the tiling stays complete (this does not happen for real annotate
+    output, which tiles every contig fully).
+    """
+    if gzip_out is None:
+        gzip_out = str(output_path).endswith(".gz")
+
+    by_contig: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
+    with _open_bed_in(input_path) as h:
+        for i, raw in enumerate(h, start=1):
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                raise ScaffoldError(
+                    f"{input_path}:{i}: expected 3+ tab-separated columns, got {len(parts)}"
+                )
+            seq = parts[0]
+            try:
+                start = int(parts[1])
+                end = int(parts[2])
+            except ValueError as e:
+                raise ScaffoldError(f"{input_path}:{i}: non-integer coordinates: {raw!r}") from e
+            rest = "\t".join(parts[3:])
+            by_contig[seq].append((start, end, rest))
+
+    with _open_bed_out(output_path, gzip_out=gzip_out) as out:
+        for obj in objects:
+            emitted: list[tuple[int, int, str]] = []
+            n = len(obj.components)
+            for idx, comp in enumerate(obj.components):
+                off = comp.object_start
+                recs = by_contig.get(comp.row.original_name)
+                if recs is None:
+                    # No records for this contig in this feature set: fill
+                    # its extent with novel to keep the tiling complete.
+                    logger.warning(
+                        "contig %r has no records in %s; filling its %d bp "
+                        "with novel in the combined BED",
+                        comp.row.original_name,
+                        input_path.name,
+                        comp.bed_extent,
+                    )
+                    emitted.append((off, off + comp.bed_extent, "novel"))
+                else:
+                    if comp.row.flipped:
+                        oriented = [
+                            (comp.bed_extent - stop, comp.bed_extent - start, rest)
+                            for start, stop, rest in reversed(recs)
+                        ]
+                    else:
+                        oriented = recs
+                    for start, end, rest in oriented:
+                        emitted.append((off + start, off + end, rest))
+                if idx + 1 < n:
+                    gap_start = off + comp.bed_extent
+                    gap_end = obj.components[idx + 1].object_start
+                    if gap_end > gap_start:
+                        emitted.append((gap_start, gap_end, "novel"))
+
+            for start, end, rest in _merge_adjacent(emitted):
+                if rest:
+                    out.write(f"{obj.name}\t{start}\t{end}\t{rest}\n")
+                else:
+                    out.write(f"{obj.name}\t{start}\t{end}\n")

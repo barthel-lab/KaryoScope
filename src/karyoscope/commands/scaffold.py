@@ -165,6 +165,33 @@ def _split_comma(value: str) -> list[str]:
     "chromosome) at the end of the output under their original names. Disable to drop them entirely.",
 )
 @click.option(
+    "--combine-chromosomes/--no-combine-chromosomes",
+    default=False,
+    show_default=True,
+    help="Concatenate all contigs of each chromosome+haplotype into a single "
+    "'<chrom>_<hap>' sequence separated by N gaps, producing a less fragmented "
+    "assembly. FASTA modes only. Adds a 'combined_chromosomes' tag to output "
+    "filenames and writes an AGP file documenting the placements. In --mode both, "
+    "the per-feature-set BEDs are written in the combined coordinate system.",
+)
+@click.option(
+    "--scaffold-gap-size",
+    type=int,
+    default=100_000,
+    show_default=True,
+    help="Number of N bases to insert between concatenated contigs when "
+    "--combine-chromosomes is set.",
+)
+@click.option(
+    "--combine-acrocentrics/--no-combine-acrocentrics",
+    default=False,
+    show_default=True,
+    help="Also combine acrocentric chromosomes (chr13/14/15/21/22 by default). Off by "
+    "default: acrocentric p-arms recombine and chromosome assignment there is less "
+    "certain, so their contigs stay as separate records unless this is set. Only "
+    "has effect with --combine-chromosomes.",
+)
+@click.option(
     "--bgzip/--no-bgzip",
     default=True,
     show_default=True,
@@ -196,6 +223,9 @@ def cmd(
     acrocentrics_raw: tuple[str, ...],
     mode: str,
     keep_unscaffolded: bool,
+    combine_chromosomes: bool,
+    scaffold_gap_size: int,
+    combine_acrocentrics: bool,
     threads: int,
     bgzip: bool,
     auto: bool,
@@ -283,6 +313,16 @@ def cmd(
             "Use --mode bed or --mode both, or drop --feature-set."
         )
 
+    if combine_chromosomes and mode_normalised == "bed":
+        raise click.UsageError(
+            "--combine-chromosomes requires a FASTA output; use --mode fasta or --mode both "
+            "(it has no meaning with --mode bed)."
+        )
+    if scaffold_gap_size < 0:
+        raise click.BadParameter("--scaffold-gap-size must be >= 0")
+    if not combine_chromosomes and combine_acrocentrics:
+        logger.warning("--combine-acrocentrics has no effect without --combine-chromosomes")
+
     db_root = paths.ensure_db_root(db_root_arg)
     try:
         results = scaffold_run(
@@ -298,6 +338,9 @@ def cmd(
             threads=threads,
             bgzip=bgzip,
             keep_unscaffolded=keep_unscaffolded,
+            combine_chromosomes=combine_chromosomes,
+            scaffold_gap_size=scaffold_gap_size,
+            combine_acrocentrics=combine_acrocentrics,
             auto=auto,
             output_dir=output_dir,
         )
@@ -320,5 +363,7 @@ def cmd(
         click.echo(f"    stats:  {result.stats_path}")
         if result.scaffolded_fasta is not None:
             click.echo(f"    fasta:  {result.scaffolded_fasta}")
+        if result.agp_path is not None:
+            click.echo(f"    agp:    {result.agp_path}")
         for fs, p in result.scaffolded_beds.items():
             click.echo(f"    {fs}:  {p}")

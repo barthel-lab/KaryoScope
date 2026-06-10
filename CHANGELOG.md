@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- ``karyoscope scaffold`` can now concatenate the contigs of each
+  chromosome+haplotype into a single sequence, producing a less
+  fragmented assembly. New flags (FASTA output only, i.e. ``--mode
+  fasta`` / ``--mode both``):
+  - ``--combine-chromosomes`` (default off): join all contigs of one
+    ``(chromosome, hap)`` into one ``<chrom>_<hap>`` record.
+  - ``--scaffold-gap-size`` (default 100000): number of ``N`` bases
+    inserted between concatenated contigs.
+  - ``--combine-acrocentrics`` (default off): also combine the
+    acrocentric chromosomes. Off by default because acrocentric p-arms
+    recombine and KaryoScope's chromosome assignment there is less
+    certain, so their contigs stay as separate records unless this is
+    set. The acrocentric set is the same one ``--acrocentric`` controls.
+
+  Combined outputs carry a ``combined_chromosomes`` filename tag so a
+  user can run with and without combining in the same directory:
+  ``<stem>.<db>.scaffolded.combined_chromosomes.fa[.gz]`` and, in
+  ``--mode both``, ``<stem>.<db>.<fs>.smoothed.scaffolded.combined_chromosomes.bed[.gz]``
+  (the plain per-contig scaffolded BEDs are not written in a combine
+  run). An AGP 2.1 file,
+  ``<stem>.<db>.scaffolded.combined_chromosomes.agp``, documents every
+  component placement and gap (``gap_type=scaffold``, ``linkage=yes``,
+  ``linkage_evidence=align_genus`` -- KaryoScope is alignment-free, but
+  the contig order/orientation is asserted from each contig's k-mer
+  feature profile against a same-genus human reference). The AGP fully
+  describes the output FASTA, including kept unscaffolded leftovers as
+  singleton objects.
+
+  The combined BEDs share the FASTA's coordinate system exactly. Each
+  per-contig annotation BED tiles ``[0, E)`` where ``E = L - k + 1``
+  (``L`` = true contig length, ``k`` = k-mer size); the map's ``length``
+  field is ``E``. When contigs are concatenated as ``seq + N*gap + seq``,
+  each contig's intervals shift by its true-base offset and a ``novel``
+  interval fills ``[offset + E, next_offset)`` between contigs -- the
+  literal N gap **plus** the contig's own untiled ``k-1`` tail, whose
+  k-mers in the concatenated assembly overlap the Ns. This is
+  byte-identical to re-annotating the combined FASTA (smoothing never
+  bridges the gap, which is far larger than ``max_gap=1000``). The
+  implementation reads true lengths from the FASTA and tiling ends from
+  each BED, so it hardcodes no ``k`` and stays correct for a future
+  variable-k database (designed-for but, lacking such a database, not
+  yet exercised in tests). ``karyotype`` awareness of the
+  ``combined_chromosomes`` files is a separate follow-up.
 - ``karyoscope annotate`` is now resumable across the expensive
   ``get_featureIDs`` (k-mer query) step. On success that step writes a
   small ``<input>.<dbid>.combined.presmoothed.featureIDs.bed.done``
