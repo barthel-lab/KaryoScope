@@ -120,6 +120,14 @@ def _print_manifest_summary(manifest: Manifest, db_dir: Path) -> None:
     if manifest.roles:
         roles = ", ".join(f"{k}={v}" for k, v in sorted(manifest.roles.items()))
         click.echo(f"  Roles:                  {roles}")
+    else:
+        # Roles are optional: only scaffold/centromeres/karyotype consult them.
+        # A database without roles (e.g. a cytoband database) is still valid for
+        # annotate/bin, so we note the absence rather than treating it as an error.
+        click.echo(
+            "  Roles:                  (none declared — fine for annotate/bin; "
+            "scaffold/centromeres/karyotype fall back to default feature-set names)"
+        )
     if manifest.smoothing:
         for k, v in sorted(manifest.smoothing.items()):
             click.echo(f"  Smoothing ({k}): {v}")
