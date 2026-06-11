@@ -807,6 +807,25 @@ class TestCliSurface:
         assert result.exit_code != 0
         assert "--outdir and --output" in result.output
 
+    def test_help_lists_combine_chromosomes(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(main, ["karyotype", "--help"])
+        assert result.exit_code == 0
+        assert "--combine-chromosomes" in result.output
+
+    def test_negative_scaffold_gap_size_rejected(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        fa = tmp_path / "x.fa"
+        fa.write_text(">a\nACGT\n")
+        result = cli_runner.invoke(
+            main,
+            ["karyotype", "-i", str(fa), "--combine-chromosomes", "--scaffold-gap-size", "-1"],
+        )
+        assert result.exit_code != 0
+        assert "scaffold-gap-size" in result.output
+
 
 # --- integration tests against the dummy DB ------------------------
 
@@ -866,6 +885,92 @@ def test_karyotype_genome_mode_against_dummy_db(
     assert "</svg>" in text
     # Colour from the dummy db's region set.
     assert "#2ca02c" in text or "#d62728" in text or "#9467bd" in text
+
+
+@_required
+@pytest.mark.integration
+def test_karyotype_combine_chromosomes_against_dummy_db(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    dummy_assembly_fasta: Path,
+    tmp_path: Path,
+) -> None:
+    """--combine-chromosomes cascades scaffold's combine path and renders
+    from the combined-chromosome BEDs.
+
+    Verifies the karyotype outputs carry the ``combined_chromosomes`` tag
+    and that the combined scaffolded FASTA + AGP side artifacts are
+    produced.
+    """
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "karyotype",
+            "-i",
+            f"hap1={dummy_assembly_fasta}",
+            "--outdir",
+            str(out_dir),
+            "--mode",
+            "genome",
+            "--bin-size",
+            "10",
+            "--min-scaffold-length",
+            "1",
+            "--feature-set",
+            "region",
+            "--no-human-chroms",
+            "--combine-chromosomes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    tagged_svgs = list(out_dir.glob("*.combined_chromosomes.karyotype.svg"))
+    assert tagged_svgs, f"no combined SVGs; got: {list(out_dir.iterdir())}"
+    text = tagged_svgs[0].read_text()
+    assert "<svg" in text and "</svg>" in text
+
+    # The combine cascade leaves the combined FASTA + AGP as side artifacts.
+    assert list(out_dir.glob("*.scaffolded.combined_chromosomes.fa*"))
+    assert list(out_dir.glob("*.scaffolded.combined_chromosomes.agp"))
+    # The combined binned BED (keyed by <chrom>_<hap>) was materialised.
+    assert list(out_dir.glob("*.scaffolded.combined_chromosomes.binned*.bed.gz"))
+
+
+@_required
+@pytest.mark.integration
+def test_karyotype_combine_centromere_mode_against_dummy_db(
+    cli_runner: CliRunner,
+    populated_db_root: Path,
+    dummy_assembly_fasta: Path,
+    tmp_path: Path,
+) -> None:
+    """Combine + centromere mode detects centromeres in combined coords
+    and writes a combined-tagged centromeres BED."""
+    out_dir = tmp_path / "out"
+    result = cli_runner.invoke(
+        main,
+        [
+            "karyotype",
+            "-i",
+            f"hap1={dummy_assembly_fasta}",
+            "--outdir",
+            str(out_dir),
+            "--mode",
+            "centromere",
+            "--bin-size",
+            "10",
+            "--min-scaffold-length",
+            "1",
+            "--feature-set",
+            "region",
+            "--no-human-chroms",
+            "--combine-chromosomes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert list(out_dir.glob("*.centromere.region.smoothed.combined_chromosomes.karyotype.svg"))
+    assert list(out_dir.glob("*.centromeres.combined_chromosomes.bed*"))
 
 
 @_required

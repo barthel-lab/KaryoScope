@@ -17,6 +17,7 @@ from karyoscope.core.scaffold import (
     category_index,
     chromosome_sort_key,
     classify_and_orient,
+    combined_map_rows,
     find_largest_contiguous_region,
     flip_bins,
     get_simple_region,
@@ -640,6 +641,76 @@ class TestPlanCombinedLayout:
         objs = plan_combined_layout(rows, {"A": 10}, gap_size=5, acrocentrics=set())
         assert len(objs) == 1
         assert [c.row.original_name for c in objs[0].components] == ["A"]
+
+
+class TestCombinedMapRows:
+    """Synthetic map rows for the karyotype combine path.
+
+    Object naming must match :func:`plan_combined_layout` so the
+    renderer can join the combined binned BED (keyed by object name) to
+    these rows.
+    """
+
+    @staticmethod
+    def _mr(new_name: str, chrom: str, hap: str, stats: str) -> MapRow:
+        return MapRow(new_name, new_name, "in.fa", hap, chrom, False, 100, stats)
+
+    def test_group_collapses_to_one_row_named_chrom_hap(self) -> None:
+        rows = [
+            self._mr("chr1_hap1_A", "chr1", "hap1", "TPCQ"),
+            self._mr("chr1_hap1_B", "chr1", "hap1", "CQT"),
+        ]
+        out = combined_map_rows(rows, acrocentrics=set())
+        assert len(out) == 1
+        assert out[0].new_name == "chr1_hap1"
+        assert out[0].chromosome == "chr1"
+        assert out[0].hap == "hap1"
+        assert out[0].length == 200
+
+    def test_telomere_flags_taken_from_ends(self) -> None:
+        # First component starts with telomere, last ends with one.
+        rows = [
+            self._mr("chr1_hap1_A", "chr1", "hap1", "TPCQ"),
+            self._mr("chr1_hap1_B", "chr1", "hap1", "CQT"),
+        ]
+        stats = combined_map_rows(rows, acrocentrics=set())[0].stats
+        assert stats.startswith("T")
+        assert stats.endswith("T")
+
+    def test_no_telomere_when_ends_lack_it(self) -> None:
+        rows = [
+            self._mr("chr2_hap1_A", "chr2", "hap1", "PCQ"),
+            self._mr("chr2_hap1_B", "chr2", "hap1", "CQP"),
+        ]
+        stats = combined_map_rows(rows, acrocentrics=set())[0].stats
+        assert not stats.startswith("T")
+        assert not stats.endswith("T")
+
+    def test_haps_stay_separate(self) -> None:
+        rows = [
+            self._mr("chr1_hap1_A", "chr1", "hap1", "TPCQT"),
+            self._mr("chr1_hap2_B", "chr1", "hap2", "TPCQT"),
+        ]
+        out = combined_map_rows(rows, acrocentrics=set())
+        assert sorted(r.new_name for r in out) == ["chr1_hap1", "chr1_hap2"]
+
+    def test_acrocentric_rows_pass_through_uncombined(self) -> None:
+        rows = [
+            self._mr("chr13_hap1_A", "chr13", "hap1", "TPCQ"),
+            self._mr("chr13_hap1_B", "chr13", "hap1", "CQT"),
+        ]
+        out = combined_map_rows(rows, acrocentrics={"chr13"}, combine_acrocentrics=False)
+        # Encoded per-contig names preserved (match the singleton objects
+        # plan_combined_layout emits for an uncombined acrocentric group).
+        assert [r.new_name for r in out] == ["chr13_hap1_A", "chr13_hap1_B"]
+
+    def test_acrocentric_combined_when_forced(self) -> None:
+        rows = [
+            self._mr("chr13_hap1_A", "chr13", "hap1", "TPCQ"),
+            self._mr("chr13_hap1_B", "chr13", "hap1", "CQT"),
+        ]
+        out = combined_map_rows(rows, acrocentrics={"chr13"}, combine_acrocentrics=True)
+        assert [r.new_name for r in out] == ["chr13_hap1"]
 
 
 # --- combined FASTA -------------------------------------------------

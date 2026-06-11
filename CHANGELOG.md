@@ -49,8 +49,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   implementation reads true lengths from the FASTA and tiling ends from
   each BED, so it hardcodes no ``k`` and stays correct for a future
   variable-k database (designed-for but, lacking such a database, not
-  yet exercised in tests). ``karyotype`` awareness of the
-  ``combined_chromosomes`` files is a separate follow-up.
+  yet exercised in tests).
+- ``karyoscope karyotype`` gained ``--combine-chromosomes`` (plus
+  ``--scaffold-gap-size`` and ``--combine-acrocentrics``, mirroring the
+  ``scaffold`` flags) to render combined-chromosome karyotypes. When
+  set, karyotype cascades ``scaffold`` in ``--mode both`` with
+  ``--combine-chromosomes`` so the ``combined_chromosomes`` BEDs (and
+  the combined FASTA + AGP side artifacts) are created, then lays out
+  the figure from those combined BEDs: each ``<chrom>_<hap>`` is one
+  ideogram cell instead of one cell per contig. The renderer is
+  unchanged -- karyotype bins the combined BEDs (keyed ``<chrom>_<hap>``)
+  and joins them to synthetic combined map rows (one per object, with
+  end-telomere flags taken from the first and last component). All three
+  modes work: ``genome`` / ``subtelomere`` consume the combined binned
+  BEDs directly; ``centromere`` detects centromere ranges in the
+  combined coordinate system (keyed ``<chrom>_<hap>``) and writes a
+  ``<stem>.<db>.centromeres.combined_chromosomes.bed[.gz]``. The
+  SVG / PDF / PNG filenames carry the ``combined_chromosomes`` tag so
+  combined and per-contig figures coexist in one directory. Acrocentric
+  groups left uncombined (the default) still render as their per-contig
+  cells.
 - ``karyoscope annotate`` is now resumable across the expensive
   ``get_featureIDs`` (k-mer query) step. On success that step writes a
   small ``<input>.<dbid>.combined.presmoothed.featureIDs.bed.done``
