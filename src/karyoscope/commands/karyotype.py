@@ -154,6 +154,33 @@ logger = logging.getLogger(__name__)
     "Repeatable; accepts comma-separated lists. Default: human acrocentrics with a warning.",
 )
 @click.option(
+    "--combine-chromosomes/--no-combine-chromosomes",
+    default=False,
+    show_default=True,
+    help="Render combined chromosomes: cascade scaffold with "
+    "--combine-chromosomes so each chromosome+haplotype's contigs are "
+    "concatenated into a single '<chrom>_<hap>' sequence (separated by N "
+    "gaps), then lay out the karyotype from those combined BEDs. Produces "
+    "the combined scaffolded FASTA + AGP as a side artifact and tags the "
+    "SVG/PDF/PNG filenames with 'combined_chromosomes'.",
+)
+@click.option(
+    "--scaffold-gap-size",
+    type=int,
+    default=100_000,
+    show_default=True,
+    help="Number of N bases inserted between concatenated contigs when "
+    "--combine-chromosomes is set.",
+)
+@click.option(
+    "--combine-acrocentrics/--no-combine-acrocentrics",
+    default=False,
+    show_default=True,
+    help="Also combine acrocentric chromosomes (chr13/14/15/21/22 by default) "
+    "when --combine-chromosomes is set. Off by default: acrocentric p-arms "
+    "recombine and chromosome assignment there is less certain.",
+)
+@click.option(
     "--no-human-chroms",
     "no_human_chroms",
     is_flag=True,
@@ -268,6 +295,9 @@ def cmd(
     subtelomere_boundary: int,
     min_scaffold_length: int,
     acrocentrics_raw: tuple[str, ...],
+    combine_chromosomes: bool,
+    scaffold_gap_size: int,
+    combine_acrocentrics: bool,
     no_human_chroms: bool,
     formats_raw: tuple[str, ...],
     sample_label: str | None,
@@ -353,6 +383,11 @@ def cmd(
     if output_dir is not None and output_path is not None:
         raise click.UsageError("--outdir and --output cannot both be set")
 
+    if scaffold_gap_size < 0:
+        raise click.BadParameter("--scaffold-gap-size must be >= 0")
+    if not combine_chromosomes and combine_acrocentrics:
+        logger.warning("--combine-acrocentrics has no effect without --combine-chromosomes")
+
     sex_resolved: str | None = None if sex.lower() == "unknown" else sex.lower()
     feature_sets = list(feature_sets_arg) if feature_sets_arg else None
     modes = [m.lower() for m in modes_raw] if modes_raw else None
@@ -377,6 +412,9 @@ def cmd(
             subtelomere_boundary=subtelomere_boundary,
             min_scaffold_length=min_scaffold_length,
             acrocentrics=acrocentrics,
+            combine_chromosomes=combine_chromosomes,
+            scaffold_gap_size=scaffold_gap_size,
+            combine_acrocentrics=combine_acrocentrics,
             split_haps_regex=split_haps_regex,
             threads=threads,
             auto=auto,

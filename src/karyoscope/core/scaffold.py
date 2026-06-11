@@ -891,6 +891,64 @@ def plan_combined_layout(
     return objects
 
 
+def combined_map_rows(
+    map_rows: list[MapRow],
+    *,
+    acrocentrics: set[str] = DEFAULT_HUMAN_ACROCENTRICS,
+    combine_acrocentrics: bool = False,
+) -> list[MapRow]:
+    """Synthetic map rows describing the combined-chromosome objects.
+
+    Mirrors the object naming and the ``(chromosome, hap)`` grouping of
+    :func:`plan_combined_layout`, but needs no FASTA: it produces one
+    :class:`MapRow` per output object so the karyotype renderer can join
+    the combined binned BED (keyed by object name) to chromosome / hap /
+    telomere metadata.
+
+    A combined object gets a synthetic ``new_name`` of ``<chrom>_<hap>``
+    (matching the combined BED's sequence name) and a ``stats`` proxy
+    carrying only the end-telomere flags the renderer reads: a leading
+    ``T`` iff the first component starts with a telomere, a trailing
+    ``T`` iff the last component ends with one. Acrocentric groups left
+    uncombined pass their per-contig rows through unchanged, so their
+    encoded ``new_name`` still matches the singleton object the layout
+    emits for them.
+
+    The ``length`` field is the sum of component ``bed_extent`` values
+    (informational only -- the renderer derives sequence lengths from the
+    binned BED, not from this field). ``flipped`` is always ``False`` on
+    a combined object: orientation was already baked into the component
+    coordinates when the combined BED was written.
+    """
+    groups: dict[tuple[str, str], list[MapRow]] = {}
+    for row in map_rows:
+        groups.setdefault((row.chromosome, row.hap), []).append(row)
+
+    out: list[MapRow] = []
+    for (chrom, hap), rows in groups.items():
+        is_acro = chrom in acrocentrics
+        combine = not (is_acro and not combine_acrocentrics)
+        if not combine:
+            out.extend(rows)
+            continue
+        start_t = rows[0].stats.startswith("T")
+        stop_t = rows[-1].stats.endswith("T")
+        stats = ("T" if start_t else "x") + ("T" if stop_t else "x")
+        out.append(
+            MapRow(
+                new_name=f"{chrom}_{hap}",
+                original_name=f"{chrom}_{hap}",
+                input_file=rows[0].input_file,
+                hap=hap,
+                chromosome=chrom,
+                flipped=False,
+                length=sum(r.length for r in rows),
+                stats=stats,
+            )
+        )
+    return out
+
+
 def _to_agp_objects(
     objects: list[ScaffoldObject],
     leftovers: list[tuple[str, int]],

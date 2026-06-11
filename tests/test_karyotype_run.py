@@ -12,7 +12,10 @@ from pathlib import Path
 from karyoscope.core.io.scaffold_map import MapRow, map_signature
 from karyoscope.core.karyotype_run import (
     _binned_bed_is_current,
+    _binned_combined_scaffolded_bed_path,
     _binned_mapsig_path,
+    _combined_centromeres_bed_path,
+    _combined_scaffolded_bed_path,
     _write_binned_mapsig,
 )
 
@@ -86,3 +89,29 @@ def test_sidecar_contents_match_signature(tmp_path: Path) -> None:
     rows = [_row("chr1_hap1_a", hap="hap1")]
     _write_binned_mapsig(binned, rows)
     assert _binned_mapsig_path(binned).read_text().strip() == map_signature(rows)
+
+
+# --- combine-chromosome path naming ---------------------------------
+
+
+def test_combined_scaffolded_bed_path_defaults_to_gz(tmp_path: Path) -> None:
+    p = _combined_scaffolded_bed_path(tmp_path, "samp", "DB", "region")
+    assert p.name == "samp.DB.region.smoothed.scaffolded.combined_chromosomes.bed.gz"
+
+
+def test_combined_scaffolded_bed_path_prefers_existing_plain(tmp_path: Path) -> None:
+    plain = tmp_path / "samp.DB.region.smoothed.scaffolded.combined_chromosomes.bed"
+    plain.write_text("")
+    assert _combined_scaffolded_bed_path(tmp_path, "samp", "DB", "region") == plain
+
+
+def test_binned_combined_scaffolded_bed_path(tmp_path: Path) -> None:
+    p = _binned_combined_scaffolded_bed_path(tmp_path, "samp", "DB", "region", 1_000_000)
+    assert p.name == (
+        "samp.DB.region.smoothed.scaffolded.combined_chromosomes.binned1000000.bed.gz"
+    )
+
+
+def test_combined_centromeres_bed_path(tmp_path: Path) -> None:
+    p = _combined_centromeres_bed_path(tmp_path, "samp", "DB")
+    assert p.name == "samp.DB.centromeres.combined_chromosomes.bed.gz"

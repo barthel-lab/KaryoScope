@@ -35,9 +35,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from karyoscope.core.annotate import resolve_database
+from karyoscope.core.annotate import _bgzip_file, resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
-from karyoscope.core.centromeres import centromeres_run
+from karyoscope.core.centromeres import (
+    DEFAULT_COARSE_BIN_SIZE,
+    DEFAULT_FINE_BIN_SIZE,
+    _resolve_centromere_role,
+    centromeres_run,
+    find_centromere_ranges,
+)
 from karyoscope.core.io.colors import colors_for_set, parse_colors, validate_colors
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, map_signature, read_map
@@ -50,7 +56,9 @@ from karyoscope.core.karyotype import (
 from karyoscope.core.scaffold import (
     DEFAULT_HUMAN_ACROCENTRICS,
     DEFAULT_MIN_SCAFFOLD_LENGTH,
+    DEFAULT_SCAFFOLD_GAP_SIZE,
     Interval,
+    combined_map_rows,
     rewrite_bed,
 )
 from karyoscope.core.scaffold_run import InputSpec, scaffold_run
@@ -134,6 +142,40 @@ def _binned_scaffolded_bed_path(
     variant: str = "smoothed",
 ) -> Path:
     return out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.binned{bin_size}.bed.gz"
+
+
+#: Filename tag distinguishing combined-chromosome outputs from the
+#: per-contig scaffolded outputs. Must match
+#: ``scaffold_run._COMBINED_TAG`` so karyotype reads the combined BEDs
+#: that scaffold writes.
+_COMBINED_TAG = "combined_chromosomes"
+
+
+def _combined_scaffolded_bed_path(
+    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
+) -> Path:
+    """The combined-chromosome scaffolded BED scaffold writes (mode 'both')."""
+    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.{_COMBINED_TAG}.bed.gz"
+    if gz.is_file():
+        return gz
+    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.{_COMBINED_TAG}.bed"
+    if plain.is_file():
+        return plain
+    return gz
+
+
+def _binned_combined_scaffolded_bed_path(
+    out_dir: Path,
+    stem: str,
+    db_id: str,
+    fs: str,
+    bin_size: int,
+    variant: str = "smoothed",
+) -> Path:
+    return (
+        out_dir
+        / f"{stem}.{db_id}.{fs}.{variant}.scaffolded.{_COMBINED_TAG}.binned{bin_size}.bed.gz"
+    )
 
 
 def _binned_mapsig_path(binned: Path) -> Path:
@@ -228,8 +270,19 @@ def _ensure_binned_scaffolded(
     threads: int,
     map_rows: list[MapRow] | None = None,
     variant: str = "smoothed",
+    combined: bool = False,
 ) -> Path:
     """Return the binned scaffolded BED path, building it if missing or stale.
+
+    When ``combined`` is True, operates on the combined-chromosome
+    scaffolded BED (sequence names ``<chrom>_<hap>``) that
+    ``scaffold_run(combine_chromosomes=True, mode="both")`` always
+    materialises. The combined BED is binned directly; there is no
+    ``--no-scaffolding`` annotation fallback on this path, because the
+    combined coordinate transform only exists in the full-resolution
+    combined BED. ``map_rows`` here should be the *combined* map rows so
+    the ``.mapsig`` guard invalidates when the underlying scaffold map
+    changes.
 
     An existing binned BED is reused only when it is also *current* with
     respect to the scaffold map (see :func:`_binned_bed_is_current`): the
@@ -251,7 +304,12 @@ def _ensure_binned_scaffolded(
     ``variant`` selects whether we read the smoothed or presmoothed
     annotation BEDs and produce correspondingly named intermediates.
     """
-    out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size, variant=variant)
+    if combined:
+        out = _binned_combined_scaffolded_bed_path(
+            out_dir, stem, db_id, fs, bin_size, variant=variant
+        )
+    else:
+        out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size, variant=variant)
     if out.is_file() and _binned_bed_is_current(out, map_rows):
         return out
     if not auto:
@@ -269,6 +327,26 @@ def _ensure_binned_scaffolded(
             + "Re-run with auto-derive enabled"
             + (f" (or delete {out.name} and its .mapsig)." if stale else ".")
         )
+    if combined:
+        # The combined coordinate transform lives only in the
+        # full-resolution combined BED, which scaffold always writes in
+        # combine mode. Bin it directly; there is no annotation fallback.
+        combined_src = _combined_scaffolded_bed_path(out_dir, stem, db_id, fs, variant=variant)
+        if not combined_src.is_file():
+            raise KaryotypeError(
+                f"cannot bin combined {fs!r} for {input_name}: combined "
+                f"scaffolded BED missing at {combined_src} (scaffold should "
+                f"have produced it in combine mode)"
+            )
+        bin_features(
+            combined_src,
+            out,
+            bin_size=bin_size,
+            leaf_set=leaf_set or None,
+            threads=threads,
+        )
+        _write_binned_mapsig(out, map_rows)
+        return out
     scaffolded_src = _scaffolded_bed_path(out_dir, stem, db_id, fs, variant=variant)
     if scaffolded_src.is_file():
         bin_features(
@@ -321,6 +399,87 @@ def _centromeres_bed_path(out_dir: Path, stem: str, db_id: str) -> Path:
     return gz
 
 
+def _combined_centromeres_bed_path(out_dir: Path, stem: str, db_id: str) -> Path:
+    gz = out_dir / f"{stem}.{db_id}.centromeres.{_COMBINED_TAG}.bed.gz"
+    if gz.is_file():
+        return gz
+    plain = out_dir / f"{stem}.{db_id}.centromeres.{_COMBINED_TAG}.bed"
+    if plain.is_file():
+        return plain
+    return gz
+
+
+def _ensure_combined_centromeres(
+    *,
+    out_dir: Path,
+    stem: str,
+    db_id: str,
+    centromere_fs: str,
+    centromere_leaves: set[str],
+    map_rows: list[MapRow],
+    auto: bool,
+    input_name: str,
+    threads: int,
+    bgzip: bool,
+    variant: str = "smoothed",
+) -> dict[str, tuple[int, int]]:
+    """Detect centromere ranges in the combined coordinate system.
+
+    The non-combined cascade runs ``centromeres_run`` per contig; on the
+    combine path we detect against the combined-chromosome BEDs instead,
+    so the ranges are keyed by ``<chrom>_<hap>`` and expressed in
+    combined coordinates -- exactly what the centromere-mode renderer
+    needs to join against the combined binned BED.
+
+    Reuses :func:`find_centromere_ranges` and the combined binnings
+    (coarse 1 Mb + fine 100 kb) that :func:`_ensure_binned_scaffolded`
+    produces and caches. Writes the result to a
+    ``centromeres.combined_chromosomes.bed`` for parity with the
+    per-contig output, then returns it in memory.
+    """
+    coarse_path = _ensure_binned_scaffolded(
+        out_dir=out_dir,
+        stem=stem,
+        db_id=db_id,
+        fs=centromere_fs,
+        bin_size=DEFAULT_COARSE_BIN_SIZE,
+        leaf_set=centromere_leaves,
+        auto=auto,
+        input_name=input_name,
+        threads=threads,
+        map_rows=map_rows,
+        variant=variant,
+        combined=True,
+    )
+    coarse_bins = _load_binned_bed(coarse_path)
+    fine_bins: OrderedDict[str, list[Interval]] | None = None
+    if DEFAULT_FINE_BIN_SIZE:
+        fine_path = _ensure_binned_scaffolded(
+            out_dir=out_dir,
+            stem=stem,
+            db_id=db_id,
+            fs=centromere_fs,
+            bin_size=DEFAULT_FINE_BIN_SIZE,
+            leaf_set=centromere_leaves,
+            auto=auto,
+            input_name=input_name,
+            threads=threads,
+            map_rows=map_rows,
+            variant=variant,
+            combined=True,
+        )
+        fine_bins = _load_binned_bed(fine_path)
+    ranges = find_centromere_ranges(coarse_bins, fine_bins)
+
+    plain = out_dir / f"{stem}.{db_id}.centromeres.{_COMBINED_TAG}.bed"
+    with plain.open("w") as h:
+        for contig, (cstart, cend) in ranges.items():
+            h.write(f"{contig}\t{cstart}\t{cend}\n")
+    if bgzip:
+        _bgzip_file(plain, threads=threads)
+    return dict(ranges)
+
+
 #: Output formats supported by :func:`karyotype_run`. SVG is the
 #: native drawsvg output; PDF and PNG are produced by converting the
 #: SVG via :mod:`cairosvg`.
@@ -361,6 +520,9 @@ def karyotype_run(
     subtelomere_boundary: int = 250_000,
     min_scaffold_length: int = DEFAULT_MIN_SCAFFOLD_LENGTH,
     acrocentrics: set[str] | None = None,
+    combine_chromosomes: bool = False,
+    scaffold_gap_size: int = DEFAULT_SCAFFOLD_GAP_SIZE,
+    combine_acrocentrics: bool = False,
     split_haps_regex: str | None = None,
     threads: int = 0,
     auto: bool = True,
@@ -452,41 +614,89 @@ def karyotype_run(
             "full list of issues):\n  - " + "\n  - ".join(color_issues)
         )
 
+    if combine_chromosomes and scaffold_gap_size < 0:
+        raise KaryotypeError(f"scaffold_gap_size must be >= 0, got {scaffold_gap_size}")
+
+    # The acrocentric set drives which (chromosome, hap) groups get
+    # combined. Resolve it the same way scaffold does so the synthetic
+    # combined map rows agree with the combined BED's object names.
+    acros_set = acrocentrics if acrocentrics is not None else set(DEFAULT_HUMAN_ACROCENTRICS)
+
+    # Centromere detection feature set (combine path only -- the
+    # non-combine path lets centromeres_run resolve it internally).
+    want_centromere = "centromere" in requested_modes
+    centromere_fs: str | None = None
+    centromere_leaves: set[str] = set()
+    if combine_chromosomes and want_centromere:
+        centromere_fs = _resolve_centromere_role(manifest.roles, available)
+        centromere_leaves = leaves_for(hierarchy, centromere_fs)
+
     logger.info(
         "rendering karyotype(s): %d input(s), modes=%s, feature_sets=%s "
-        "(= %d SVG(s) x %d format(s))",
+        "(= %d SVG(s) x %d format(s))%s",
         len(inputs),
         requested_modes,
         requested,
         len(requested_modes) * len(requested),
         len(requested_formats),
+        " [combine-chromosomes]" if combine_chromosomes else "",
     )
 
     # Make sure scaffolded BEDs exist for every input + requested
     # feature set. scaffold_run short-circuits on existing files.
-    scaffold_run(
-        inputs,
-        db_root=db_root,
-        db_id=db_id_resolved,
-        feature_sets=requested,
-        mode="bed",
-        min_scaffold_length=min_scaffold_length,
-        acrocentrics=acrocentrics,
-        split_haps_regex=split_haps_regex,
-        threads=threads,
-        bgzip=bgzip,
-        auto=auto,
-        output_dir=output_dir,
-        write_scaffolded_beds=scaffolding,
-        annotation_variant=annotation_variant,
-    )
+    if combine_chromosomes:
+        # Combine path: cascade scaffold in 'both' mode so it writes the
+        # combined-chromosome BEDs (and the combined FASTA + AGP). The
+        # centromere-detection feature set is added to the set when
+        # centromere mode is requested so its combined BED exists for
+        # in-coordinate centromere detection below.
+        scaffold_feature_sets = list(requested)
+        if centromere_fs is not None and centromere_fs not in scaffold_feature_sets:
+            scaffold_feature_sets.append(centromere_fs)
+        scaffold_run(
+            inputs,
+            db_root=db_root,
+            db_id=db_id_resolved,
+            feature_sets=scaffold_feature_sets,
+            mode="both",
+            min_scaffold_length=min_scaffold_length,
+            acrocentrics=acros_set,
+            combine_chromosomes=True,
+            scaffold_gap_size=scaffold_gap_size,
+            combine_acrocentrics=combine_acrocentrics,
+            split_haps_regex=split_haps_regex,
+            threads=threads,
+            bgzip=bgzip,
+            auto=auto,
+            output_dir=output_dir,
+            annotation_variant=annotation_variant,
+        )
+    else:
+        scaffold_run(
+            inputs,
+            db_root=db_root,
+            db_id=db_id_resolved,
+            feature_sets=requested,
+            mode="bed",
+            min_scaffold_length=min_scaffold_length,
+            acrocentrics=acrocentrics,
+            split_haps_regex=split_haps_regex,
+            threads=threads,
+            bgzip=bgzip,
+            auto=auto,
+            output_dir=output_dir,
+            write_scaffolded_beds=scaffolding,
+            annotation_variant=annotation_variant,
+        )
 
     # For centromere mode, also ensure the centromere coordinates file
     # exists per input. centromeres_run cascades through scaffold and
     # bin internally. Only call when centromere mode is actually
     # requested -- it's expensive (an extra bin pass) and unnecessary
-    # for genome / subtelomere outputs.
-    if "centromere" in requested_modes:
+    # for genome / subtelomere outputs. On the combine path the
+    # per-input combined centromere ranges are detected lazily in the
+    # render loop instead (keyed by <chrom>_<hap>, in combined coords).
+    if want_centromere and not combine_chromosomes:
         centromeres_run(
             inputs,
             db_root=db_root,
@@ -532,6 +742,37 @@ def karyotype_run(
         stems = [stem for _, _, stem in per_input_state]
         sample_label = " + ".join(stems) if stems else None
 
+    # Combine path: precompute the per-input combined map rows (one
+    # synthetic <chrom>_<hap> row per combined object) and, when
+    # centromere mode is requested, the combined centromere ranges.
+    # Both are reused across every (mode, feature_set) render for that
+    # input. Keyed by the input FASTA path.
+    combined_rows_by_input: dict[Path, list[MapRow]] = {}
+    combined_cen_by_input: dict[Path, dict[str, tuple[int, int]]] = {}
+    if combine_chromosomes:
+        for spec, out_dir, stem in per_input_state:
+            per_contig_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
+            crows = combined_map_rows(
+                per_contig_rows,
+                acrocentrics=acros_set,
+                combine_acrocentrics=combine_acrocentrics,
+            )
+            combined_rows_by_input[spec.path] = crows
+            if want_centromere and centromere_fs is not None:
+                combined_cen_by_input[spec.path] = _ensure_combined_centromeres(
+                    out_dir=out_dir,
+                    stem=stem,
+                    db_id=db_id_resolved,
+                    centromere_fs=centromere_fs,
+                    centromere_leaves=centromere_leaves,
+                    map_rows=crows,
+                    auto=auto,
+                    input_name=spec.path.name,
+                    threads=threads,
+                    bgzip=bgzip,
+                    variant=annotation_variant,
+                )
+
     results: list[KaryotypeResult] = []
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -556,8 +797,13 @@ def karyotype_run(
             for spec, out_dir, stem in per_input_state:
                 # Read map first; the binner needs it on the
                 # ``--no-scaffolding`` path to apply rename + flip at
-                # bin time when no on-disk scaffolded BED exists.
-                map_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
+                # bin time when no on-disk scaffolded BED exists. On the
+                # combine path the renderer instead consumes the
+                # synthetic combined map rows keyed by <chrom>_<hap>.
+                per_contig_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
+                render_map_rows = (
+                    combined_rows_by_input[spec.path] if combine_chromosomes else per_contig_rows
+                )
                 binned_path = _ensure_binned_scaffolded(
                     out_dir=out_dir,
                     stem=stem,
@@ -568,31 +814,38 @@ def karyotype_run(
                     auto=auto,
                     input_name=spec.path.name,
                     threads=threads,
-                    map_rows=map_rows,
+                    map_rows=render_map_rows,
                     variant=annotation_variant,
+                    combined=combine_chromosomes,
                 )
                 binned_bed = _load_binned_bed(binned_path)
 
                 centromere_ranges: dict[str, tuple[int, int]] | None = None
                 if current_mode == "centromere":
-                    cpath = _centromeres_bed_path(out_dir, stem, db_id_resolved)
-                    if not cpath.is_file():
-                        raise KaryotypeError(
-                            f"missing centromeres BED for {spec.path.name} (expected at {cpath})"
-                        )
-                    centromere_ranges = _load_centromeres_bed(cpath)
+                    if combine_chromosomes:
+                        centromere_ranges = combined_cen_by_input[spec.path]
+                    else:
+                        cpath = _centromeres_bed_path(out_dir, stem, db_id_resolved)
+                        if not cpath.is_file():
+                            raise KaryotypeError(
+                                f"missing centromeres BED for {spec.path.name} "
+                                f"(expected at {cpath})"
+                            )
+                        centromere_ranges = _load_centromeres_bed(cpath)
 
                 render_inputs.append(
                     RenderInput(
-                        map_rows=map_rows,
+                        map_rows=render_map_rows,
                         binned_bed=binned_bed,
                         centromere_ranges=centromere_ranges,
                     )
                 )
 
             flat_colors = colors_for_set(colors, fs)
+            combined_tag = f".{_COMBINED_TAG}" if combine_chromosomes else ""
             stem_for_paths = (
-                f"{base_name}.{db_id_resolved}.{current_mode}.{fs}.{annotation_variant}.karyotype"
+                f"{base_name}.{db_id_resolved}.{current_mode}.{fs}."
+                f"{annotation_variant}{combined_tag}.karyotype"
             )
             svg_path = results_dir / f"{stem_for_paths}.svg"
             logger.info(
