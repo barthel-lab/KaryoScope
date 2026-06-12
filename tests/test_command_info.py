@@ -18,7 +18,7 @@ def _invoke(runner: CliRunner, *args: str) -> object:
 
 def test_info_empty_db_root(cli_runner: CliRunner, isolated_db_root: Path) -> None:
     """With nothing installed, `info` should report cleanly."""
-    result = _invoke(cli_runner, "info", "--db", str(isolated_db_root))
+    result = _invoke(cli_runner, "info", "--db-root", str(isolated_db_root))
     assert result.exit_code == 0, result.output
     assert str(isolated_db_root) in result.output
     # Either "No installed databases" or the "root does not exist yet" message.
@@ -26,7 +26,7 @@ def test_info_empty_db_root(cli_runner: CliRunner, isolated_db_root: Path) -> No
 
 
 def test_info_lists_installed_databases(cli_runner: CliRunner, populated_db_root: Path) -> None:
-    result = _invoke(cli_runner, "info", "--db", str(populated_db_root))
+    result = _invoke(cli_runner, "info", "--db-root", str(populated_db_root))
     assert result.exit_code == 0, result.output
     assert "KS_dummy_test_v1" in result.output
     assert "Version:" in result.output
@@ -39,7 +39,7 @@ def test_info_lists_installed_databases(cli_runner: CliRunner, populated_db_root
 def test_info_detailed_view_of_installed_database(
     cli_runner: CliRunner, populated_db_root: Path
 ) -> None:
-    result = _invoke(cli_runner, "info", "KS_dummy_test_v1", "--db", str(populated_db_root))
+    result = _invoke(cli_runner, "info", "KS_dummy_test_v1", "--db-root", str(populated_db_root))
     assert result.exit_code == 0, result.output
     assert "KS_dummy_test_v1" in result.output
     assert "k-mer:" in result.output
@@ -50,7 +50,7 @@ def test_info_detailed_view_of_installed_database(
 
 
 def test_info_unknown_database_id(cli_runner: CliRunner, isolated_db_root: Path) -> None:
-    result = _invoke(cli_runner, "info", "not_a_real_database", "--db", str(isolated_db_root))
+    result = _invoke(cli_runner, "info", "not_a_real_database", "--db-root", str(isolated_db_root))
     assert result.exit_code != 0
     assert "not installed" in result.output
 
@@ -64,7 +64,7 @@ def test_info_existing_database_directory(
     isolated_db_root: Path,
 ) -> None:
     """Pointing at a database directory on disk works even if not installed."""
-    result = _invoke(cli_runner, "info", str(unpacked_dummy_db), "--db", str(isolated_db_root))
+    result = _invoke(cli_runner, "info", str(unpacked_dummy_db), "--db-root", str(isolated_db_root))
     assert result.exit_code == 0, result.output
     assert "KaryoScope database directory" in result.output
     assert "KS_dummy_test_v1" in result.output
@@ -77,7 +77,7 @@ def test_info_existing_regular_file(
 ) -> None:
     a_file = tmp_path / "something.bed"
     a_file.write_text("chrom\tstart\tend\tname\n")
-    result = _invoke(cli_runner, "info", str(a_file), "--db", str(isolated_db_root))
+    result = _invoke(cli_runner, "info", str(a_file), "--db-root", str(isolated_db_root))
     assert result.exit_code == 0, result.output
     assert "Type: file" in result.output
 
@@ -88,6 +88,26 @@ def test_info_missing_path(
     isolated_db_root: Path,
 ) -> None:
     nope = tmp_path / "does-not-exist"
-    result = _invoke(cli_runner, "info", str(nope), "--db", str(isolated_db_root))
+    result = _invoke(cli_runner, "info", str(nope), "--db-root", str(isolated_db_root))
     assert result.exit_code == 0
     assert "Does not exist" in result.output
+
+
+# --- --db / --db-root flag handling ---------------------------------
+
+
+def test_info_db_is_deprecated_alias_for_db_root(
+    cli_runner: CliRunner, isolated_db_root: Path
+) -> None:
+    """The legacy --db flag still resolves the database root."""
+    result = _invoke(cli_runner, "info", "--db", str(isolated_db_root))
+    assert result.exit_code == 0, result.output
+    assert str(isolated_db_root) in result.output
+
+
+def test_info_db_and_db_root_conflict(cli_runner: CliRunner, isolated_db_root: Path) -> None:
+    result = _invoke(
+        cli_runner, "info", "--db", str(isolated_db_root), "--db-root", str(isolated_db_root)
+    )
+    assert result.exit_code != 0
+    assert "not both" in result.output

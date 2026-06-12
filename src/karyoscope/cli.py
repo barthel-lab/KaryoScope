@@ -39,6 +39,7 @@ from karyoscope.commands import (
     download,
     info,
     karyotype,
+    register,
     scaffold,
     version,
 )
@@ -127,6 +128,7 @@ def main(verbose: int, quiet: bool) -> None:
 
 # Register subcommands. The order here determines the order in `--help`.
 main.add_command(download.cmd, name="download")
+main.add_command(register.cmd, name="register")
 main.add_command(annotate.cmd, name="annotate")
 main.add_command(scaffold.cmd, name="scaffold")
 main.add_command(bin_cmd.cmd, name="bin")
