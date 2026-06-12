@@ -27,7 +27,7 @@ keywords = [
   "T2T",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Science/Research",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
   "Programming Language :: Python :: 3",

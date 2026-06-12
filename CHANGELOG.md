@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-11
+
 ### Added
+- Per-command reference documentation under ``docs/commands/`` (one page
+  per subcommand: ``download``, ``register``, ``annotate``, ``scaffold``,
+  ``bin``, ``centromeres``, ``karyotype``, ``info``, ``version``), linked
+  from the README's Commands table (those links were previously dead).
+- README ``System requirements`` section (operating systems, Python and
+  dependency versions, external tools, and hardware/RAM guidance), a
+  typical install-time note, and a ``Demo`` section that runs the
+  annotation pipeline end to end in seconds against the bundled synthetic
+  database -- addressing the Nature code-submission checklist.
+- ``examples/`` directory with ``run_demo.sh`` (a self-contained install
+  smoke test that annotates ``examples/demo.fa`` in a throwaway database
+  root and cleans up after itself), ``demo.fa``, and a README. The tiny
+  demo FASTA is committed via a ``.gitignore`` exception.
 - ``karyoscope scaffold`` can now concatenate the contigs of each
   chromosome+haplotype into a single sequence, producing a less
   fragmented assembly. New flags (FASTA output only, i.e. ``--mode
@@ -128,6 +143,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stands on its own.
 
 ### Changed
+- ``Development Status`` trove classifier in ``pyproject.toml`` updated
+  from ``3 - Alpha`` to ``5 - Production/Stable`` to reflect the stable
+  release line, the README's pre-1.0 "expect breaking changes" banner
+  replaced with an accurate semantic-versioning statement, and the CI
+  status badge re-enabled now that the org's GitHub Actions minutes have
+  refreshed (runs are green again on ``main``).
 - Karyotype SVG filenames now include the annotation variant
   (``smoothed`` or ``presmoothed``) so both can coexist on disk:
   ``<stem>.<dbid>.<mode>.<fs>.smoothed.karyotype.svg`` (was
@@ -1147,5 +1168,6 @@ For releases, copy the [Unreleased] section to a new heading like:
 ## [1.1.0] - YYYY-MM-DD
 -->
 
-[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.1.0
 [1.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.0.0
