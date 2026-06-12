@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Zenodo archive DOI for the software (concept DOI
+  ``10.5281/zenodo.20657816``) added to the README badge, the citation
+  section, and ``CITATION.cff`` (top-level ``doi`` / ``version`` /
+  ``date-released`` fields).
+
 ## [1.1.0] - 2026-06-11
 
 ### Added
