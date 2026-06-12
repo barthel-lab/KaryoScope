@@ -10,10 +10,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![bioRxiv](https://img.shields.io/badge/bioRxiv-2026.05.15.725544-red)](https://doi.org/10.64898/2026.05.15.725544)
-<!-- Temporarily hidden while the org's GitHub Actions minutes are
-     exhausted for the month; un-comment when they refresh:
 [![CI](https://github.com/barthel-lab/KaryoScope/actions/workflows/ci.yml/badge.svg)](https://github.com/barthel-lab/KaryoScope/actions/workflows/ci.yml)
--->
 <!-- Add after publication:
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.PLACEHOLDER.svg)](https://doi.org/10.5281/zenodo.PLACEHOLDER)
 [![Bioconda](https://img.shields.io/conda/dn/bioconda/karyoscope?label=bioconda)](https://bioconda.github.io/recipes/karyoscope/README.html)
@@ -21,7 +18,7 @@
 
 </div>
 
-> 🚧 **KaryoScope is under active development in preparation for journal submission.** The user-facing API and command set are being finalized. Expect breaking changes until v1.0.0. Watch [releases](https://github.com/barthel-lab/KaryoScope/releases) for stable versions.
+> ℹ️ **KaryoScope follows [semantic versioning](https://semver.org); v1.0.0 is the first stable release.** The command-line interface is stable: deprecations ship with warnings and a back-compatible transition, and any breaking change will come with a major-version bump. The project is being prepared for journal submission, and new features continue to land between releases — see the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/barthel-lab/KaryoScope/releases).
 
 ---
 
@@ -40,6 +37,40 @@ A pre-built database for the human genome is distributed alongside the tool, der
 - **Base-pair resolution across the entire genome.** Performs well in the satellite-dense centromeres, subtelomeres, and acrocentric short arms where alignment-based pipelines suffer from reference bias and ambiguous mappings.
 - **Multiple feature classes in a single pass.** The same *k*-mer can carry labels across feature sets simultaneously, so a single position can be annotated as belonging to a specific chromosome, satellite family, repeat class, and gene at once.
 - **Extensible.** Any annotation that tiles a reference of interest can serve as a feature set.
+
+## System requirements
+
+**Operating systems.** Linux (x86-64) and macOS (Apple Silicon and Intel). KaryoScope is exercised in continuous integration on the current Ubuntu and macOS GitHub Actions runners and developed day to day on macOS (Apple Silicon). There is no native Windows build; on Windows, run it under WSL2.
+
+**Python.** Python ≥ 3.10 (tested on 3.10, 3.11, 3.12, and 3.13).
+
+**Python dependencies.** Installed automatically by `pip`. Minimum versions are pinned in [`pyproject.toml`](pyproject.toml); the versions the current release is tested against are shown alongside.
+
+| Package | Minimum | Tested |
+|---|---|---|
+| click | ≥ 8.1 | 8.4.0 |
+| drawsvg | ≥ 2.4 | 2.4.1 |
+| cairosvg | ≥ 2.7 | 2.9.0 |
+| requests | ≥ 2.31 | 2.34.2 |
+| pyyaml | ≥ 6.0 | 6.0.3 |
+| tqdm | ≥ 4.66 | 4.67.3 |
+| jsonschema | ≥ 4.21 | 4.26.0 |
+
+**External tools.** These are not Python packages; the recommended way to obtain them is the conda environment in [Installation](#installation).
+
+| Tool | Required for | Version used in testing |
+|---|---|---|
+| C++20 compiler | building the bundled `get_featureIDs` helper | GCC ≥ 11 or Clang ≥ 13 (Apple Clang) |
+| `bgzip`, `tabix` (htslib) | compressing and indexing BED output | 1.22.1 |
+| seqtk | telomere detection (`scaffold`, `centromeres`, `karyotype`) | 1.5 |
+| KMC | building databases (the bundled helper queries the resulting index; not needed to *use* a pre-built database) | 3.2.x (vendored API 3.2.4) |
+| libcairo | rendering `--format pdf` / `--format png` | any recent release |
+| samtools | only for BAM input to `annotate` | 1.22.1 |
+
+**Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Resource needs scale with the input:
+
+- **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
+- **Human whole-genome inputs:** the pre-built human database is ~17 GB on disk, and loading its KMC index during `annotate` needs roughly 20–30 GB of RAM. We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. At 16 threads, a single human haplotype annotates in ~8 minutes and a full diploid six-feature-set run completes in ~30 minutes.
 
 ## Installation
 
@@ -70,6 +101,59 @@ The build produces `native/get_featureIDs/build/get_featureIDs`; the
 Python wrapper finds it automatically. See [`native/README.md`](native/README.md)
 for build-system details (CXX selection, `pkg-config`-driven zlib lookup,
 and the macOS + conda `-Wl,-rpath,$CONDA_PREFIX/lib` shim).
+
+**Typical install time.** On a normal desktop with a good network connection, creating the conda environment is the bulk of the time — usually ~5–10 minutes to resolve and download the bioinformatics tools. `pip install -e .` then takes under a minute, and building the C++ helper takes a few seconds. Reinstalls into an existing environment are much faster.
+
+## Demo
+
+This demo runs the full annotation step end to end in a few seconds, using a tiny synthetic database that ships with the repository (~5 MB unpacked). It downloads nothing and needs no special hardware, so it is the fastest way to confirm that your installation — the Python package **and** the compiled `get_featureIDs` helper — works. It is a smoke test on constructed inputs, not a biological example; the meaningful workflow on real data is in [Quick start](#quick-start) below.
+
+> **Note.** The synthetic database is a real, structurally complete KaryoScope database (a genuine KMC index built from three short constructed sequences, plus the usual manifest, hierarchy, features, and colors files). Its k-mers are chosen so the annotation output is exactly predictable. It is the same fixture the integration test suite runs against. Running the demo does **not** require `kmc` to be installed — `kmc` is only needed to *build* a database; querying an existing one uses the bundled `get_featureIDs` helper.
+
+Run it from the repository root with the `karyoscope` environment active:
+
+```bash
+# Use a throwaway database root so the demo never touches your real one.
+export KARYOSCOPE_DB="$(mktemp -d)/db" && mkdir -p "$KARYOSCOPE_DB"
+
+# 1. Install the bundled synthetic database and register it.
+tar -xzf tests/data/dummy_db.tar.gz -C "$KARYOSCOPE_DB"
+karyoscope register KS_dummy_test_v1
+
+# 2. Build a tiny query: one sequence whose k-mers are in the database,
+#    and one whose k-mers are not.
+printf '>seq_with_features\nACGTGCTAGCTAGGCTATCGTAC\n>seq_novel\nTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT\n' > demo.fa
+
+# 3. Annotate. --no-bgzip keeps the BEDs as plain text so you can read them.
+karyoscope annotate -i demo.fa -o demo_out --no-bgzip
+```
+
+A convenience wrapper that runs exactly these steps (in a throwaway database root, cleaning up after itself) is provided at [`examples/run_demo.sh`](examples/run_demo.sh):
+
+```bash
+bash examples/run_demo.sh
+```
+
+**Expected run time:** a few seconds; the annotation step itself completes in under a second.
+
+**Expected output.** Four BEDs are written under `demo_out/` (a presmoothed and a smoothed BED for each of the database's two feature sets). The smoothed chromosome track, `demo_out/demo.KS_dummy_test_v1.chromosome.smoothed.bed`, is:
+
+```
+seq_with_features	0	2	chr1
+seq_with_features	2	3	chr2
+seq_novel	0	10	novel
+```
+
+and the smoothed region track, `demo_out/demo.KS_dummy_test_v1.region.smoothed.bed`, is:
+
+```
+seq_with_features	0	1	rA
+seq_with_features	1	2	rB
+seq_with_features	2	3	rC
+seq_novel	0	10	novel
+```
+
+The synthetic database maps three 21-mers to features (`chr1`/`rA`, `chr1`/`rB`, `chr2`/`rC`), so `seq_with_features` is annotated base by base; the poly-T `seq_novel` contains no indexed k-mers, so every position is labelled `novel`. This is the same end-to-end path that human-scale runs take — only the database and inputs differ.
 
 ## Quick start
 
@@ -133,7 +217,7 @@ Run `karyoscope <command> --help` for full options on any command.
 
 ## Documentation
 
-Full documentation is being built. In the meantime, the `--help` output for each command is the authoritative reference.
+Per-command reference pages live under [`docs/commands/`](docs/commands/) — one page per subcommand, linked from the [Commands](#commands) table above. The `--help` output of each command (`karyoscope <command> --help`) remains the authoritative, always-current reference.
 
 ## Databases
 
@@ -145,7 +229,7 @@ Browse and download available databases:
 karyoscope download --list
 ```
 
-Building your own database is supported via `karyoscope build` (coming in v1.0).
+Building your own database via `karyoscope build` is planned for a future release.
 
 ## Pre-computed annotations
 

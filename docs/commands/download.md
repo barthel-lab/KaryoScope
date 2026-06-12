@@ -1,0 +1,59 @@
+# karyoscope download
+
+Download and manage pre-built KaryoScope databases.
+
+## Synopsis
+
+```
+karyoscope download [OPTIONS] [DATABASE_ID ...]
+```
+
+## Description
+
+Databases are resolved through an `installed.json` file kept under the database root, and running `karyoscope download` is the normal way to install a pre-built database. Several "action" flags (`--list`, `--info`, `--status`, `--remove`) also make this command the entry point for discovering and managing databases. The default database root is `$KARYOSCOPE_DB` or `~/.karyoscope/db/`.
+
+Downloads are SHA-256 verified; HTTP downloads stage to a `.part` file and resume via HTTP Range requests if interrupted. The registry is cached for 24 hours at `<db_root>/registry_cache.yaml`, and a stale cache is used on transient network failure. The current default database is `KS_human_CHM13_v2` (~17 GB).
+
+## Options
+
+| Option | Description |
+| --- | --- |
+| `--list` | List databases available in the registry, then exit. |
+| `--info DATABASE_ID` | Show detailed information about a single database, then exit. |
+| `--status` | Show locally installed databases, then exit. |
+| `--remove DATABASE_ID` | Uninstall a locally installed database, then exit. |
+| `--organism NAME` | Filter `--list` by common name / genus / species (case-insensitive substring). |
+| `--tag TAG` | Filter `--list` by tag (e.g. 'test', 'reference'). |
+| `--community` | Include community-contributed databases in listings. |
+| `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
+| `--registry-url URL` | Override the registry URL (advanced; for testing or private registries). |
+| `--refresh-registry` | Force a fresh fetch of the registry, ignoring any cached copy. |
+| `--force` | Re-download and re-install even if the database is already present. |
+| `--no-checksum` | Skip SHA-256 verification (not recommended; useful for debugging). |
+| `-y, --yes` | Assume 'yes' to interactive prompts (e.g. `--remove`). |
+| `-q, --quiet` | Suppress progress bars. |
+| `-h, --help` | Show this message and exit. |
+
+## Examples
+
+```bash
+# Install the registry's default database
+karyoscope download
+
+# List databases available in the registry
+karyoscope download --list
+
+# Show details for one database
+karyoscope download --info KS_human_CHM13_v2
+
+# Show locally installed databases
+karyoscope download --status
+
+# Uninstall a database
+karyoscope download --remove KS_human_CHM13_v2
+```
+
+## See also
+
+- [`karyoscope register`](register.md) — register a database already present on disk
+- [`karyoscope info`](info.md) — inspect installed databases
