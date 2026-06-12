@@ -11,8 +11,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![bioRxiv](https://img.shields.io/badge/bioRxiv-2026.05.15.725544-red)](https://doi.org/10.64898/2026.05.15.725544)
 [![CI](https://github.com/barthel-lab/KaryoScope/actions/workflows/ci.yml/badge.svg)](https://github.com/barthel-lab/KaryoScope/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20657816.svg)](https://doi.org/10.5281/zenodo.20657816)
 <!-- Add after publication:
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.PLACEHOLDER.svg)](https://doi.org/10.5281/zenodo.PLACEHOLDER)
 [![Bioconda](https://img.shields.io/conda/dn/bioconda/karyoscope?label=bioconda)](https://bioconda.github.io/recipes/karyoscope/README.html)
 -->
 
@@ -250,6 +250,8 @@ Per sample, the bucket contains:
 If you use KaryoScope in your work, please cite our preprint:
 
 > Ranallo-Benavidez TR, Chen YA, Potapova T, Alanko J, Loucks H, Lucas J, Human Pangenome Reference Consortium, Guarracino A, Puglisi SJ, Marchet C, Miga K, Gerton JL, Barthel FP. *KaryoScope: rapid, alignment-free sequence annotation for the pangenome era.* bioRxiv (2026). doi: [10.64898/2026.05.15.725544](https://doi.org/10.64898/2026.05.15.725544)
+
+To cite the software itself — for example, to record the exact version you ran — use its Zenodo archive. The concept DOI [10.5281/zenodo.20657816](https://doi.org/10.5281/zenodo.20657816) always resolves to the latest release, and each release also receives its own version-specific DOI on the same record.
 
 A `CITATION.cff` file in this repository provides machine-readable citation metadata.
 
