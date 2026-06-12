@@ -23,6 +23,7 @@ from karyoscope import download as _download
 from karyoscope import installed as _installed
 from karyoscope import paths
 from karyoscope import registry as _registry
+from karyoscope.commands._options import resolve_db_root_flag
 from karyoscope.exceptions import (
     ChecksumError,
     DatabaseLayoutError,
@@ -280,10 +281,17 @@ def _action_install(
     help="Include community-contributed databases in listings.",
 )
 @click.option(
-    "--db",
+    "--db-root",
     "db_root_arg",
     type=click.Path(file_okay=False, path_type=Path),
     help="Override the database root directory (default: $KARYOSCOPE_DB or ~/.karyoscope/db/).",
+)
+@click.option(
+    "--db",
+    "db_alias",
+    type=click.Path(file_okay=False, path_type=Path),
+    hidden=True,
+    help="Deprecated alias for --db-root.",
 )
 @click.option(
     "--registry-url",
@@ -328,6 +336,7 @@ def cmd(
     tag: str | None,
     community: bool,
     db_root_arg: Path | None,
+    db_alias: Path | None,
     registry_url: str | None,
     refresh_registry: bool,
     force: bool,
@@ -355,7 +364,7 @@ def cmd(
         # Remove an installed database
         karyoscope download --remove KS_mouse_v1
     """
-    db_root = paths.ensure_db_root(db_root_arg)
+    db_root = paths.ensure_db_root(resolve_db_root_flag(db_root_arg, db_alias, command="download"))
     effective_registry_url = registry_url or _registry.DEFAULT_REGISTRY_URL
 
     # The action flags are mutually exclusive at the conceptual level.

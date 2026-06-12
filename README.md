@@ -120,6 +120,7 @@ Pass `--format pdf` or `--format png` (repeatable) to additionally produce those
 | Command | Purpose |
 |---|---|
 | [`karyoscope download`](docs/commands/download.md) | Acquire pre-built databases |
+| [`karyoscope register`](docs/commands/register.md) | Register a locally-placed database so commands can use it |
 | [`karyoscope annotate`](docs/commands/annotate.md) | Annotate sequences with *k*-mer features |
 | [`karyoscope scaffold`](docs/commands/scaffold.md) | Order, orient, and rename assembly contigs |
 | [`karyoscope bin`](docs/commands/bin.md) | Aggregate base-pair annotations into larger bins |

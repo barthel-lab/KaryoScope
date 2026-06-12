@@ -92,6 +92,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (unsmoothed) annotation BEDs instead of the hierarchy-smoothed
   ones, so users can visually compare the effect of smoothing. Both
   variants are produced by ``karyoscope annotate``.
+- ``karyoscope register`` registers a database that is already present
+  under the database root (built locally or copied from another machine)
+  by writing its ``installed.json`` entry, so the data commands can use
+  it without going through ``download``. It validates the layout, derives
+  the id and version from ``manifest.yaml``, records ``source: local``,
+  and refuses to clobber an existing entry without ``--force``.
 
 ### Fixed
 - Haplotype inference now recognises contig names of the form
@@ -129,6 +135,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   BED filenames (scaffolded, binned-scaffolded) also include the
   variant. This is a naming change from v1.0.0; existing scripts
   that glob for ``*.karyotype.svg`` will still match.
+
+### Deprecated
+- The database-root override on ``karyoscope info`` and ``karyoscope
+  download`` is now spelled ``--db-root``, matching the data commands
+  (``annotate``, ``bin``, ``scaffold``, ``centromeres``, ``karyotype``),
+  where ``--db`` selects a database *id*. ``--db`` remains a hidden,
+  working alias on ``info``/``download`` for one release and prints a
+  deprecation warning; it will be removed in a future version. Switch to
+  ``--db-root``.
 
 ## [1.0.0] - 2026-05-21
 

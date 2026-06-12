@@ -26,6 +26,7 @@ import click
 
 from karyoscope import installed as _installed
 from karyoscope import paths
+from karyoscope.commands._options import resolve_db_root_flag
 from karyoscope.core.io.hierarchy import (
     HierarchyError,
     parse_hierarchy,
@@ -272,12 +273,19 @@ def _show_path(path: Path) -> None:
 )
 @click.argument("target", required=False)
 @click.option(
-    "--db",
+    "--db-root",
     "db_root_arg",
     type=click.Path(file_okay=False, path_type=Path),
     help="Override the database root directory (default: $KARYOSCOPE_DB or ~/.karyoscope/db/).",
 )
-def cmd(target: str | None, db_root_arg: Path | None) -> None:
+@click.option(
+    "--db",
+    "db_alias",
+    type=click.Path(file_okay=False, path_type=Path),
+    hidden=True,
+    help="Deprecated alias for --db-root.",
+)
+def cmd(target: str | None, db_root_arg: Path | None, db_alias: Path | None) -> None:
     """Show information about installed databases or a given path.
 
     \b
@@ -286,7 +294,7 @@ def cmd(target: str | None, db_root_arg: Path | None) -> None:
         karyoscope info KS_human_CHM13_v2   # details on one database
         karyoscope info ./some/path/        # probe a filesystem path
     """
-    db_root = paths.ensure_db_root(db_root_arg)
+    db_root = paths.ensure_db_root(resolve_db_root_flag(db_root_arg, db_alias, command="info"))
 
     try:
         if target is None:

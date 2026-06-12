@@ -2,7 +2,7 @@
 
 The default location for installed databases follows this precedence:
 
-1. An explicit path passed by the caller (typically via a `--db` CLI flag).
+1. An explicit path passed by the caller (typically via a `--db-root` CLI flag).
 2. The `KARYOSCOPE_DB` environment variable.
 3. `~/.karyoscope/db/` (created lazily on first use).
 
@@ -29,7 +29,7 @@ def default_db_root(explicit: Path | str | None = None) -> Path:
 
     Precedence:
 
-    1. ``explicit`` if provided (usually from a ``--db`` CLI flag).
+    1. ``explicit`` if provided (usually from a ``--db-root`` CLI flag).
     2. The ``KARYOSCOPE_DB`` environment variable.
     3. ``~/.karyoscope/db/`` as a last resort.
 

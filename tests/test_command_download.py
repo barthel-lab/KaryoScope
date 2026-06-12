@@ -26,7 +26,7 @@ def test_list_shows_dummy_db(
         "--list",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert result.exit_code == 0, result.output
@@ -46,7 +46,7 @@ def test_list_organism_filter(
         "Synthetic",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert matching.exit_code == 0
@@ -60,7 +60,7 @@ def test_list_organism_filter(
         "platypus",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert not_matching.exit_code == 0
@@ -79,7 +79,7 @@ def test_list_tag_filter(
         "test",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert result.exit_code == 0
@@ -93,7 +93,7 @@ def test_list_tag_filter(
         "definitely_not_a_tag",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert result2.exit_code == 0
@@ -113,7 +113,7 @@ def test_info_displays_details(
         "KS_dummy_test_v1",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert result.exit_code == 0, result.output
@@ -133,7 +133,7 @@ def test_info_unknown_id_fails_cleanly(
         "does_not_exist",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert result.exit_code != 0
@@ -148,7 +148,7 @@ def test_status_empty(cli_runner: CliRunner, isolated_db_root: Path) -> None:
         cli_runner,
         "download",
         "--status",
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert result.exit_code == 0
@@ -160,7 +160,7 @@ def test_status_after_install(cli_runner: CliRunner, populated_db_root: Path) ->
         cli_runner,
         "download",
         "--status",
-        "--db",
+        "--db-root",
         str(populated_db_root),
     )
     assert result.exit_code == 0
@@ -179,7 +179,7 @@ def test_install_default_database(
         "download",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
         "--quiet",
     )
@@ -197,7 +197,7 @@ def test_install_by_id(
         "KS_dummy_test_v1",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
         "--quiet",
     )
@@ -214,7 +214,7 @@ def test_install_unknown_id_fails(
         "ghost_db",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
         "--quiet",
     )
@@ -232,7 +232,7 @@ def test_install_skips_if_already_present(
         "KS_dummy_test_v1",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
         "--quiet",
     )
@@ -243,7 +243,7 @@ def test_install_skips_if_already_present(
         "KS_dummy_test_v1",
         "--registry-url",
         dummy_registry_url,
-        "--db",
+        "--db-root",
         str(isolated_db_root),
         "--quiet",
     )
@@ -261,7 +261,7 @@ def test_remove_with_yes_flag(cli_runner: CliRunner, populated_db_root: Path) ->
         "--remove",
         "KS_dummy_test_v1",
         "-y",
-        "--db",
+        "--db-root",
         str(populated_db_root),
     )
     assert result.exit_code == 0, result.output
@@ -276,7 +276,7 @@ def test_remove_unknown_id(cli_runner: CliRunner, isolated_db_root: Path) -> Non
         "--remove",
         "ghost",
         "-y",
-        "--db",
+        "--db-root",
         str(isolated_db_root),
     )
     assert result.exit_code != 0
@@ -297,9 +297,32 @@ def test_action_flags_are_mutually_exclusive(
             "--status",
             "--registry-url",
             dummy_registry_url,
-            "--db",
+            "--db-root",
             str(isolated_db_root),
         ],
     )
     assert result.exit_code != 0
     assert "Only one of" in result.output
+
+
+# --- --db / --db-root flag handling -----------------------------------
+
+
+def test_db_is_deprecated_alias_for_db_root(cli_runner: CliRunner, isolated_db_root: Path) -> None:
+    """The legacy --db flag still resolves the database root (here via --status)."""
+    result = _invoke(cli_runner, "download", "--status", "--db", str(isolated_db_root))
+    assert result.exit_code == 0, result.output
+
+
+def test_db_and_db_root_conflict(cli_runner: CliRunner, isolated_db_root: Path) -> None:
+    result = _invoke(
+        cli_runner,
+        "download",
+        "--status",
+        "--db",
+        str(isolated_db_root),
+        "--db-root",
+        str(isolated_db_root),
+    )
+    assert result.exit_code != 0
+    assert "not both" in result.output
