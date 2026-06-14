@@ -188,8 +188,9 @@ def _split_comma(value: str) -> list[str]:
     show_default=True,
     help="Also combine acrocentric chromosomes (chr13/14/15/21/22 by default). Off by "
     "default: acrocentric p-arms recombine and chromosome assignment there is less "
-    "certain, so their contigs stay as separate records unless this is set. Only "
-    "has effect with --combine-chromosomes.",
+    "certain, so their contigs stay as separate records (each renamed in canonical "
+    "order to <chrom>_<hap>_<A|B|C...>) unless this is set. Only has effect with "
+    "--combine-chromosomes.",
 )
 @click.option(
     "--bgzip/--no-bgzip",
