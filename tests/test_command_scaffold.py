@@ -474,12 +474,7 @@ def test_combine_outputs_rename_uncombined_acrocentrics_end_to_end(tmp_path: Pat
 
     # Pre-written smoothed annotation BED, tiling [0, E) per contig.
     src_bed = out_dir / f"{stem}.{db_id}.{fs}.smoothed.bed"
-    src_bed.write_text(
-        "c1a\t0\t10\tchr1\n"
-        "c1b\t0\t8\tchr1\n"
-        "ptg1\t0\t7\tchr13\n"
-        "ptg2\t0\t5\tchr13\n"
-    )
+    src_bed.write_text("c1a\t0\t10\tchr1\nc1b\t0\t8\tchr1\nptg1\t0\t7\tchr13\nptg2\t0\t5\tchr13\n")
 
     def mr(new: str, orig: str, chrom: str, flipped: bool, length: int) -> MapRow:
         return MapRow(new, orig, "asm.fa", "hap1", chrom, flipped, length, "P")
