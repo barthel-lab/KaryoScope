@@ -56,7 +56,7 @@ karyoscope scaffold -i hap1.fa -i hap2.fa --combine-chromosomes -o results/
 - `--mode bed` / `both`: per-feature-set `<input_stem>.<dbid>.<feature_set>.smoothed.scaffolded.bed[.gz]`.
 - `--mode fasta` (default) / `both`: `<input_stem>.<dbid>.scaffolded.fa[.gz]`.
 - Encoded contig name format: `<chrom>_<hap>_<contig>[_rc]`, where the `_rc` suffix marks a reverse-complemented contig.
-- With `--combine-chromosomes`: filenames carry a `combined_chromosomes` tag, and an AGP 2.1 file `<stem>.<dbid>.scaffolded.combined_chromosomes.agp` documents every component placement and gap.
+- With `--combine-chromosomes`: filenames carry a `combined_chromosomes` tag, and an AGP 2.1 file `<stem>.<dbid>.scaffolded.combined_chromosomes.agp` documents every component placement and gap. Each `(chrom, hap)` group becomes one `<chrom>_<hap>` record; acrocentric groups left uncombined (the default) instead become one record per contig, named in canonical order as `<chrom>_<hap>_<A|B|C...>` (the original contig name and `_rc` suffix are dropped).
 
 `scaffold_map.tsv` is the contract that downstream stages parse; the encoded contig name can change between releases.
 

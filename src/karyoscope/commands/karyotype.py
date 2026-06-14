@@ -178,7 +178,9 @@ logger = logging.getLogger(__name__)
     show_default=True,
     help="Also combine acrocentric chromosomes (chr13/14/15/21/22 by default) "
     "when --combine-chromosomes is set. Off by default: acrocentric p-arms "
-    "recombine and chromosome assignment there is less certain.",
+    "recombine and chromosome assignment there is less certain, so their contigs "
+    "stay as separate records (each renamed in canonical order to "
+    "<chrom>_<hap>_<A|B|C...>).",
 )
 @click.option(
     "--no-human-chroms",

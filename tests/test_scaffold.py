@@ -595,19 +595,23 @@ class TestPlanCombinedLayout:
         assert [o.name for o in objs] == ["chr1_hap1", "chr1_hap2"]
 
     def test_acrocentric_not_combined_by_default(self) -> None:
+        # Uncombined acrocentric contigs stay separate but are still
+        # renamed in canonical order, dropping the original contig name
+        # and any _rc suffix -- just like the combined groups.
         rows = [
-            _row("chr13_hap1_A", "A", "chr13", "hap1"),
-            _row("chr13_hap1_B", "B", "chr13", "hap1"),
+            _row("chr13_hap1_ptg0001l", "ptg0001l", "chr13", "hap1"),
+            _row("chr13_hap1_ptg0002l_rc", "ptg0002l", "chr13", "hap1", flipped=True),
         ]
         objs = plan_combined_layout(
             rows,
-            {"A": 100, "B": 100},
+            {"ptg0001l": 100, "ptg0002l": 100},
             gap_size=10,
             acrocentrics={"chr13"},
             combine_acrocentrics=False,
         )
-        # Two singleton objects, each under its encoded name, no combining.
+        # Two singleton objects, A/B by canonical order, no combining.
         assert [o.name for o in objs] == ["chr13_hap1_A", "chr13_hap1_B"]
+        assert all(not o.combined for o in objs)
         assert all(o.combined is False for o in objs)
         assert all(len(o.components) == 1 for o in objs)
 
@@ -694,15 +698,18 @@ class TestCombinedMapRows:
         out = combined_map_rows(rows, acrocentrics=set())
         assert sorted(r.new_name for r in out) == ["chr1_hap1", "chr1_hap2"]
 
-    def test_acrocentric_rows_pass_through_uncombined(self) -> None:
+    def test_acrocentric_rows_renamed_in_canonical_order(self) -> None:
+        # One row per contig, renamed to the A/B labels the layout gives
+        # its singleton objects (so the renderer's join key matches),
+        # not the encoded per-contig names from classify_and_orient.
         rows = [
-            self._mr("chr13_hap1_A", "chr13", "hap1", "TPCQ"),
-            self._mr("chr13_hap1_B", "chr13", "hap1", "CQT"),
+            self._mr("chr13_hap1_ptg0001l", "chr13", "hap1", "TPCQ"),
+            self._mr("chr13_hap1_ptg0002l_rc", "chr13", "hap1", "CQT"),
         ]
         out = combined_map_rows(rows, acrocentrics={"chr13"}, combine_acrocentrics=False)
-        # Encoded per-contig names preserved (match the singleton objects
-        # plan_combined_layout emits for an uncombined acrocentric group).
         assert [r.new_name for r in out] == ["chr13_hap1_A", "chr13_hap1_B"]
+        # Telomere stats are preserved from the original per-contig rows.
+        assert [r.stats for r in out] == ["TPCQ", "CQT"]
 
     def test_acrocentric_combined_when_forced(self) -> None:
         rows = [
@@ -753,17 +760,23 @@ class TestWriteCombinedFasta:
         assert leftovers == [("tiny", 2)]
 
     def test_acrocentric_singletons_kept_separate(self, tmp_path: Path) -> None:
+        # Each acrocentric contig is its own record, renamed A/B; the _rc
+        # suffix is dropped from the name but a flipped contig is still
+        # reverse-complemented in the sequence.
         rows = [
-            _row("chr13_hap1_A", "A", "chr13", "hap1", length=7),
-            _row("chr13_hap1_B", "B", "chr13", "hap1", length=5),
+            _row("chr13_hap1_ptg1", "ptg1", "chr13", "hap1", length=7),
+            _row("chr13_hap1_ptg2_rc", "ptg2", "chr13", "hap1", flipped=True, length=4),
         ]
-        records = {"A": "ACGTACGTAC", "B": "GGGGCCCC"}
-        objs = plan_combined_layout(rows, {"A": 10, "B": 8}, gap_size=5, acrocentrics={"chr13"})
+        records = {"ptg1": "ACGTACGTAC", "ptg2": "AATTCG"}  # RC(ptg2) = CGAATT
+        objs = plan_combined_layout(
+            rows, {"ptg1": 10, "ptg2": 6}, gap_size=5, acrocentrics={"chr13"}
+        )
         out = tmp_path / "out.fa"
         write_combined_fasta(records, objs, out, keep_unscaffolded=False)
         res = read_fasta_records(out)
         assert list(res.keys()) == ["chr13_hap1_A", "chr13_hap1_B"]
         assert res["chr13_hap1_A"] == "ACGTACGTAC"
+        assert res["chr13_hap1_B"] == "CGAATT"
 
 
 # --- combined BED ---------------------------------------------------
@@ -840,6 +853,33 @@ class TestRewriteBedCombined:
         assert lines == [
             ("chr1_hap1", "0", "7", "chr1"),
             ("chr1_hap1", "7", "20", "novel"),
+        ]
+
+    def test_uncombined_acrocentric_beds_use_renamed_sequences(self, tmp_path: Path) -> None:
+        # In --mode both, the combined BED's sequence name is the layout
+        # object name. For an uncombined acrocentric group that means each
+        # contig keeps its own record under the renamed <chrom>_<hap>_<A|B>
+        # label -- the original contig name and _rc suffix are gone, but a
+        # flipped contig's intervals are still mirrored.
+        rows = [
+            _row("chr13_hap1_ptg1", "ptg1", "chr13", "hap1", length=7),
+            _row("chr13_hap1_ptg2_rc", "ptg2", "chr13", "hap1", flipped=True, length=5),
+        ]
+        objs = plan_combined_layout(
+            rows, {"ptg1": 7, "ptg2": 5}, gap_size=5, acrocentrics={"chr13"}
+        )
+        # Two separate singleton objects, not one concatenated chr13_hap1.
+        assert [o.name for o in objs] == ["chr13_hap1_A", "chr13_hap1_B"]
+        src = tmp_path / "in.bed"
+        # ptg1: [0,7) chr13. ptg2: [0,2) p, [2,5) q -> flipped: q [0,3), p [3,5).
+        src.write_text("ptg1\t0\t7\tchr13\nptg2\t0\t2\tp\nptg2\t2\t5\tq\n")
+        out = tmp_path / "out.bed"
+        rewrite_bed_combined(src, out, objects=objs, gzip_out=False)
+        lines = [tuple(x.split("\t")) for x in out.read_text().splitlines()]
+        assert lines == [
+            ("chr13_hap1_A", "0", "7", "chr13"),  # no gap: each is its own object
+            ("chr13_hap1_B", "0", "3", "q"),  # flipped, mirrored within [0,5)
+            ("chr13_hap1_B", "3", "5", "p"),
         ]
 
 
