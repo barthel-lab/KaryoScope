@@ -308,6 +308,11 @@ def _legend_sort_key(
     return (0, 0, 0, name)
 
 
+#: Public alias: the legend sort key is reused by downstream tools (e.g. KaryoScope-analysis,
+#: which sorts its overlay legends featureset-first, then by this within-featureset key).
+legend_sort_key = _legend_sort_key
+
+
 def _haps_natural_sort_key(hap: str) -> tuple[int, int, str]:
     """Order haplotypes naturally.
 
