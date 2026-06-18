@@ -20,7 +20,6 @@ import requests
 # every command at startup -> a missing tqdm broke the WHOLE CLI (incl. karyotype,
 # which needs no tqdm). Making it lazy lets karyotype/annotate/scaffold run in an
 # env without tqdm. (dsingh 2026-06-15: unblocked chm13_divergent_v3_karyotype.)
-
 from karyoscope.exceptions import ChecksumError, FetchError, UnsupportedSchemeError
 
 # Read in 1 MiB chunks. Large enough to amortize syscall overhead, small enough
