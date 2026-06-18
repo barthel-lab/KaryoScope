@@ -46,7 +46,9 @@ def _write_map(path: Path, rows: list[MapRow]) -> None:
 def test_remap_renames_and_drops_unscaffolded(tmp_path: Path) -> None:
     # ctg1 is in the map (-> renamed); ctg_short is not (-> dropped).
     bed = tmp_path / "hap1.KS_cytoband.cytoband.smoothed.bed"
-    _write_bed(bed, [("ctg1", 0, 100, "1p36.1"), ("ctg1", 100, 200, "1p36.2"), ("ctg_short", 0, 50, "x")])
+    _write_bed(
+        bed, [("ctg1", 0, 100, "1p36.1"), ("ctg1", 100, 200, "1p36.2"), ("ctg_short", 0, 50, "x")]
+    )
     mp = tmp_path / "hap1.KS_v2.scaffold_map.tsv"
     _write_map(mp, [_row()])
 
@@ -118,7 +120,9 @@ def test_strict_errors_on_map_contig_absent_from_bed(tmp_path: Path) -> None:
     bed = tmp_path / "hap1.bed"
     _write_bed(bed, [("ctg1", 0, 100, "a")])  # ctg2 (in map) has no BED records
     mp = tmp_path / "hap1.scaffold_map.tsv"
-    _write_map(mp, [_row(), _row(original_name="ctg2", new_name="chr2_hap1_ctg2", chromosome="chr2")])
+    _write_map(
+        mp, [_row(), _row(original_name="ctg2", new_name="chr2_hap1_ctg2", chromosome="chr2")]
+    )
     with pytest.raises(ScaffoldError, match="no records"):
         remap_bed_with_map(bed, tmp_path / "out.bed", mp, strict=True)
 
@@ -155,9 +159,7 @@ def test_cli_remap_bed(tmp_path: Path) -> None:
     _write_map(mp, [_row()])
     out = tmp_path / "hap1.cytoband.scaffolded.bed"
 
-    result = CliRunner().invoke(
-        main, ["remap-bed", "-b", str(bed), "-m", str(mp), "-o", str(out)]
-    )
+    result = CliRunner().invoke(main, ["remap-bed", "-b", str(bed), "-m", str(mp), "-o", str(out)])
     assert result.exit_code == 0, result.output
     assert out.is_file()
     assert "1/2 contigs placed, 1 dropped" in result.output

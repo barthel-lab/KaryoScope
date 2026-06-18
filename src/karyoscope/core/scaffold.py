@@ -848,7 +848,9 @@ def remap_bed_with_map(
             "these do not appear to describe the same assembly"
         )
 
-    violations = [(c, max_end[c], map_length[c]) for c in overlap if max_end.get(c, 0) > map_length[c]]
+    violations = [
+        (c, max_end[c], map_length[c]) for c in overlap if max_end.get(c, 0) > map_length[c]
+    ]
     if violations:
         sample = ", ".join(f"{c} (end {e} > length {ln})" for c, e, ln in sorted(violations)[:5])
         raise ScaffoldError(

@@ -104,6 +104,7 @@ def _fetch_http(
     # Open partial in append mode so a 206 response continues at the right offset.
     mode = "ab" if resume_from > 0 else "wb"
     from tqdm import tqdm  # lazy: only the download path needs it (see module header)
+
     progress = tqdm(
         total=total,
         initial=resume_from,
