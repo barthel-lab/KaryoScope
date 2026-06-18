@@ -40,6 +40,7 @@ from karyoscope.commands import (
     info,
     karyotype,
     register,
+    remap_bed,
     scaffold,
     version,
 )
@@ -131,6 +132,7 @@ main.add_command(download.cmd, name="download")
 main.add_command(register.cmd, name="register")
 main.add_command(annotate.cmd, name="annotate")
 main.add_command(scaffold.cmd, name="scaffold")
+main.add_command(remap_bed.cmd, name="remap-bed")
 main.add_command(bin_cmd.cmd, name="bin")
 main.add_command(centromeres.cmd, name="centromeres")
 main.add_command(karyotype.cmd, name="karyotype")

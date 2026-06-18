@@ -207,6 +207,7 @@ Pass `--format pdf` or `--format png` (repeatable) to additionally produce those
 | [`karyoscope register`](docs/commands/register.md) | Register a locally-placed database so commands can use it |
 | [`karyoscope annotate`](docs/commands/annotate.md) | Annotate sequences with *k*-mer features |
 | [`karyoscope scaffold`](docs/commands/scaffold.md) | Order, orient, and rename assembly contigs |
+| [`karyoscope remap-bed`](docs/commands/remap-bed.md) | Apply an existing scaffold map to a separately-annotated BED |
 | [`karyoscope bin`](docs/commands/bin.md) | Aggregate base-pair annotations into larger bins |
 | [`karyoscope centromeres`](docs/commands/centromeres.md) | Extract centromere coordinates |
 | [`karyoscope karyotype`](docs/commands/karyotype.md) | Render karyotype visualization |
