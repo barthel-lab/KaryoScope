@@ -29,7 +29,7 @@ import gzip
 import logging
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import groupby
 from pathlib import Path
 from typing import IO
@@ -798,16 +798,46 @@ class ScaffoldObject:
 
     ``combined`` is True when the object concatenates a whole
     ``(chromosome, hap)`` group under a simplified ``<chrom>_<hap>``
-    name; False for a singleton emitted under its encoded
-    ``<chrom>_<hap>_<contig>[_rc]`` name (an acrocentric group left
-    uncombined). ``gap_size`` is the N-run length between components
-    (irrelevant when there is only one).
+    name; False for a singleton emitted under a ``<chrom>_<hap>_<A|B|C...>``
+    name (an acrocentric group left uncombined: its contigs stay as
+    separate records but are renamed in canonical order). ``gap_size`` is
+    the N-run length between components (irrelevant when there is only one).
     """
 
     name: str
     components: list[PlacedComponent]
     gap_size: int
     combined: bool
+
+
+def _column_label(index: int) -> str:
+    """Spreadsheet-style bijective base-26 label: 0->A, 25->Z, 26->AA, ...
+
+    Used to suffix the contigs of an uncombined acrocentric group; a
+    group never has enough contigs to reach ``AA`` in practice, but the
+    bijective scheme keeps the labels unambiguous if it ever does.
+    """
+    label = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        label = chr(ord("A") + rem) + label
+    return label
+
+
+def _acrocentric_singleton_name(chrom: str, hap: str, group_index: int) -> str:
+    """Name for one contig of an uncombined acrocentric ``(chrom, hap)`` group.
+
+    Acrocentric groups left uncombined keep their contigs as separate
+    records, but -- like the combined groups -- drop the original contig
+    name and any ``_rc`` orientation suffix in favour of a clean
+    ``<chrom>_<hap>_<A|B|C...>`` label. ``group_index`` is the contig's
+    position within its ``(chrom, hap)`` group in canonical map order, so
+    the same letter is produced by both :func:`plan_combined_layout` (the
+    FASTA/BED/AGP object name) and :func:`combined_map_rows` (the renderer's
+    join key).
+    """
+    return f"{chrom}_{hap}_{_column_label(group_index)}"
 
 
 def plan_combined_layout(
@@ -829,7 +859,9 @@ def plan_combined_layout(
       object named ``<chrom>_<hap>`` whose components are placed at
       cumulative offsets ``Σ(true_length + gap_size)``.
     * An acrocentric group left uncombined becomes one singleton object
-      per contig, each under its encoded ``new_name``.
+      per contig, each named ``<chrom>_<hap>_<A|B|C...>`` by canonical
+      order (dropping the original contig name and ``_rc`` suffix, just
+      like the combined groups do).
 
     Rows whose ``original_name`` is absent from ``true_lengths`` (the
     contig was not in the source FASTA) are skipped, mirroring the
@@ -871,11 +903,17 @@ def plan_combined_layout(
                 )
             )
         else:
-            for r in present:
+            # Index over the full group (not ``present``) so a contig's
+            # letter is stable even if an earlier sibling was dropped for
+            # being absent from ``true_lengths``; that matches the index
+            # ``combined_map_rows`` uses, which has no length filter.
+            for idx, r in enumerate(rows):
+                if r.original_name not in true_lengths:
+                    continue
                 length = true_lengths[r.original_name]
                 objects.append(
                     ScaffoldObject(
-                        name=r.new_name,
+                        name=_acrocentric_singleton_name(chrom, hap, idx),
                         components=[
                             PlacedComponent(
                                 row=r,
@@ -910,9 +948,9 @@ def combined_map_rows(
     carrying only the end-telomere flags the renderer reads: a leading
     ``T`` iff the first component starts with a telomere, a trailing
     ``T`` iff the last component ends with one. Acrocentric groups left
-    uncombined pass their per-contig rows through unchanged, so their
-    encoded ``new_name`` still matches the singleton object the layout
-    emits for them.
+    uncombined emit one row per contig, each renamed to the same
+    ``<chrom>_<hap>_<A|B|C...>`` label the layout gives its singleton
+    object, so the renderer's join key matches.
 
     The ``length`` field is the sum of component ``bed_extent`` values
     (informational only -- the renderer derives sequence lengths from the
@@ -929,7 +967,12 @@ def combined_map_rows(
         is_acro = chrom in acrocentrics
         combine = not (is_acro and not combine_acrocentrics)
         if not combine:
-            out.extend(rows)
+            # One synthetic row per contig, renamed to the clean
+            # <chrom>_<hap>_<A|B|C...> label the layout emits for the
+            # singleton object; all other fields (orientation, telomere
+            # stats) are preserved so the renderer sees them.
+            for idx, r in enumerate(rows):
+                out.append(replace(r, new_name=_acrocentric_singleton_name(chrom, hap, idx)))
             continue
         start_t = rows[0].stats.startswith("T")
         stop_t = rows[-1].stats.endswith("T")

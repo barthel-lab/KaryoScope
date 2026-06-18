@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section, and ``CITATION.cff`` (top-level ``doi`` / ``version`` /
   ``date-released`` fields).
 
+### Changed
+- With ``--combine-chromosomes`` but not ``--combine-acrocentrics``, the
+  acrocentric contigs that stay as separate records are now renamed in
+  canonical order to ``<chrom>_<hap>_<A|B|C...>`` (e.g. ``chr14_hap2_A``,
+  ``chr14_hap2_B``), dropping the original contig name and any ``_rc``
+  suffix -- matching how the combined ``<chrom>_<hap>`` records are named.
+  Previously these contigs kept their encoded ``<chrom>_<hap>_<contig>[_rc]``
+  names. Affects the combined FASTA, BED, and AGP outputs of both
+  ``scaffold`` and ``karyotype``; the per-contig scaffold map TSV is
+  unchanged.
+
 ## [1.1.0] - 2026-06-11
 
 ### Added
