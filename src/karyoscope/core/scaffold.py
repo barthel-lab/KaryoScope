@@ -40,7 +40,7 @@ from karyoscope.core.io.fasta import (
     reverse_complement,
     write_fasta_records,
 )
-from karyoscope.core.io.scaffold_map import MapRow
+from karyoscope.core.io.scaffold_map import MapRow, read_map
 from karyoscope.core.io.telo import TeloFlags
 from karyoscope.exceptions import ScaffoldError
 
@@ -698,6 +698,193 @@ def rewrite_bed(
                     out.write(f"{row.new_name}\t{start}\t{end}\t{rest}\n")
                 else:
                     out.write(f"{row.new_name}\t{start}\t{end}\n")
+
+
+# --- applying an existing map to a foreign BED ----------------------
+#
+# ``rewrite_bed`` above is the in-pipeline remap: scaffold builds the map
+# and immediately rewrites the BEDs it just annotated. The helper below
+# is the *standalone* remap -- apply an already-built ``scaffold_map.tsv``
+# to a BED that was annotated separately, possibly against a *different*
+# database than the one used to derive the map (e.g. a cytoband-database
+# annotation remapped with a map built from a region/roles database).
+# This is what the ``karyoscope remap-bed`` command exposes.
+#
+# Because the map and the BED can come from independent runs, we validate
+# they actually belong together before rewriting -- a mismatched pair
+# would otherwise produce a silently corrupt BED (e.g. a stale contig
+# length mirrors a flipped contig to the wrong coordinates).
+
+#: Recognised FASTA suffixes (longest first), for deriving the input
+#: "stem" the map's ``input_file`` was named from. Mirrors
+#: ``scaffold_run._FASTA_EXTS`` (kept local to avoid importing the heavy
+#: ``scaffold_run`` module into ``scaffold`` and creating an import cycle).
+_FASTA_EXTS: tuple[str, ...] = (
+    ".fasta.gz",
+    ".fa.gz",
+    ".fna.gz",
+    ".fasta",
+    ".fa",
+    ".fna",
+)
+
+
+def _fasta_stem(name: str) -> str:
+    """The output stem a FASTA basename produces (drops a known FASTA suffix)."""
+    lower = name.lower()
+    for ext in _FASTA_EXTS:
+        if lower.endswith(ext):
+            return name[: -len(ext)]
+    return Path(name).stem
+
+
+@dataclass(frozen=True)
+class RemapStats:
+    """Summary of a standalone BED remap (see :func:`remap_bed_with_map`)."""
+
+    #: Distinct contig names in the input BED.
+    bed_contigs: int
+    #: Contigs listed in the scaffold map.
+    map_contigs: int
+    #: BED contigs that the map places (these are emitted, renamed).
+    mapped_contigs: int
+    #: BED contigs absent from the map (dropped from the output -- these are
+    #: the short / unplaced contigs scaffolding legitimately excludes).
+    dropped_contigs: int
+    #: Map contigs with no records in the BED (skipped -- e.g. a feature set
+    #: that produced nothing for that contig).
+    map_contigs_absent_from_bed: int
+
+
+def remap_bed_with_map(
+    input_bed: Path,
+    output_bed: Path,
+    map_path: Path,
+    *,
+    gzip_out: bool | None = None,
+    strict: bool = False,
+) -> RemapStats:
+    """Apply an existing ``scaffold_map.tsv`` to a separately-annotated BED.
+
+    Reads the map, validates that the BED and map plausibly describe the
+    same assembly, then delegates to :func:`rewrite_bed` (the single source
+    of truth for the actual coordinate rewrite, including flipped-contig
+    mirroring).
+
+    Validation -- the BED carries no provenance pointer back to its source
+    FASTA, so we rely on what the map records (``original_name`` + per-contig
+    ``length``):
+
+    * **Hard error** when *no* BED contig name appears in the map -- the two
+      files describe different assemblies (or an argument was swapped).
+    * **Hard error** when a contig present in *both* has a BED interval whose
+      end exceeds the contig ``length`` recorded in the map -- the BED was
+      annotated against a different (longer) sequence, which would corrupt
+      the flip math.
+    * **Warning** when the BED filename's stem doesn't match the map's source
+      FASTA stem -- advisory only, since files are routinely renamed.
+
+    A BED contig that is *absent* from the map is **not** an error: the map
+    only lists contigs that survived scaffolding (length filter + leaf
+    chromosome), while the original-coordinate BED contains every contig.
+    Those are dropped from the output (as :func:`rewrite_bed` already does);
+    their count is reported in :class:`RemapStats`.
+
+    ``strict`` promotes the advisory conditions (stem mismatch; any map contig
+    that has no records in the BED) to hard errors.
+    """
+    rows = read_map(map_path)
+    if not rows:
+        raise ScaffoldError(f"scaffold map is empty: {map_path}")
+
+    map_length: dict[str, int] = {}
+    for r in rows:
+        # A well-formed map lists each original contig once; if a name repeats,
+        # keep the largest length (the safest bound for the end<=length check).
+        map_length[r.original_name] = max(map_length.get(r.original_name, 0), r.length)
+
+    # Filename-stem advisory: the map's source FASTA stem should prefix the
+    # BED basename (annotate names outputs '<stem>.<db>.<fs>.smoothed.bed[.gz]').
+    map_stem = _fasta_stem(rows[0].input_file)
+    if map_stem and not input_bed.name.startswith(f"{map_stem}."):
+        msg = (
+            f"BED {input_bed.name!r} does not look like it came from the same "
+            f"assembly as the map (expected a name starting with {map_stem + '.'!r}, "
+            f"the stem of the map's source FASTA {rows[0].input_file!r})"
+        )
+        if strict:
+            raise ScaffoldError(msg + "; pass without --strict to treat this as a warning")
+        logger.warning("%s", msg)
+
+    # Single pass over the BED: distinct contig names + per-contig max end
+    # (only the contigs the map knows about can violate the length bound).
+    bed_names: set[str] = set()
+    max_end: dict[str, int] = {}
+    with _open_bed_in(input_bed) as h:
+        for i, raw in enumerate(h, start=1):
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                raise ScaffoldError(
+                    f"{input_bed}:{i}: expected 3+ tab-separated columns, got {len(parts)}"
+                )
+            seq = parts[0]
+            bed_names.add(seq)
+            if seq in map_length:
+                try:
+                    end = int(parts[2])
+                except ValueError as e:
+                    raise ScaffoldError(f"{input_bed}:{i}: non-integer coordinates: {raw!r}") from e
+                if end > max_end.get(seq, 0):
+                    max_end[seq] = end
+
+    overlap = bed_names & set(map_length)
+    if not overlap:
+        raise ScaffoldError(
+            f"no contig in {input_bed.name} matches the scaffold map {map_path.name} "
+            f"({len(bed_names)} BED contigs, {len(map_length)} map contigs); "
+            "these do not appear to describe the same assembly"
+        )
+
+    violations = [
+        (c, max_end[c], map_length[c]) for c in overlap if max_end.get(c, 0) > map_length[c]
+    ]
+    if violations:
+        sample = ", ".join(f"{c} (end {e} > length {ln})" for c, e, ln in sorted(violations)[:5])
+        raise ScaffoldError(
+            f"{input_bed.name} has intervals beyond the contig lengths recorded in "
+            f"{map_path.name} for {len(violations)} contig(s): {sample}"
+            + ("" if len(violations) <= 5 else ", ...")
+            + ". The BED was annotated against a different assembly than the map."
+        )
+
+    map_absent = [r.original_name for r in rows if r.original_name not in bed_names]
+    if map_absent and strict:
+        raise ScaffoldError(
+            f"{len(map_absent)} map contig(s) have no records in {input_bed.name} "
+            f"(e.g. {', '.join(sorted(map_absent)[:5])}); pass without --strict to allow"
+        )
+
+    stats = RemapStats(
+        bed_contigs=len(bed_names),
+        map_contigs=len(map_length),
+        mapped_contigs=len(overlap),
+        dropped_contigs=len(bed_names - set(map_length)),
+        map_contigs_absent_from_bed=len(map_absent),
+    )
+    logger.info(
+        "remap %s: %d/%d BED contigs placed by map; %d dropped (unscaffolded); "
+        "%d map contigs had no BED records",
+        input_bed.name,
+        stats.mapped_contigs,
+        stats.bed_contigs,
+        stats.dropped_contigs,
+        stats.map_contigs_absent_from_bed,
+    )
+    rewrite_bed(input_bed, output_bed, map_rows=rows, gzip_out=gzip_out)
+    return stats
 
 
 # --- FASTA rewriting ------------------------------------------------

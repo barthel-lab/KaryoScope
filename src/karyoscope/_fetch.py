@@ -14,8 +14,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from tqdm import tqdm
 
+# NB: `from tqdm import tqdm` is imported LAZILY inside _stream_http (below), not
+# at module load. tqdm is only needed for the download feature, but cli.py imports
+# every command at startup -> a missing tqdm broke the WHOLE CLI (incl. karyotype,
+# which needs no tqdm). Making it lazy lets karyotype/annotate/scaffold run in an
+# env without tqdm. (dsingh 2026-06-15: unblocked chm13_divergent_v3_karyotype.)
 from karyoscope.exceptions import ChecksumError, FetchError, UnsupportedSchemeError
 
 # Read in 1 MiB chunks. Large enough to amortize syscall overhead, small enough
@@ -98,6 +102,8 @@ def _fetch_http(
 
     # Open partial in append mode so a 206 response continues at the right offset.
     mode = "ab" if resume_from > 0 else "wb"
+    from tqdm import tqdm  # lazy: only the download path needs it (see module header)
+
     progress = tqdm(
         total=total,
         initial=resume_from,

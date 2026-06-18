@@ -90,6 +90,28 @@ logger = logging.getLogger(__name__)
     help="Override the database root directory.",
 )
 @click.option(
+    "--scaffold-db",
+    "scaffold_db_id",
+    type=str,
+    default=None,
+    help="Layout database id. When set, chromosome ordering, region "
+    "orientation, and centromere detection are derived from THIS database "
+    "(which must declare the chromosome/region roles), while the feature "
+    "set(s) selected by --feature-set are plotted (and coloured) from --db. "
+    "Use to render a plot-only database -- e.g. a cytoband database with no "
+    "chromosome/region feature sets -- by borrowing the layout from a "
+    "roles-bearing database such as KS_human_CHM13_v2. Default: unset (the "
+    "--db database supplies both layout and plotting, the original behaviour).",
+)
+@click.option(
+    "--scaffold-db-root",
+    "scaffold_db_root_arg",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Override the database root directory for --scaffold-db. "
+    "Default: the same root as --db-root.",
+)
+@click.option(
     "--feature-set",
     "feature_sets_arg",
     multiple=True,
@@ -288,6 +310,8 @@ def cmd(
     split_haps_regex: str | None,
     db_id: str | None,
     db_root_arg: Path | None,
+    scaffold_db_id: str | None,
+    scaffold_db_root_arg: Path | None,
     feature_sets_arg: tuple[str, ...],
     modes_raw: tuple[str, ...],
     sex: str,
@@ -396,11 +420,19 @@ def cmd(
     formats = [f.lower() for f in formats_raw] if formats_raw else None
 
     db_root = paths.ensure_db_root(db_root_arg)
+    # --scaffold-db-root defaults to --db-root when unset (the layout DB
+    # usually lives in the same registry). None here => karyotype_run
+    # falls back to db_root.
+    scaffold_db_root = (
+        paths.ensure_db_root(scaffold_db_root_arg) if scaffold_db_root_arg is not None else None
+    )
     try:
         results = karyotype_run(
             inputs,
             db_root=db_root,
             db_id=db_id,
+            scaffold_db_id=scaffold_db_id,
+            scaffold_db_root=scaffold_db_root,
             feature_sets=feature_sets,
             modes=modes,
             sex=sex_resolved,

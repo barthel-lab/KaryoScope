@@ -35,7 +35,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from karyoscope.core.annotate import _bgzip_file, resolve_database
+from karyoscope.core.annotate import _bgzip_file, annotate, resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.centromeres import (
     DEFAULT_COARSE_BIN_SIZE,
@@ -61,7 +61,7 @@ from karyoscope.core.scaffold import (
     combined_map_rows,
     rewrite_bed,
 )
-from karyoscope.core.scaffold_run import InputSpec, scaffold_run
+from karyoscope.core.scaffold_run import InputSpec, _resolve_roles, scaffold_run
 from karyoscope.exceptions import KaryotypeError
 from karyoscope.manifest import validate_database_layout
 
@@ -511,6 +511,8 @@ def karyotype_run(
     *,
     db_root: Path,
     db_id: str | None = None,
+    scaffold_db_id: str | None = None,
+    scaffold_db_root: Path | None = None,
     feature_sets: list[str] | None = None,
     modes: list[str] | None = None,
     sex: str | None = None,
@@ -576,6 +578,37 @@ def karyotype_run(
     db_id_resolved, db_dir = resolve_database(db_root, db_id)
     manifest = validate_database_layout(db_dir)
     available = list(manifest.feature_sets)
+
+    # Layout / scaffold database. When --scaffold-db is given, chromosome
+    # ordering + region orientation + centromere detection are derived from
+    # THIS database (which must carry those roles), while the feature set(s)
+    # in --feature-set are plotted + coloured from --db. This lets a
+    # plot-only database (e.g. a cytoband database with no chromosome/region
+    # feature sets) borrow the layout from a roles-bearing database such as
+    # KS_human_CHM13_v2. Default (unset): the --db database supplies both
+    # layout and plotting -- the original single-database behaviour.
+    use_scaffold_db = scaffold_db_id is not None and scaffold_db_id != db_id_resolved
+    if use_scaffold_db:
+        if combine_chromosomes:
+            raise KaryotypeError(
+                "--scaffold-db cannot be combined with --combine-chromosomes "
+                "(combined-chromosome layout requires the plotted feature set's "
+                "scaffolded BEDs in the layout database)."
+            )
+        scaffold_db_root_eff = scaffold_db_root if scaffold_db_root is not None else db_root
+        scaffold_db_id_resolved, scaffold_db_dir = resolve_database(
+            scaffold_db_root_eff, scaffold_db_id
+        )
+        scaffold_manifest = validate_database_layout(scaffold_db_dir)
+        scaffold_available = list(scaffold_manifest.feature_sets)
+        # Fail early with a clear message if the layout DB lacks the
+        # chromosome/region roles -- it can't drive scaffold otherwise.
+        _resolve_roles(scaffold_manifest.roles, scaffold_available)
+    else:
+        scaffold_db_root_eff = db_root
+        scaffold_db_id_resolved = db_id_resolved
+        scaffold_manifest = manifest
+        scaffold_available = available
 
     requested: list[str] = list(feature_sets) if feature_sets else list(available)
     unknown = [fs for fs in requested if fs not in available]
@@ -671,6 +704,66 @@ def karyotype_run(
             output_dir=output_dir,
             annotation_variant=annotation_variant,
         )
+    elif use_scaffold_db:
+        # Two-database path: derive the scaffold map (chromosome ordering +
+        # region orientation) from the LAYOUT database, then ensure the
+        # plotted feature set's annotation BED exists against the PLOT
+        # database. The map is applied to the plot BED at bin time in the
+        # render loop -- the same code path --no-scaffolding uses.
+        #
+        # Layout pass: feature_sets=[] makes scaffold annotate only the
+        # layout DB's role sets (chromosome + region) and write
+        # {stem}.{scaffold_db_id}.scaffold_map.tsv; no per-feature-set
+        # scaffolded BEDs are produced.
+        scaffold_run(
+            inputs,
+            db_root=scaffold_db_root_eff,
+            db_id=scaffold_db_id_resolved,
+            feature_sets=[],
+            mode="bed",
+            min_scaffold_length=min_scaffold_length,
+            acrocentrics=acrocentrics,
+            split_haps_regex=split_haps_regex,
+            threads=threads,
+            bgzip=bgzip,
+            auto=auto,
+            output_dir=output_dir,
+            write_scaffolded_beds=False,
+            annotation_variant=annotation_variant,
+        )
+        # Plot pass: ensure each requested feature set's annotation BED
+        # exists against the PLOT database. Skipped when already present;
+        # honours --no-auto.
+        for spec in inputs:
+            stem = _input_stem(spec.path)
+            out_dir = output_dir if output_dir is not None else spec.path.parent
+            missing = [
+                fs
+                for fs in requested
+                if not _annotation_bed_path(
+                    out_dir, stem, db_id_resolved, fs, variant=annotation_variant
+                ).is_file()
+            ]
+            if not missing:
+                continue
+            if not auto:
+                raise KaryotypeError(
+                    f"missing {annotation_variant} annotation BED(s) for "
+                    f"{spec.path.name} feature set(s) {missing!r} in plot database "
+                    f"{db_id_resolved!r}; re-run with auto-derive enabled or run "
+                    f"`karyoscope annotate` first."
+                )
+            out_dir.mkdir(parents=True, exist_ok=True)
+            annotate(
+                input_path=spec.path,
+                output_dir=out_dir,
+                db_root=db_root,
+                db_id=db_id_resolved,
+                feature_sets=missing,
+                threads=threads,
+                smooth=(annotation_variant == "smoothed"),
+                bgzip=bgzip,
+            )
     else:
         scaffold_run(
             inputs,
@@ -699,8 +792,8 @@ def karyotype_run(
     if want_centromere and not combine_chromosomes:
         centromeres_run(
             inputs,
-            db_root=db_root,
-            db_id=db_id_resolved,
+            db_root=scaffold_db_root_eff,
+            db_id=scaffold_db_id_resolved,
             min_scaffold_length=min_scaffold_length,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
@@ -800,7 +893,9 @@ def karyotype_run(
                 # bin time when no on-disk scaffolded BED exists. On the
                 # combine path the renderer instead consumes the
                 # synthetic combined map rows keyed by <chrom>_<hap>.
-                per_contig_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
+                per_contig_rows = read_map(
+                    out_dir / f"{stem}.{scaffold_db_id_resolved}.scaffold_map.tsv"
+                )
                 render_map_rows = (
                     combined_rows_by_input[spec.path] if combine_chromosomes else per_contig_rows
                 )
@@ -825,7 +920,7 @@ def karyotype_run(
                     if combine_chromosomes:
                         centromere_ranges = combined_cen_by_input[spec.path]
                     else:
-                        cpath = _centromeres_bed_path(out_dir, stem, db_id_resolved)
+                        cpath = _centromeres_bed_path(out_dir, stem, scaffold_db_id_resolved)
                         if not cpath.is_file():
                             raise KaryotypeError(
                                 f"missing centromeres BED for {spec.path.name} "

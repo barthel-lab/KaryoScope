@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `remap-bed` command: apply an existing `scaffold_map.tsv` to a BED that was
+  annotated separately -- possibly against a *different* database than the one
+  used to derive the map -- rewriting it into the scaffolded coordinate system.
+  This is the standalone, file-producing counterpart of the in-pipeline rewrite
+  `scaffold` performs, and of the in-memory remap `karyotype --scaffold-db`
+  does while rendering. It enables a two-database workflow (lay out with a
+  roles-bearing database, annotate a feature set from a plot-only database such
+  as a cytoband database, then remap onto the layout). Before rewriting it
+  validates that the BED and map describe the same assembly: hard errors on
+  zero contig-name overlap and on BED intervals exceeding the contig lengths
+  recorded in the map; an advisory warning (promotable via `--strict`) on a
+  filename-stem mismatch. Wraps the shared
+  `karyoscope.core.scaffold.remap_bed_with_map` helper.
 - Zenodo archive DOI for the software (concept DOI
   ``10.5281/zenodo.20657816``) added to the README badge, the citation
   section, and ``CITATION.cff`` (top-level ``doi`` / ``version`` /
