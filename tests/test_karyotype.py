@@ -1073,3 +1073,21 @@ def test_karyotype_no_scaffolding_path_renders(
     # rename + flip).
     maps = list(out_dir.glob("*.scaffold_map.tsv"))
     assert maps, "scaffold_map.tsv should still be written when --no-scaffolding"
+
+
+class TestColorsFilenameTag:
+    """The --colors output tag keeps custom-colour renders from clobbering defaults."""
+
+    def test_default_colors_no_tag(self) -> None:
+        from karyoscope.core.karyotype_run import _colors_filename_tag
+
+        assert _colors_filename_tag(None) == ""
+
+    def test_custom_colors_tagged_by_stem(self) -> None:
+        from pathlib import Path
+
+        from karyoscope.core.karyotype_run import _colors_filename_tag
+
+        assert _colors_filename_tag(Path("/x/colors_chromosome.tsv")) == ".colors_chromosome"
+        # A custom file and the default produce different tags -> different filenames.
+        assert _colors_filename_tag(Path("/x/my_palette.tsv")) != _colors_filename_tag(None)

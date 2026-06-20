@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `karyotype --colors PATH`: render with a custom colour file (same
+  `feature_set`/`feature`/`color` format as a database `colors.tsv`) instead of
+  the database default — e.g. the cytoband database's `colors_chromosome.tsv` to
+  colour bands by chromosome. The colour file's stem is appended to the output
+  filename (`...smoothed.<colors-stem>.karyotype.svg`) so a custom-colour render
+  never clobbers the default-colour one in the same directory.
 - `remap-bed` command: apply an existing `scaffold_map.tsv` to a BED that was
   annotated separately -- possibly against a *different* database than the one
   used to derive the map -- rewriting it into the scaffolded coordinate system.

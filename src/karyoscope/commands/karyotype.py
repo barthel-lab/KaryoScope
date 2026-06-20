@@ -304,6 +304,17 @@ logger = logging.getLogger(__name__)
     "with --output foo.svg you get foo.<dbid>.<mode>.<fs>.karyotype.svg. "
     "Conflicts with --outdir when both are set.",
 )
+@click.option(
+    "--colors",
+    "colors_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Custom colour file (same format as a database colors.tsv: "
+    "feature_set / feature / color columns) to use instead of the database's "
+    "default colours. The colour-file stem is appended to the output filename "
+    "so it doesn't clash with the default-colour render. Default: the database's "
+    "colors.tsv.",
+)
 def cmd(
     inputs_raw: tuple[str, ...],
     telo_raw: tuple[str, ...],
@@ -336,6 +347,7 @@ def cmd(
     use_smoothed: bool,
     output_dir: Path | None,
     output_path: Path | None,
+    colors_path: Path | None,
 ) -> None:
     """Render karyotype SVGs.
 
@@ -457,6 +469,7 @@ def cmd(
             annotation_variant="smoothed" if use_smoothed else "presmoothed",
             output_dir=output_dir,
             output_path=output_path,
+            colors_path=colors_path,
             seed_human_chromosomes=not no_human_chroms,
         )
     except (
