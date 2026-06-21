@@ -18,9 +18,12 @@ the pipeline. Auto-derives missing prerequisites the same way
 Output paths follow the convention
 ``<base>.<dbid>.<mode>.<feature_set>.karyotype.svg`` per feature set.
 ``<base>`` is either an explicit ``--output PATH`` (then we use the
-basename without ``.svg``) or, when no explicit path is given,
-the literal string ``"karyotype"`` so the filename is sample-agnostic
-(the sample is implied by ``<dbid>`` and the ``--outdir``).
+basename without ``.svg``) or, when no explicit path is given, a
+sample-identifying base derived from the input stems: the single
+input's stem, or for multi-input runs the longest common prefix of the
+input stems (e.g. ``GM04890.haplotype1`` + ``GM04890.haplotype2`` ->
+``GM04890``), falling back to the first stem when the stems share no
+separator-delimited prefix. See :func:`_common_base`.
 """
 
 from __future__ import annotations
@@ -101,6 +104,51 @@ def _input_stem(path: Path) -> str:
         if lower.endswith(ext):
             return name[: -len(ext)]
     return path.stem
+
+
+#: Separator characters used to find a token boundary in input stems.
+_STEM_SEPARATORS = "._-"
+
+
+def _common_base(stems: list[str]) -> str:
+    """The filename base shared by one or more input stems.
+
+    For a single input this is just its stem. For multi-input runs --
+    e.g. separate ``hap1``/``hap2`` FASTAs -- the output filename should
+    name the *sample*, not just the first input, so it isn't misleading
+    (a both-hap plot named ``...haplotype1...``). We take the
+    character-wise longest common prefix of the stems, trim it back to
+    the last separator (so a partially-shared trailing token like
+    ``haplotype`` is dropped rather than left dangling), and strip
+    trailing separators::
+
+        ["GM04890.haplotype1", "GM04890.haplotype2"]  -> "GM04890"
+        ["BJ.hap1", "BJ.hap2"]                         -> "BJ"
+        ["HG002.maternal", "HG002.paternal"]           -> "HG002"
+
+    Falls back to the first stem when the stems are identical or share
+    no separator-delimited prefix (so the result is never empty).
+    """
+    if not stems:
+        return ""
+    first = stems[0]
+    if len(stems) == 1 or all(s == first for s in stems):
+        return first
+
+    lcp_len = len(first)
+    for s in stems[1:]:
+        limit = min(lcp_len, len(s))
+        i = 0
+        while i < limit and first[i] == s[i]:
+            i += 1
+        lcp_len = i
+    lcp = first[:lcp_len]
+
+    cut = max((lcp.rfind(c) for c in _STEM_SEPARATORS), default=-1)
+    if cut == -1:
+        return first  # no shared separator-delimited prefix
+    base = lcp[:cut].rstrip(_STEM_SEPARATORS)
+    return base or first
 
 
 def _scaffolded_bed_path(
@@ -837,11 +885,14 @@ def karyotype_run(
             base_name = base_name[:-4]
         results_dir = output_path.parent
     else:
-        # Default to the first input's stem so the on-disk filename
+        # Default the on-disk filename to a sample-identifying base so it
         # tells the user at a glance which sample produced the SVGs.
-        # Multi-input runs (e.g. separate hap1/hap2 FASTAs) get the
-        # first input's stem; pass --output to override.
-        base_name = per_input_state[0][2]
+        # Multi-input runs (e.g. separate hap1/hap2 FASTAs) collapse to
+        # the common prefix of the input stems (GM04890.haplotype1 +
+        # GM04890.haplotype2 -> GM04890), matching what the title band
+        # already shows and avoiding a misleading "...haplotype1..." name
+        # for a both-hap plot. Pass --output to override.
+        base_name = _common_base([stem for _, _, stem in per_input_state])
         results_dir = output_dir if output_dir is not None else per_input_state[0][1]
 
     # Sample label for the SVG title band. Defaults to the first

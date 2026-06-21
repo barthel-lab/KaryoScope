@@ -16,8 +16,46 @@ from karyoscope.core.karyotype_run import (
     _binned_mapsig_path,
     _combined_centromeres_bed_path,
     _combined_scaffolded_bed_path,
+    _common_base,
     _write_binned_mapsig,
 )
+
+
+class TestCommonBase:
+    def test_single_input_returns_its_stem(self) -> None:
+        assert _common_base(["GM00392.assembly"]) == "GM00392.assembly"
+
+    def test_haplotype_pair_collapses_to_sample(self) -> None:
+        assert _common_base(["GM04890.haplotype1", "GM04890.haplotype2"]) == "GM04890"
+
+    def test_hap_pair_collapses_to_sample(self) -> None:
+        assert _common_base(["BJ.hap1", "BJ.hap2"]) == "BJ"
+
+    def test_maternal_paternal_collapses_to_sample(self) -> None:
+        assert _common_base(["HG002.maternal", "HG002.paternal"]) == "HG002"
+
+    def test_three_inputs_with_unassigned(self) -> None:
+        assert _common_base(["S.hap1", "S.hap2", "S.unassigned"]) == "S"
+
+    def test_deeper_shared_prefix_kept(self) -> None:
+        assert _common_base(["HG002.hifiasm.hap1", "HG002.hifiasm.hap2"]) == "HG002.hifiasm"
+
+    def test_underscore_separator(self) -> None:
+        assert _common_base(["GM04890_hap1", "GM04890_hap2"]) == "GM04890"
+
+    def test_no_common_separator_prefix_falls_back_to_first(self) -> None:
+        # Shared chars but no separator boundary -> don't emit a partial
+        # token; fall back to the first stem.
+        assert _common_base(["abc1", "abc2"]) == "abc1"
+
+    def test_no_overlap_falls_back_to_first(self) -> None:
+        assert _common_base(["alpha", "beta"]) == "alpha"
+
+    def test_identical_stems_kept_whole(self) -> None:
+        assert _common_base(["sampleX", "sampleX"]) == "sampleX"
+
+    def test_empty_returns_empty(self) -> None:
+        assert _common_base([]) == ""
 
 
 def _row(new_name: str, *, hap: str, flipped: bool = False) -> MapRow:

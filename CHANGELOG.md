@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ``date-released`` fields).
 
 ### Fixed
+- The default karyotype output filename for multi-input runs (no `--output`) is
+  no longer named after only the first input. It now collapses the input stems to
+  their common prefix (`GM04890.haplotype1` + `GM04890.haplotype2` -> `GM04890`),
+  so a both-haplotype plot is no longer misleadingly named `...haplotype1...`. The
+  title band already showed both stems; the filename now agrees. Single-input runs
+  are unchanged, and runs whose stems share no separator-delimited prefix fall
+  back to the first stem. (Also corrected the stale module docstring, which claimed
+  the default base was the literal `"karyotype"`.)
 - Genome-karyotype haplotype columns are now assigned and ordered by the *true*
   haplotype encoded in each contig's name (`infer_hap_from_contig`) rather than
   the file-level `hap` label recorded during scaffolding. Combined-FASTA
