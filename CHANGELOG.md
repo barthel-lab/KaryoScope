@@ -32,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section, and ``CITATION.cff`` (top-level ``doi`` / ``version`` /
   ``date-released`` fields).
 
+### Fixed
+- Acrocentric short-arm contigs (chr13/14/15/21/22 p-arms: satellite, stalk,
+  rDNA, plus the p-ter telomere) are now consistently oriented telomere-first
+  (p-ter at the top) during scaffolding. Previously the flip decision for these
+  fragments was gated on the p-ter telomere being *continuous* with the
+  chromosome-assignment region block; satellite/novel gaps routinely break that
+  continuity, so otherwise-identical short arms were oriented inconsistently
+  (some ``CT``, some ``TC``). The acrocentric short-arm rule now keys off the raw
+  telomere flags instead, flipping a single-telomere non-q-arm fragment so its
+  telomere sits at the top regardless of continuity. Full-chromosome and q-arm
+  body contigs (with both telomeres or a q-ter telomere) are unaffected.
+  Surfaced by ISCN validation on GM03417.
+
 ### Changed
 - With ``--combine-chromosomes`` but not ``--combine-acrocentrics``, the
   acrocentric contigs that stay as separate records are now renamed in
