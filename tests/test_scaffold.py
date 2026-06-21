@@ -227,6 +227,103 @@ class TestNeedToFlip:
             is_acrocentric=True,
         )
 
+    def test_acrocentric_short_arm_stop_tel_flips_without_continuity(self) -> None:
+        # GM03417-style acrocentric short-arm fragment: satellite / stalk
+        # content (ct/HSat/bSat all collapse to "centromere"), no q-arm,
+        # with the p-ter telomere at the stop end. The telomere is NOT
+        # continuous with the region block (region_end < scaffold_length,
+        # as satellite/novel gaps cause), so the old continuity-gated
+        # branch left it un-flipped. The short-arm rule must flip it so
+        # p-ter ends up at the top regardless of continuity.
+        bins = [
+            (0, 1_000_000, "ct"),
+            (1_000_000, 3_000_000, "HSat1A"),
+            (3_000_000, 5_000_000, "bSat"),
+            (5_000_000, 5_351_257, "ct"),
+        ]
+        assert need_to_flip(
+            bins,
+            self._halfs(bins, 5_351_257),
+            region_start=0,
+            region_end=4_000_000,
+            scaffold_length=5_351_257,
+            telo=TeloFlags(False, True),
+            is_acrocentric=True,
+        )
+
+    def test_acrocentric_short_arm_start_tel_does_not_flip(self) -> None:
+        # Same short-arm fragment but the p-ter telomere is already at the
+        # start (top): must not flip.
+        bins = [
+            (0, 351_257, "ct"),
+            (351_257, 2_351_257, "bSat"),
+            (2_351_257, 5_351_257, "rDNA"),
+        ]
+        assert not need_to_flip(
+            bins,
+            self._halfs(bins, 5_351_257),
+            region_start=1_000_000,
+            region_end=5_351_257,
+            scaffold_length=5_351_257,
+            telo=TeloFlags(True, False),
+            is_acrocentric=True,
+        )
+
+    def test_acrocentric_q_arm_body_keeps_qter_tel_at_bottom(self) -> None:
+        # The acrocentric main body (centromere + q-arm + q-ter telomere)
+        # is q-like, so the short-arm rule must NOT fire: the q-ter
+        # telomere stays at the bottom (no flip).
+        bins = [
+            (0, 2_000_000, "centromere1"),
+            (2_000_000, 95_000_000, "q_arm_long"),
+        ]
+        assert not need_to_flip(
+            bins,
+            self._halfs(bins, 95_000_000),
+            region_start=0,
+            region_end=95_000_000,
+            scaffold_length=95_000_000,
+            telo=TeloFlags(False, True),
+            is_acrocentric=True,
+        )
+
+    def test_nonacrocentric_short_arm_unaffected_by_rule(self) -> None:
+        # A non-acrocentric centromere-dominant fragment with a
+        # non-continuous stop telomere must NOT be force-flipped by the
+        # acrocentric short-arm rule (control for blast radius).
+        bins = [
+            (0, 1_000_000, "ct"),
+            (1_000_000, 3_000_000, "centromere1"),
+            (3_000_000, 5_351_257, "ct"),
+        ]
+        assert not need_to_flip(
+            bins,
+            self._halfs(bins, 5_351_257),
+            region_start=0,
+            region_end=4_000_000,
+            scaffold_length=5_351_257,
+            telo=TeloFlags(False, True),
+            is_acrocentric=False,
+        )
+
+    def test_acrocentric_both_tels_fall_through_to_centroid(self) -> None:
+        # An acrocentric contig with telomeres on BOTH ends is not a
+        # single-telomere short arm, so the rule defers to the centroid
+        # logic: q-arm centroid before p-arm centroid here → flip.
+        bins = [
+            (0, 2_000_000, "q_arm"),
+            (8_000_000, 10_000_000, "p_arm"),
+        ]
+        assert need_to_flip(
+            bins,
+            self._halfs(bins, 10_000_000),
+            region_start=0,
+            region_end=10_000_000,
+            scaffold_length=10_000_000,
+            telo=TeloFlags(True, True),
+            is_acrocentric=True,
+        )
+
 
 class TestFlipBins:
     def test_mirror_and_reverse(self) -> None:

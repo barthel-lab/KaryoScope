@@ -151,6 +151,16 @@ def _binned_scaffolded_bed_path(
 _COMBINED_TAG = "combined_chromosomes"
 
 
+def _colors_filename_tag(colors_path: Path | None) -> str:
+    """Output-filename tag for a custom ``--colors`` file (empty for default colours).
+
+    Appending the colour file's stem (e.g. ``.colors_chromosome``) keeps a
+    custom-colour render from overwriting the default-colour one in the same
+    directory.
+    """
+    return f".{colors_path.stem}" if colors_path is not None else ""
+
+
 def _combined_scaffolded_bed_path(
     out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
 ) -> Path:
@@ -538,6 +548,7 @@ def karyotype_run(
     sample_label: str | None = None,
     show_title: bool = True,
     show_legend: bool = True,
+    colors_path: Path | None = None,
 ) -> list[KaryotypeResult]:
     """Render one SVG per (mode, feature_set) combination.
 
@@ -632,7 +643,12 @@ def karyotype_run(
         if bin_size < 1:
             raise KaryotypeError(f"--bin-size must be a positive integer, got {bin_size}")
 
-    colors = parse_colors(db_dir / manifest.colors)
+    # Colours: a user-supplied --colors file overrides the database default.
+    # Its stem tags the output filename so a custom-colour render never clobbers
+    # the default-colour one (e.g. '...smoothed.colors_chromosome.karyotype.svg').
+    colors_source = colors_path if colors_path is not None else db_dir / manifest.colors
+    colors = parse_colors(colors_source)
+    colors_tag = _colors_filename_tag(colors_path)
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
 
     # Hard check that every hierarchy node has a colour. ``download``
@@ -940,7 +956,7 @@ def karyotype_run(
             combined_tag = f".{_COMBINED_TAG}" if combine_chromosomes else ""
             stem_for_paths = (
                 f"{base_name}.{db_id_resolved}.{current_mode}.{fs}."
-                f"{annotation_variant}{combined_tag}.karyotype"
+                f"{annotation_variant}{combined_tag}{colors_tag}.karyotype"
             )
             svg_path = results_dir / f"{stem_for_paths}.svg"
             logger.info(

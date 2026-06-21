@@ -208,3 +208,35 @@ class TestValidateColors:
         assert len(issues) == 1
         assert "'chromosome'" in issues[0]
         assert "'shared'" in issues[0]
+
+
+class TestCustomColorsFile:
+    """A user-supplied ``karyotype --colors`` file is parsed + validated exactly
+    like a database ``colors.tsv``, so it fails *gracefully* (a clean
+    ``ColorsError`` / ``KaryotypeError``, caught by the CLI) rather than crashing
+    mid-render when it is malformed or missing features."""
+
+    def test_malformed_custom_file_raises_colorserror(self, tmp_path: Path) -> None:
+        p = tmp_path / "custom.tsv"
+        # Missing the colour column -> rejected before any rendering.
+        p.write_text("feature_set\tfeature\tcolor\ncytoband\t14q12\n")
+        with pytest.raises(ColorsError):
+            parse_colors(p)
+
+    def test_custom_file_missing_features_is_flagged(self, tmp_path: Path) -> None:
+        # A custom palette that omits some hierarchy nodes is caught by
+        # validate_colors (which karyotype_run turns into a KaryotypeError).
+        h = Hierarchy(
+            rows=[
+                HierarchyRow("cytoband", "14q12", "categorized"),
+                HierarchyRow("cytoband", "21q21.1", "categorized"),
+            ]
+        )
+        p = tmp_path / "custom.tsv"
+        p.write_text(
+            "feature_set\tfeature\tcolor\n"
+            "cytoband\tcategorized\t#FFFFFF\n"
+            "cytoband\t14q12\t#a67c5b\n"  # 21q21.1 deliberately omitted
+        )
+        issues = validate_colors(h, parse_colors(p))
+        assert any("21q21.1" in issue for issue in issues)

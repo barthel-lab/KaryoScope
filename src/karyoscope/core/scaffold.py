@@ -301,11 +301,14 @@ def need_to_flip(
 ) -> bool:
     """Decide whether the contig is reversed (q-then-p) and should be flipped.
 
-    Direct port of the archive's ``calculate_need_to_flip`` (the newer
+    Ported from the archive's ``calculate_need_to_flip`` (the newer
     version with the centroid-based both-tel rule for chrY-like
-    cases). The body is a boolean ladder over arm/centromere
-    composition and telomere placement; see the inline comments for
-    the intuition behind each branch.
+    cases), with one addition: acrocentric short-arm fragments are
+    forced telomere-first (p-ter at the top) off the raw telomere
+    flags, since their satellite/novel content breaks the region-block
+    continuity the other branches rely on. The body is a boolean
+    ladder over arm/centromere composition and telomere placement; see
+    the inline comments for the intuition behind each branch.
     """
     simple_region = scaffold_region_majority(region_bins, region_start, region_end)
 
@@ -329,7 +332,21 @@ def need_to_flip(
     is_q_not_c_not_p_like = is_q_like and (not is_c_like) and (not is_p_like)
     is_q_and_c_not_p_like = is_q_like and is_c_like and (not is_p_like)
     is_p_and_q_like = is_p_like and is_q_like
-    is_pure_telomere = (not is_p_like) and (not is_q_like) and (not is_c_like)
+
+    # Acrocentric short arms (chr13/14/15/21/22 p-arms: satellite, stalk,
+    # rDNA, plus the p-ter telomere) must be drawn telomere-first, i.e.
+    # with p-ter at the top. These short-arm fragments are not q-arm
+    # bodies (``not is_q_like``); their satellite/novel content routinely
+    # breaks region-block continuity, so -- unlike the branches below --
+    # we key off the raw telomere flags rather than the ``continuous_*``
+    # variants (gating on continuity is exactly what left these contigs
+    # inconsistently oriented). We only force the single-telomere case:
+    # the lone telomere is the p-ter and belongs at the top. Contigs with
+    # telomeres on both ends fall through to the centroid logic so a
+    # genuinely reversed full chromosome is still detected, and q-arm
+    # bodies keep their q-ter telomere at the bottom via the ladder below.
+    if is_acrocentric and (not is_q_like) and (has_start_tel != has_stop_tel):
+        return has_stop_tel
 
     if continuous_start_tel and continuous_stop_tel:
         # Both ends telomere-capped: pick the orientation that puts
@@ -359,8 +376,6 @@ def need_to_flip(
         return first_half_q > second_half_q
 
     if continuous_start_tel or continuous_stop_tel:
-        if is_pure_telomere and is_acrocentric and continuous_stop_tel:
-            return True
         if is_p_or_c_not_q_like and continuous_stop_tel:
             return True
         if is_q_not_c_not_p_like and continuous_start_tel:

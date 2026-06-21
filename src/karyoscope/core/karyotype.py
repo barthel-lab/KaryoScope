@@ -34,6 +34,7 @@ laid out side by side.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from math import floor
 from pathlib import Path
@@ -41,6 +42,7 @@ from typing import Literal
 
 import drawsvg as draw
 
+from karyoscope.core.hap_inference import infer_hap_from_contig
 from karyoscope.core.io.features import NOVEL_NAME
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.scaffold import Interval, chromosome_sort_key
@@ -343,6 +345,41 @@ def _haps_natural_sort_key(hap: str) -> tuple[int, int, str]:
     return (2, 0, hap)
 
 
+#: Matches an ``unassigned`` token in a contig name (combined-FASTA
+#: assemblies name their non-haplotype fragments ``unassigned-0000409``
+#: and the like). ``infer_hap_from_contig`` deliberately never returns
+#: ``"unassigned"`` (that label is reserved for an explicit
+#: ``-i unassigned=PATH`` in the scaffolder), so the renderer detects it
+#: here to give those fragments their own segregated, labelled column.
+_UNASSIGNED_RE = re.compile(r"(?:^|[._\-/])unassigned(?:[._\-/]|$)", re.IGNORECASE)
+
+
+def _effective_hap(row: MapRow) -> str:
+    """The haplotype column a contig belongs to.
+
+    Derived from the *true* haplotype encoded in the contig's original
+    name rather than the file-level label in ``row.hap``. Combined-FASTA
+    assemblies carry hap-tagged contig names (``haplotype1-*`` /
+    ``haplotype2-*`` / ``unassigned-*``) while the scaffold step may have
+    labelled every contig with a single file-level hap (the sample stem,
+    or an explicit ``-i NAME=``). Ordering the karyotype's haplotype
+    columns by that file-level label collapses the true haplotypes into
+    one column drawn by contig size; deriving the hap from the contig
+    name keeps hap1 / hap2 / unassigned in their own, correctly-ordered
+    columns.
+
+    Falls back to ``row.hap`` when the contig name carries no haplotype
+    marker (e.g. the genuine one-file-per-haplotype convention, where
+    ``row.hap`` is already authoritative).
+    """
+    inferred = infer_hap_from_contig(row.original_name)
+    if inferred is not None:
+        return inferred
+    if _UNASSIGNED_RE.search(row.original_name):
+        return "unassigned"
+    return row.hap
+
+
 # --- main renderer -------------------------------------------------------
 
 
@@ -467,7 +504,7 @@ def render_karyotype(
     haps_seen: set[str] = set()
     for row in map_by_name.values():
         chroms_seen.add(row.chromosome)
-        haps_seen.add(row.hap)
+        haps_seen.add(_effective_hap(row))
 
     CHROMOSOMES: list[str] = []
     if seed_human_chromosomes:
@@ -621,7 +658,7 @@ def render_karyotype(
     intra_hap_indices: dict[str, int] = {}
     for seq in sequences_to_plot:
         row = map_by_name[seq]
-        chrom, hap = row.chromosome, row.hap
+        chrom, hap = row.chromosome, _effective_hap(row)
         sequences_per_chrom_hap.setdefault(chrom, {}).setdefault(hap, []).append(seq)
         intra_hap_indices[seq] = len(sequences_per_chrom_hap[chrom][hap]) - 1
 
@@ -771,7 +808,13 @@ def render_karyotype(
             for hap in layout.drawable_haps_per_chrom.get(chromosome, []):
                 hap_start = layout.hap_start_x[chromosome][hap]
                 hap_width = layout.hap_block_widths[chromosome][hap]
-                hap_text = f"h{hap[3:]}" if hap.startswith("hap") else hap[:1]
+                # Compact column designator so the narrow columns stay
+                # legible without widening the layout: "h1"/"h2" for
+                # haplotypes, a single-letter tag otherwise ("u" for
+                # unassigned, "m"/"p" for maternal/paternal).
+                hap_text = (
+                    f"h{hap[3:]}" if (hap.startswith("hap") and hap[3:].isdigit()) else hap[:1]
+                )
                 d.append(draw.Rectangle(hap_start, hap_line_y, hap_width, 1, fill=text_color))
                 d.append(
                     draw.Text(
