@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import ClassVar
@@ -14,6 +15,7 @@ from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.karyotype import (
     PREDEFINED_SEX_SYSTEMS,
     RenderInput,
+    _effective_hap,
     _haps_natural_sort_key,
     _legend_sort_key,
     convert_svg,
@@ -377,6 +379,113 @@ def _row(
 
 def _read_svg_text(p: Path) -> str:
     return p.read_text()
+
+
+def _label_x(svg: str, label: str) -> float:
+    """Return the x of the first ``<text ...>label</text>`` column header."""
+    m = re.search(rf"<text\b([^>]*)>{re.escape(label)}</text>", svg)
+    assert m is not None, f"column label {label!r} not found in SVG"
+    xm = re.search(r'x="([-\d.]+)"', m.group(1))
+    assert xm is not None, f"no x on label {label!r}"
+    return float(xm.group(1))
+
+
+class TestEffectiveHap:
+    def test_infers_hap_from_contig_name_over_file_label(self) -> None:
+        # Combined-FASTA case: scaffold labelled every contig with the
+        # sample stem, but the contig name carries the true haplotype.
+        row = _row(
+            "chr16_GM00392_haplotype2-0000061",
+            chrom="chr16",
+            hap="GM00392",
+        )
+        assert _effective_hap(row) == "hap2"
+
+    def test_detects_unassigned_from_contig_name(self) -> None:
+        row = _row("chr2_GM00392_unassigned-0000409", chrom="chr2", hap="GM00392")
+        assert _effective_hap(row) == "unassigned"
+
+    def test_falls_back_to_file_label_when_no_marker(self) -> None:
+        # One-file-per-haplotype convention: contig name has no marker, so
+        # the file-level hap label remains authoritative.
+        row = _row("chr1_hap1_ptg000001l", chrom="chr1", hap="hap1")
+        assert _effective_hap(row) == "hap1"
+
+
+class TestHaplotypeColumns:
+    def test_columns_ordered_by_true_hap_not_size(self, tmp_path: Path) -> None:
+        # GM00392 chr16: the dup is on hap2 (full chr16, large) while hap1
+        # holds only 16p-ter (small). Both contigs carry the file-level
+        # label "GM00392"; ordering by that label (then size) would draw
+        # the large hap2 contig first/left. Deriving the hap from the
+        # contig name must put hap1 left of hap2 regardless of size.
+        ri = RenderInput(
+            map_rows=[
+                _row(
+                    "chr16_GM00392_haplotype2-0000061",
+                    chrom="chr16",
+                    hap="GM00392",
+                    stats="TPCQT",
+                    length=174_000_000,
+                ),
+                _row(
+                    "chr16_GM00392_haplotype1-0000013",
+                    chrom="chr16",
+                    hap="GM00392",
+                    stats="TP",
+                    length=15_000_000,
+                ),
+            ],
+            binned_bed={
+                "chr16_GM00392_haplotype2-0000061": [(0, 500, "rA"), (500, 1000, "rB")],
+                "chr16_GM00392_haplotype1-0000013": [(0, 500, "rA")],
+            },
+        )
+        out = tmp_path / "chr16.svg"
+        render_karyotype(
+            [ri],
+            colors={"rA": "#2ca02c", "rB": "#d62728"},
+            mode="genome",
+            seed_human_chromosomes=False,
+            output_path=out,
+        )
+        text = _read_svg_text(out)
+        # Both haplotype columns are labelled ("h1"/"h2")...
+        assert "<text" in text and ">h1</text>" in text and ">h2</text>" in text
+        # ...and hap1 is drawn to the left of hap2 (true-haplotype order,
+        # not size order).
+        assert _label_x(text, "h1") < _label_x(text, "h2")
+
+    def test_unassigned_segregated_and_labelled(self, tmp_path: Path) -> None:
+        # GM00392 chr2: both haplotypes fully assembled plus a tiny
+        # unassigned fragment. The unassigned contig must land in its own
+        # labelled column, to the right of the real haplotypes.
+        ri = RenderInput(
+            map_rows=[
+                _row("chr2_GM00392_haplotype1-0000012", chrom="chr2", hap="GM00392", length=243),
+                _row("chr2_GM00392_haplotype2-0000056", chrom="chr2", hap="GM00392", length=242),
+                _row("chr2_GM00392_unassigned-0000409", chrom="chr2", hap="GM00392", length=59),
+            ],
+            binned_bed={
+                "chr2_GM00392_haplotype1-0000012": [(0, 500, "rA")],
+                "chr2_GM00392_haplotype2-0000056": [(0, 500, "rA")],
+                "chr2_GM00392_unassigned-0000409": [(0, 500, "rA")],
+            },
+        )
+        out = tmp_path / "chr2.svg"
+        render_karyotype(
+            [ri],
+            colors={"rA": "#2ca02c"},
+            mode="genome",
+            seed_human_chromosomes=False,
+            output_path=out,
+        )
+        text = _read_svg_text(out)
+        # Unassigned column is flagged with a compact "u" tag...
+        assert ">u</text>" in text
+        # ...and sits to the right of both real haplotypes.
+        assert _label_x(text, "u") > _label_x(text, "h2")
+        assert _label_x(text, "h2") > _label_x(text, "h1")
 
 
 class TestRenderKaryotypeUnit:

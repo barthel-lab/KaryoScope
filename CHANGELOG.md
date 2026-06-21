@@ -33,6 +33,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ``date-released`` fields).
 
 ### Fixed
+- Genome-karyotype haplotype columns are now assigned and ordered by the *true*
+  haplotype encoded in each contig's name (`infer_hap_from_contig`) rather than
+  the file-level `hap` label recorded during scaffolding. Combined-FASTA
+  assemblies (one file, hap-tagged contig names such as `haplotype1-*` /
+  `haplotype2-*`) are labelled with a single file-level hap by `scaffold`, which
+  previously collapsed every contig into one column drawn by contig size -- so a
+  larger hap2 contig could read as hap1. The renderer now derives the column
+  from the contig name, keeping `hap1` left of `hap2` regardless of size, and
+  labels each column (`h1` / `h2`). Surfaced by ISCN validation on GM00392
+  chr16.
+- Unassigned contigs (`*_unassigned-*` fragments in combined-FASTA assemblies)
+  are now segregated into their own labelled (`u`) column at the right of each
+  chromosome, instead of being silently mixed into a haplotype column. Makes a
+  small unassigned fragment (e.g. GM00392 `chr2_*_unassigned-*`, a 1-bin piece)
+  visually distinguishable from a real haplotype sequence.
 - Acrocentric short-arm contigs (chr13/14/15/21/22 p-arms: satellite, stalk,
   rDNA, plus the p-ter telomere) are now consistently oriented telomere-first
   (p-ter at the top) during scaffolding. Previously the flip decision for these
