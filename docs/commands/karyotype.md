@@ -64,7 +64,7 @@ karyoscope karyotype -i asm.fa --mode genome --feature-set chromosome \
 
 ## Output
 
-One image is written per (mode, feature_set) combination, named `<base>.<dbid>.<mode>.<feature_set>.smoothed.karyotype.svg`, where `<base>` is `karyotype` by default or the basename of `--output PATH` when given. Passing `--format pdf` / `--format png` (repeatable) additionally produces those formats by converting the SVG via cairosvg (which needs libcairo at runtime). Using `--presmoothed` renders from raw annotations, and the filename then reflects that variant. The cascade also writes the intermediate scaffolded / binned / centromere BEDs unless suppressed.
+One image is written per (mode, feature_set) combination, named `<base>.<dbid>.<mode>.<feature_set>.smoothed.karyotype.svg`. `<base>` is the basename of `--output PATH` when given; otherwise it is derived from the input stems — a single input's stem, or for multi-input runs the longest common prefix of the stems (e.g. `GM04890.haplotype1` + `GM04890.haplotype2` → `GM04890`), falling back to the first stem when the stems share no separator-delimited prefix. Passing `--format pdf` / `--format png` (repeatable) additionally produces those formats by converting the SVG via cairosvg (which needs libcairo at runtime). Using `--presmoothed` renders from raw annotations, and the filename then reflects that variant. The cascade also writes the intermediate scaffolded / binned / centromere BEDs unless suppressed.
 
 ## See also
 
