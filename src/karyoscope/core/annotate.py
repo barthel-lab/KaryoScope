@@ -895,6 +895,7 @@ def _run_hks_backend(
                     hierarchy_file=hierarchy_file,
                     input_path=raw_tsv,
                     output_path=smoothed_paths[fs],
+                    threads=threads,
                     capture=True,
                 )
                 logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)

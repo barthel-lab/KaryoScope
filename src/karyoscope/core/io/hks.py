@@ -252,6 +252,7 @@ def run_hks_smooth(
     input_path: Path,
     output_path: Path,
     max_gap: int = _DEFAULT_SMOOTH_MAX_GAP,
+    threads: int = 0,
     capture: bool = False,
 ) -> Path:
     """Invoke ``hks smooth`` on a lookup TSV and write the result as a BED file.
@@ -267,6 +268,9 @@ def run_hks_smooth(
     max_gap
         Maximum gap in bases between adjacent intervals that are still
         considered connected for smoothing purposes.
+    threads
+        Number of worker threads. ``hks smooth`` parallelizes across query
+        sequences. ``0`` (the default) lets HKS decide (effectively ``4``).
     capture
         If ``True``, capture subprocess stdout/stderr instead of passing through.
 
@@ -285,6 +289,8 @@ def run_hks_smooth(
     binary = get_hks_binary()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    n_threads = threads if threads > 0 else 4
+
     with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False) as tmp:
         smooth_tsv = Path(tmp.name)
 
@@ -296,6 +302,7 @@ def run_hks_smooth(
             "-i", str(input_path),
             "-o", str(smooth_tsv),
             "--max-gap", str(max_gap),
+            "-t", str(n_threads),
         ]
         logger.debug("running: %s", " ".join(cmd))
         run_tool(cmd, capture=capture)
