@@ -38,6 +38,35 @@ def _write_minimal_db(dir_: Path) -> Path:
     return dir_
 
 
+def _write_minimal_hks_db(dir_: Path) -> Path:
+    """Build a minimal, valid HKS-backed KaryoScope database layout. Returns dir_."""
+    dir_.mkdir(parents=True, exist_ok=True)
+    (dir_ / "manifest.yaml").write_text(
+        "id: test_hks_db\n"
+        "version: 1.0.0\n"
+        "karyoscope_min_version: 0.1.0\n"
+        "index:\n"
+        "  type: hks\n"
+        "  basename: index/features\n"
+        "hierarchy: hierarchy.tsv\n"
+        "features: features.tsv\n"
+        "colors: colors.txt\n"
+        "kmer:\n"
+        "  size: 31\n"
+        "  type: fixed\n"
+        "  max_size: 31\n"
+        "feature_sets: [chromosome]\n"
+    )
+    (dir_ / "hierarchy.tsv").write_text("feature_set\tfeature\tparent\n")
+    (dir_ / "features.tsv").write_text("feature_set\tfeature\tfeature_id\n")
+    (dir_ / "colors.txt").write_text("feature_set\tfeature\tcolor\n")
+    (dir_ / "index").mkdir(exist_ok=True)
+    (dir_ / "index" / "features.hksb").write_bytes(b"\x00" * 8)
+    (dir_ / "index" / "features.chromosome.hksf").write_bytes(b"\x00" * 8)
+    (dir_ / "index" / "features.chromosome.hierarchy.txt").write_text("chr1\tcategorized\n")
+    return dir_
+
+
 # --- parse_manifest -----------------------------------------------------
 
 
@@ -50,6 +79,17 @@ def test_parse_manifest_minimal(tmp_path: Path) -> None:
     assert m.index.type == "kmc"
     assert m.index.basename == "index/features"
     assert m.kmer.size == 21
+    assert m.feature_sets == ["chromosome"]
+
+
+def test_parse_manifest_hks(tmp_path: Path) -> None:
+    db = _write_minimal_hks_db(tmp_path / "db")
+    m = parse_manifest(db / "manifest.yaml")
+
+    assert m.id == "test_hks_db"
+    assert m.index.type == "hks"
+    assert m.index.basename == "index/features"
+    assert m.kmer.size == 31
     assert m.feature_sets == ["chromosome"]
 
 
@@ -131,6 +171,34 @@ def test_validate_database_layout_missing_kmc_suf(tmp_path: Path) -> None:
     db = _write_minimal_db(tmp_path / "db")
     (db / "index" / "features.kmc_suf").unlink()
     with pytest.raises(DatabaseLayoutError, match=r"\.kmc_suf"):
+        validate_database_layout(db)
+
+
+def test_validate_database_layout_succeeds_on_minimal_hks(tmp_path: Path) -> None:
+    db = _write_minimal_hks_db(tmp_path / "db")
+    m = validate_database_layout(db)
+    assert m.id == "test_hks_db"
+    assert m.index.type == "hks"
+
+
+def test_validate_database_layout_missing_hksb(tmp_path: Path) -> None:
+    db = _write_minimal_hks_db(tmp_path / "db")
+    (db / "index" / "features.hksb").unlink()
+    with pytest.raises(DatabaseLayoutError, match=r"\.hksb"):
+        validate_database_layout(db)
+
+
+def test_validate_database_layout_missing_hksf(tmp_path: Path) -> None:
+    db = _write_minimal_hks_db(tmp_path / "db")
+    (db / "index" / "features.chromosome.hksf").unlink()
+    with pytest.raises(DatabaseLayoutError, match=r"\.hksf"):
+        validate_database_layout(db)
+
+
+def test_validate_database_layout_missing_hks_hierarchy(tmp_path: Path) -> None:
+    db = _write_minimal_hks_db(tmp_path / "db")
+    (db / "index" / "features.chromosome.hierarchy.txt").unlink()
+    with pytest.raises(DatabaseLayoutError, match=r"hierarchy\.txt"):
         validate_database_layout(db)
 
 

@@ -48,6 +48,11 @@ from karyoscope.core.io.hierarchy import (
     parse_hierarchy,
     validate_hierarchy,
 )
+from karyoscope.core.io.hks import (
+    convert_hks_tsv_to_bed,
+    run_hks_lookup,
+    run_hks_smooth,
+)
 from karyoscope.core.io.kmc import (
     clear_combined_marker,
     combined_bed_is_complete,
@@ -822,6 +827,90 @@ def _bgzip_file(path: Path, threads: int = 1) -> Path:
     return out_path
 
 
+# --- HKS backend ------------------------------------------------------
+
+
+def _run_hks_backend(
+    *,
+    manifest,
+    db_dir: Path,
+    input_path: Path,
+    prefix: str,
+    output_dir: Path,
+    requested: list[str],
+    smooth: bool,
+    keep_presmoothed: bool,
+    presmoothed_paths: dict[str, Path],
+    smoothed_paths: dict[str, Path],
+    threads: int,
+) -> None:
+    """Run the HKS lookup and optional smoothing for every requested feature set.
+
+    Unlike the KMC backend (one combined query, then translate integer feature
+    ids), HKS queries one ``.hksf`` per feature set and reads label names
+    directly. Each feature set is processed independently:
+
+    1. ``hks lookup`` against ``<basename>.<fs>.hksf`` -> a raw TSV.
+    2. If ``keep_presmoothed``: convert the raw TSV to the presmoothed BED.
+    3. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
+       -> the smoothed BED.
+
+    The raw TSV is a per-feature-set temp file, deleted after each set.
+    """
+    base_path = db_dir / (manifest.index.basename + ".hksb")
+    k = manifest.kmer.size
+
+    t_hks_start = time.perf_counter()
+    for fs in requested:
+        fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
+        hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
+        raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
+
+        logger.info(
+            "running hks lookup for feature set %r on %s (threads=%d)",
+            fs,
+            input_path.name,
+            threads,
+        )
+        run_hks_lookup(
+            base_path=base_path,
+            feature_set_file=fs_file,
+            k=k,
+            input_path=input_path,
+            output_path=raw_tsv,
+            threads=threads,
+            capture=True,
+        )
+        if not raw_tsv.is_file():
+            raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
+
+        try:
+            if keep_presmoothed:
+                convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
+
+            if smooth:
+                t_smo = time.perf_counter()
+                logger.info("running hks smooth for feature set %r", fs)
+                run_hks_smooth(
+                    hierarchy_file=hierarchy_file,
+                    input_path=raw_tsv,
+                    output_path=smoothed_paths[fs],
+                    capture=True,
+                )
+                logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
+        finally:
+            try:
+                raw_tsv.unlink()
+            except OSError as exc:
+                logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
+
+    logger.info(
+        "hks backend complete in %.1fs (%d feature set(s))",
+        time.perf_counter() - t_hks_start,
+        len(requested),
+    )
+
+
 # --- main entry point -------------------------------------------------
 
 
@@ -888,7 +977,8 @@ def annotate(
     DatabaseNotFoundError
         If the database can't be resolved or its layout is broken.
     ToolNotFoundError
-        If ``get_featureIDs`` (or ``bgzip``, when requested) isn't found.
+        If the k-mer query binary (``get_featureIDs`` for KMC, ``hks`` for HKS)
+        or ``bgzip`` (when requested) isn't found.
     ExternalToolError
         If a subprocess exits non-zero.
     """
@@ -955,51 +1045,8 @@ def annotate(
                 )
             indices[fs] = HierarchyIndex.from_hierarchy(hierarchy, fs)
 
-    # Run the C++ helper -- unless a complete combined BED from a prior
-    # run is already on disk. get_featureIDs is the most expensive and
-    # most memory-hungry step; reusing a verified result lets a user who
-    # was OOM-killed during smoothing simply rerun (e.g. with fewer
-    # --threads) and resume straight into the smoothing pass, instead of
-    # paying for -- and risking another OOM in -- the k-mer query again.
-    # The combined BED is feature-set- and thread-count-agnostic, so
-    # reuse stays correct even if those args changed between runs.
     input_basename = _derive_input_basename(input_path)
     prefix = f"{input_basename}.{db_id_resolved}"
-    kmc_db_basename = db_dir / manifest.index.basename
-    combined_bed = combined_bed_path(output_dir, prefix)
-
-    if not force and combined_bed_is_complete(combined_bed):
-        logger.info(
-            "reusing existing combined BED from a previous run (%s): %s "
-            "-- skipping get_featureIDs. Pass --force to regenerate.",
-            _human_bytes(combined_bed.stat().st_size),
-            combined_bed,
-        )
-    else:
-        logger.info(
-            "running get_featureIDs on %s (threads=%d); this may take several minutes",
-            input_path.name,
-            threads,
-        )
-        t_kmc_start = time.perf_counter()
-        combined_bed = run_get_featureids(
-            db_path=kmc_db_basename,
-            input_path=input_path,
-            output_dir=output_dir,
-            threads=threads,
-            prefix=prefix,
-            capture=True,
-        )
-        if not combined_bed.is_file():
-            raise KaryoscopeError(
-                f"get_featureIDs did not produce expected output at {combined_bed}"
-            )
-        logger.info(
-            "ran get_featureIDs in %.1fs (combined BED: %s)",
-            time.perf_counter() - t_kmc_start,
-            _human_bytes(combined_bed.stat().st_size),
-        )
-    logger.debug("combined BED at %s", combined_bed)
 
     # Compute output paths (uncompressed names; bgzip later if requested).
     presmoothed_paths: dict[str, Path] = (
@@ -1011,50 +1058,128 @@ def annotate(
         {fs: output_dir / f"{prefix}.{fs}.smoothed.bed" for fs in requested} if smooth else {}
     )
 
-    # Run the smoothing pass. One pool initialised with every
-    # requested feature set's state; each chunk is processed for all
-    # feature sets in one worker invocation. See
-    # :func:`_smooth_all_feature_sets` for the architectural rationale.
-    # When smoothing is off we use the simpler in-process splitter
-    # (no need to fork workers for a one-line translation).
-    if smooth:
-        is_reads = _is_reads_input(input_path)
-        logger.info(
-            "smoothing pass: %d feature set(s), threads=%d",
-            len(requested),
-            threads,
+    # --- Backend dispatch -------------------------------------------------
+    # The combined-BED intermediate is a KMC-only artifact; the HKS backend
+    # writes per-feature-set BEDs directly and has nothing to keep here.
+    combined_kept: Path | None = None
+
+    if manifest.index.type == "hks":
+        _run_hks_backend(
+            manifest=manifest,
+            db_dir=db_dir,
+            input_path=input_path,
+            prefix=prefix,
+            output_dir=output_dir,
+            requested=requested,
+            smooth=smooth,
+            keep_presmoothed=keep_presmoothed,
+            presmoothed_paths=presmoothed_paths,
+            smoothed_paths=smoothed_paths,
+            threads=threads,
         )
-        logger.debug(
-            "smoothing pass with threads=%d, preserve_input_order=%s, "
-            "is_reads_input=%s, feature_sets=%s",
-            threads,
-            preserve_input_order,
-            is_reads,
-            requested,
-        )
-        t_smooth_start = time.perf_counter()
-        # Quiet the benign BrokenPipe/EOF tracebacks the pool's daemon
-        # threads emit if a worker is OOM-killed, so the watchdog's
-        # FATAL message isn't buried under a wall of noise.
-        with _quiet_worker_pipe_errors():
-            _smooth_all_feature_sets(
-                combined_bed=combined_bed,
-                feature_sets=requested,
-                features=features,
-                indices=indices,
-                presmoothed_paths=presmoothed_paths,
-                smoothed_paths=smoothed_paths,
-                threads=threads,
-                preserve_input_order=preserve_input_order,
-                is_reads_input=is_reads,
+    else:  # "kmc" -- the only other supported type (guaranteed by parse_manifest)
+        # Run the C++ helper -- unless a complete combined BED from a prior
+        # run is already on disk. get_featureIDs is the most expensive and
+        # most memory-hungry step; reusing a verified result lets a user who
+        # was OOM-killed during smoothing simply rerun (e.g. with fewer
+        # --threads) and resume straight into the smoothing pass, instead of
+        # paying for -- and risking another OOM in -- the k-mer query again.
+        # The combined BED is feature-set- and thread-count-agnostic, so
+        # reuse stays correct even if those args changed between runs.
+        kmc_db_basename = db_dir / manifest.index.basename
+        combined_bed = combined_bed_path(output_dir, prefix)
+
+        if not force and combined_bed_is_complete(combined_bed):
+            logger.info(
+                "reusing existing combined BED from a previous run (%s): %s "
+                "-- skipping get_featureIDs. Pass --force to regenerate.",
+                _human_bytes(combined_bed.stat().st_size),
+                combined_bed,
             )
-        logger.info("smoothing pass complete in %.1fs", time.perf_counter() - t_smooth_start)
-    else:
-        # Only presmoothed output, no smoothing.
-        logger.info("splitting combined BED into %d per-feature-set BED(s)", len(requested))
-        t_split_start = time.perf_counter()
-        _split_combined_bed(combined_bed, requested, features, presmoothed_paths)
-        logger.info("split complete in %.1fs", time.perf_counter() - t_split_start)
+        else:
+            logger.info(
+                "running get_featureIDs on %s (threads=%d); this may take several minutes",
+                input_path.name,
+                threads,
+            )
+            t_kmc_start = time.perf_counter()
+            combined_bed = run_get_featureids(
+                db_path=kmc_db_basename,
+                input_path=input_path,
+                output_dir=output_dir,
+                threads=threads,
+                prefix=prefix,
+                capture=True,
+            )
+            if not combined_bed.is_file():
+                raise KaryoscopeError(
+                    f"get_featureIDs did not produce expected output at {combined_bed}"
+                )
+            logger.info(
+                "ran get_featureIDs in %.1fs (combined BED: %s)",
+                time.perf_counter() - t_kmc_start,
+                _human_bytes(combined_bed.stat().st_size),
+            )
+        logger.debug("combined BED at %s", combined_bed)
+
+        # Run the smoothing pass. One pool initialised with every
+        # requested feature set's state; each chunk is processed for all
+        # feature sets in one worker invocation. See
+        # :func:`_smooth_all_feature_sets` for the architectural rationale.
+        # When smoothing is off we use the simpler in-process splitter
+        # (no need to fork workers for a one-line translation).
+        if smooth:
+            is_reads = _is_reads_input(input_path)
+            logger.info(
+                "smoothing pass: %d feature set(s), threads=%d",
+                len(requested),
+                threads,
+            )
+            logger.debug(
+                "smoothing pass with threads=%d, preserve_input_order=%s, "
+                "is_reads_input=%s, feature_sets=%s",
+                threads,
+                preserve_input_order,
+                is_reads,
+                requested,
+            )
+            t_smooth_start = time.perf_counter()
+            # Quiet the benign BrokenPipe/EOF tracebacks the pool's daemon
+            # threads emit if a worker is OOM-killed, so the watchdog's
+            # FATAL message isn't buried under a wall of noise.
+            with _quiet_worker_pipe_errors():
+                _smooth_all_feature_sets(
+                    combined_bed=combined_bed,
+                    feature_sets=requested,
+                    features=features,
+                    indices=indices,
+                    presmoothed_paths=presmoothed_paths,
+                    smoothed_paths=smoothed_paths,
+                    threads=threads,
+                    preserve_input_order=preserve_input_order,
+                    is_reads_input=is_reads,
+                )
+            logger.info("smoothing pass complete in %.1fs", time.perf_counter() - t_smooth_start)
+        else:
+            # Only presmoothed output, no smoothing.
+            logger.info("splitting combined BED into %d per-feature-set BED(s)", len(requested))
+            t_split_start = time.perf_counter()
+            _split_combined_bed(combined_bed, requested, features, presmoothed_paths)
+            logger.info("split complete in %.1fs", time.perf_counter() - t_split_start)
+
+        # Tidy up the combined intermediate unless asked to keep it. Remove
+        # its completion marker alongside it so no dangling marker is left
+        # pointing at a deleted file.
+        if not keep_intermediates:
+            try:
+                combined_bed.unlink()
+                clear_combined_marker(combined_bed)
+                logger.debug("removed combined intermediate %s", combined_bed)
+            except OSError as e:
+                logger.warning("could not remove intermediate %s: %s", combined_bed, e)
+                combined_kept = combined_bed
+        else:
+            combined_kept = combined_bed
 
     # bgzip (or not).
     if bgzip:
@@ -1069,21 +1194,6 @@ def annotate(
             if fs in smoothed_paths:
                 smoothed_paths[fs] = _bgzip_file(smoothed_paths[fs], threads=threads)
         logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
-
-    # Tidy up the combined intermediate unless asked to keep it. Remove
-    # its completion marker alongside it so no dangling marker is left
-    # pointing at a deleted file.
-    if not keep_intermediates:
-        try:
-            combined_bed.unlink()
-            clear_combined_marker(combined_bed)
-            combined_kept: Path | None = None
-            logger.debug("removed combined intermediate %s", combined_bed)
-        except OSError as e:
-            logger.warning("could not remove intermediate %s: %s", combined_bed, e)
-            combined_kept = combined_bed
-    else:
-        combined_kept = combined_bed
 
     n_outputs = len(presmoothed_paths) + len(smoothed_paths)
     logger.info(

@@ -114,6 +114,10 @@ tests/data/dummy_db/
 # negation above otherwise re-includes it).
 tests/data/__pycache__/
 
+# Local database resources (multi-GB KaryoScope database archives and
+# unpacked index directories; installed/managed locally, never tracked).
+/resources/
+
 # Local results and scratch
 results/
 scratch/
