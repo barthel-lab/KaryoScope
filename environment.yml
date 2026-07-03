@@ -1,0 +1,39 @@
+# Shared conda environment for the KaryoScope suite
+# (KaryoScope, KaryoScope-plotlib, KaryoScope-analysis, KaryoScope-ISCN).
+#
+#   conda env create -f environment.yml     # first time
+#   conda env update -f environment.yml      # pick up changes to this file
+#   conda activate karyoscope
+#
+# This provides the SYSTEM-level tools only. After activating, install the
+# Python package(s) and build the compiled query helpers — see the
+# "Installation" section of the README.
+#
+# It is intentionally a superset: a standalone KaryoScope user gets a few
+# tools they may not need yet (e.g. librsvg), but the same environment then
+# works unchanged across the whole KaryoScope ecosystem and ISCN.
+name: karyoscope
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - pip
+
+  # Bioinformatics tools the engine shells out to.
+  - htslib        # bgzip / tabix
+  - samtools      # BAM inputs (samtools fasta)
+  - seqtk         # telomere detection, sequence subsetting
+  - cairo         # SVG -> PNG/PDF rendering (cairosvg)
+  - librsvg       # rsvg-convert, used by karyoplot / `karyoscope-iscn zoom --png`
+  - zlib
+
+  # KMC backend: the `kmc` index builder plus the C/C++ toolchain that compiles
+  # the `get_featureIDs` query helper (`make -C native/get_featureIDs`).
+  # These are dropped once the KMC backend is retired in favour of HKS.
+  - kmc
+  - compilers
+
+  # HKS backend: the Rust toolchain used to build the `hks` query binary from
+  # source (`cargo install --path ../HKS --root "$CONDA_PREFIX"`).
+  - rust

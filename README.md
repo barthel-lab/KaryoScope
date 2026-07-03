@@ -33,7 +33,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 ### Why alignment-free?
 
-- **Pangenome-scale throughput.** Annotates a single feature set on a complete human haplotype in ~8 minutes on a standard workstation, or the full six-feature-set pipeline for a diploid sample in ~30 minutes at 16 threads — scaling to cohorts of hundreds of phased assemblies. The in-progress migration to the [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend will further reduce runtime and memory footprint.
+- **Pangenome-scale throughput.** Annotates a single feature set on a complete human haplotype in ~8 minutes on a standard workstation, or the full six-feature-set pipeline for a diploid sample in ~30 minutes at 16 threads — scaling to cohorts of hundreds of phased assemblies. The [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend, now available alongside KMC, annotates all six feature sets for a human haplotype in ~7–9 minutes at a ~10 GB memory peak — roughly 2.5–3× faster than KMC and about a third of the RAM (measured at 16 threads on the T2T-CHM13v2.0, HG008N, and HG008T assemblies).
 - **Base-pair resolution across the entire genome.** Performs well in the satellite-dense centromeres, subtelomeres, and acrocentric short arms where alignment-based pipelines suffer from reference bias and ambiguous mappings.
 - **Multiple feature classes in a single pass.** The same *k*-mer can carry labels across feature sets simultaneously, so a single position can be annotated as belonging to a specific chromosome, satellite family, repeat class, and gene at once.
 - **Extensible.** Any annotation that tiles a reference of interest can serve as a feature set.
@@ -70,7 +70,8 @@ A pre-built database for the human genome is distributed alongside the tool, der
 **Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Resource needs scale with the input:
 
 - **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
-- **Human whole-genome inputs:** the pre-built human database is ~17 GB on disk, and loading its KMC index during `annotate` needs roughly 20–30 GB of RAM. We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. At 16 threads, a single human haplotype annotates in ~8 minutes and a full diploid six-feature-set run completes in ~30 minutes.
+- **Human whole-genome inputs (KMC backend):** the pre-built human database is ~17 GB on disk, and loading its KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads). We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. A single human haplotype's six-feature-set run takes ~17–22 minutes at 16 threads.
+- **Human whole-genome inputs (HKS backend):** the HKS database is ~24 GB on disk (~13 GB compressed). Because HKS queries each feature set separately, `annotate` peaks at only **~10 GB of RAM** and finishes in **~7–9 minutes** per haplotype at 16 threads — so human-scale runs are feasible on ≥ 16 GB machines.
 
 ## Installation
 
@@ -82,19 +83,28 @@ KaryoScope requires Python ≥3.10 and several external tools (`KMC`, `bgzip`, `
 git clone https://github.com/barthel-lab/KaryoScope.git
 cd KaryoScope
 
-# Create a dedicated environment with Python and the bioinformatics tools.
-# `samtools` is only needed if you plan to annotate BAM inputs; drop it
-# if you only work with FASTA or FASTQ.
-conda create -n karyoscope -c conda-forge -c bioconda \
-    python=3.12 pip kmc htslib samtools seqtk cairo librsvg zlib compilers
+# Create the shared environment from environment.yml (Python, the
+# bioinformatics tools, and the C/C++ + Rust toolchains for the query
+# helpers). This is the same environment used across the KaryoScope
+# ecosystem, so it works unchanged if you later add the sibling repos or ISCN.
+conda env create -f environment.yml
 conda activate karyoscope
 
 # Install KaryoScope
 pip install -e .
 
-# Build the bundled C++ helper (`get_featureIDs`).
+# Build the bundled C++ helper (`get_featureIDs`) for the KMC backend.
 # `pip install` is Python-only and does NOT compile the C++ tree.
 cd native/get_featureIDs && make && cd ../..
+```
+
+To use an **HKS** database (`index.type: hks`), also build the `hks` query
+binary (the Rust toolchain is already in the environment). Clone HKS with its
+submodules and install it onto `PATH`:
+
+```bash
+git clone --recurse-submodules https://github.com/jnalanko/HKS.git
+cargo install --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/hks
 ```
 
 The build produces `native/get_featureIDs/build/get_featureIDs`; the
