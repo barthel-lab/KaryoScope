@@ -49,9 +49,7 @@ _HKS_FEATURE_SETS: tuple[str, ...] = ("chromosome", "region", "repeat")
 _HKS_PER_FS_SUFFIXES: tuple[str, ...] = (".hksf", ".hierarchy.txt")
 
 
-def _write_minimal_hks_db(
-    dir_: Path, feature_sets: tuple[str, ...] = _HKS_FEATURE_SETS
-) -> Path:
+def _write_minimal_hks_db(dir_: Path, feature_sets: tuple[str, ...] = _HKS_FEATURE_SETS) -> Path:
     """Build a minimal, valid HKS-backed KaryoScope database layout. Returns dir_.
 
     Writes one ``features.<fs>.hksf`` and one ``features.<fs>.hierarchy.txt``

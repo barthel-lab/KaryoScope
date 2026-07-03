@@ -40,9 +40,7 @@ def test_convert_hks_tsv_only_none_in_label_column(tmp_path: Path) -> None:
     """A feature literally containing 'none' as a substring is not corrupted."""
     tsv = tmp_path / "raw.tsv"
     tsv.write_text(
-        "query_name\tfrom_kmer\tto_kmer\tlabel_name\n"
-        "chr1\t0\t10\tnonesuch\n"
-        "chr1\t10\t20\tnone\n"
+        "query_name\tfrom_kmer\tto_kmer\tlabel_name\nchr1\t0\t10\tnonesuch\nchr1\t10\t20\tnone\n"
     )
     bed = tmp_path / "out.bed"
     convert_hks_tsv_to_bed(tsv, bed)

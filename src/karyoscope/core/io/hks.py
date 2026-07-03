@@ -173,14 +173,20 @@ def run_hks_lookup(
     cmd: list[str] = [
         binary,
         "lookup",
-        "-i", str(base_path),
-        "--feature-set-file", str(feature_set_file),
-        "-k", str(k),
-        "-q", str(input_path),
+        "-i",
+        str(base_path),
+        "--feature-set-file",
+        str(feature_set_file),
+        "-k",
+        str(k),
+        "-q",
+        str(input_path),
         "--report-query-names",
         "--report-misses",
-        "-t", str(n_threads),
-        "-o", str(output_path),
+        "-t",
+        str(n_threads),
+        "-o",
+        str(output_path),
     ]
     logger.debug("running: %s", " ".join(cmd))
 
@@ -298,11 +304,16 @@ def run_hks_smooth(
         cmd: list[str] = [
             binary,
             "smooth",
-            "--feature-hierarchy", str(hierarchy_file),
-            "-i", str(input_path),
-            "-o", str(smooth_tsv),
-            "--max-gap", str(max_gap),
-            "-t", str(n_threads),
+            "--feature-hierarchy",
+            str(hierarchy_file),
+            "-i",
+            str(input_path),
+            "-o",
+            str(smooth_tsv),
+            "--max-gap",
+            str(max_gap),
+            "-t",
+            str(n_threads),
         ]
         logger.debug("running: %s", " ".join(cmd))
         run_tool(cmd, capture=capture)
