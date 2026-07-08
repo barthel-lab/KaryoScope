@@ -37,10 +37,7 @@ from pathlib import Path
 from typing import IO
 
 from karyoscope.core.io.agp import AgpComponent, AgpGap, AgpObject
-from karyoscope.core.io.fasta import (
-    reverse_complement,
-    write_fasta_records,
-)
+from karyoscope.core.io.fasta import reverse_complement
 from karyoscope.core.io.scaffold_map import MapRow, read_map
 from karyoscope.core.io.telo import TeloFlags
 from karyoscope.exceptions import ScaffoldError
@@ -1028,6 +1025,12 @@ class _SpilledSeqs:
         with self._paths[name].open("r") as h:
             return h.read()
 
+    def feed_into(self, writer: _ObjectSeqWriter, name: str) -> None:
+        """Stream ``name``'s sequence in bounded chunks into ``writer``."""
+        with self._paths[name].open("r") as h:
+            while chunk := h.read(_SEQ_COPY_CHUNK):
+                writer.feed(chunk)
+
     def emit(self, out: IO[str], name: str, header: str, line_width: int | None) -> None:
         """Stream ``name``'s sequence to ``out`` under ``header``.
 
@@ -1460,11 +1463,66 @@ def _to_agp_objects(
     return agp
 
 
+class _ObjectSeqWriter:
+    """Write one combined object's sequence to ``out``, wrapping continuously.
+
+    Reproduces :func:`write_fasta_records` for a single (possibly very
+    long) record, but fed incrementally so component sequences and their
+    N-gaps stream through without the whole object being held. With
+    ``line_width=None`` the sequence is emitted on one line; otherwise it
+    is wrapped at ``line_width`` continuously across component / gap
+    boundaries. Only ``_pending`` (< ``line_width`` chars) is retained.
+    """
+
+    __slots__ = ("_lw", "_out", "_pending")
+
+    def __init__(self, out: IO[str], name: str, line_width: int | None) -> None:
+        self._out = out
+        self._lw = line_width if (line_width and line_width > 0) else None
+        self._pending = ""
+        out.write(f">{name}\n")
+
+    def feed(self, s: str) -> None:
+        if not s:
+            return
+        if self._lw is None:
+            self._out.write(s)
+            return
+        lw = self._lw
+        if self._pending:
+            need = lw - len(self._pending)
+            self._pending += s[:need]
+            if len(self._pending) < lw:
+                return
+            self._out.write(self._pending)
+            self._out.write("\n")
+            self._pending = ""
+            s = s[need:]
+        n = len(s)
+        i = 0
+        while i + lw <= n:
+            self._out.write(s[i : i + lw])
+            self._out.write("\n")
+            i += lw
+        self._pending = s[i:]
+
+    def flush(self) -> None:
+        if self._lw is None:
+            # Single-line record: terminate with exactly one newline
+            # (matching write_fasta_records, which writes seq + "\n").
+            self._out.write("\n")
+        elif self._pending:
+            self._out.write(self._pending)
+            self._out.write("\n")
+            self._pending = ""
+
+
 def write_combined_fasta(
-    records: dict[str, str],
+    input_path: Path,
     objects: list[ScaffoldObject],
     output_path: Path,
     *,
+    true_lengths: dict[str, int],
     keep_unscaffolded: bool = True,
     gzip_out: bool | None = None,
     line_width: int | None = None,
@@ -1475,39 +1533,57 @@ def write_combined_fasta(
     concatenation of its (oriented) component sequences joined by
     ``gap_size`` Ns. Singleton objects join one sequence, so no gap is
     inserted. Contigs kept by ``keep_unscaffolded`` are appended under
-    their original names.
+    their original names; ``true_lengths`` supplies their reported
+    lengths (and is otherwise only used for the returned leftover list).
 
     Returns ``[(name, length)]`` for the appended leftovers, so the
     caller can hand them to :func:`_to_agp_objects` and keep the AGP a
     complete description of the FASTA.
+
+    Streaming: the source FASTA is read once, spilling each contig to a
+    per-contig temp file; each object concatenates its components on the
+    fly through an :class:`_ObjectSeqWriter`. Only a flipped component
+    is held whole (to reverse-complement it). Peak memory is one
+    component, not the whole assembly.
     """
+    if gzip_out is None:
+        gzip_out = str(output_path).endswith(".gz")
+
+    # Keep-unscaffolded needs every contig for the source-order tail, so
+    # spill them all; otherwise only the placed component contigs.
+    needed = (
+        None
+        if keep_unscaffolded
+        else {comp.row.original_name for obj in objects for comp in obj.components}
+    )
     placed: set[str] = set()
-    out_records: dict[str, str] = {}
-
-    for obj in objects:
-        gap = "N" * obj.gap_size
-        seqs: list[str] = []
-        for comp in obj.components:
-            seq = records.get(comp.row.original_name)
-            if seq is None:
-                continue
-            if comp.row.flipped:
-                seq = reverse_complement(seq)
-            seqs.append(seq)
-            placed.add(comp.row.original_name)
-        if not seqs:
-            continue
-        out_records[obj.name] = gap.join(seqs)
-
     leftovers: list[tuple[str, int]] = []
-    if keep_unscaffolded:
-        for name, seq in records.items():
-            if name in placed:
+    with (
+        _spill_fasta_seqs(input_path, needed) as spilled,
+        _open_bed_out(output_path, gzip_out=gzip_out) as out,
+    ):
+        for obj in objects:
+            comps = [c for c in obj.components if spilled.has(c.row.original_name)]
+            if not comps:
                 continue
-            out_records[name] = seq
-            leftovers.append((name, len(seq)))
+            writer = _ObjectSeqWriter(out, obj.name, line_width)
+            last = len(comps) - 1
+            for idx, comp in enumerate(comps):
+                if comp.row.flipped:
+                    writer.feed(reverse_complement(spilled.read_full(comp.row.original_name)))
+                else:
+                    spilled.feed_into(writer, comp.row.original_name)
+                placed.add(comp.row.original_name)
+                if idx != last:
+                    writer.feed("N" * obj.gap_size)
+            writer.flush()
 
-    write_fasta_records(out_records, output_path, gzip_out=gzip_out, line_width=line_width)
+        if keep_unscaffolded:
+            for name in spilled.names():
+                if name in placed:
+                    continue
+                spilled.emit(out, name, name, line_width)
+                leftovers.append((name, true_lengths[name]))
     return leftovers
 
 

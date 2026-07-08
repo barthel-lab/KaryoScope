@@ -52,7 +52,7 @@ from karyoscope.core.hap_inference import (
     read_fasta_contig_names,
 )
 from karyoscope.core.io.agp import write_agp
-from karyoscope.core.io.fasta import read_fasta_records
+from karyoscope.core.io.fasta import read_fasta_lengths
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, write_legacy_stats, write_map
 from karyoscope.core.io.telo import TeloFlags, parse_telo_file, run_seqtk_telo
@@ -395,8 +395,7 @@ def _write_combined_outputs(
     map_path = r.out_dir / f"{r.stem}.{db_id}.scaffold_map.tsv"
     stats_path = r.out_dir / f"{r.stem}.{db_id}.scaffold_stats.tsv"
 
-    records = read_fasta_records(r.spec.path)
-    true_lengths = {name: len(seq) for name, seq in records.items()}
+    true_lengths = read_fasta_lengths(r.spec.path)
     layout = plan_combined_layout(
         per_input_rows,
         true_lengths,
@@ -441,9 +440,10 @@ def _write_combined_outputs(
     logger.info("writing combined-chromosome FASTA for %s -> %s", r.spec.path.name, fasta_plain)
     t_rf = time.perf_counter()
     leftovers = write_combined_fasta(
-        records,
+        r.spec.path,
         layout,
         fasta_plain,
+        true_lengths=true_lengths,
         keep_unscaffolded=keep_unscaffolded,
         gzip_out=False,
     )

@@ -112,6 +112,39 @@ def read_fasta_contig_names(path: Path) -> list[str]:
     return names
 
 
+def read_fasta_lengths(path: Path) -> OrderedDict[str, int]:
+    """Read a FASTA file into ``{name: sequence_length}`` in source order.
+
+    Streaming counterpart to :func:`read_fasta_records` for callers that
+    only need lengths (e.g. the combined-scaffold layout): sequence
+    bodies are counted, never held, so memory stays O(number of
+    contigs). Name parsing and the length computation match
+    :func:`read_fasta_records` exactly (first whitespace token; blank
+    lines skipped; concatenated body length).
+    """
+    lengths: OrderedDict[str, int] = OrderedDict()
+    current_name: str | None = None
+    current_len = 0
+
+    with _open_in(path) as h:
+        for raw in h:
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if current_name is not None:
+                    lengths[current_name] = current_len
+                head = line[1:].lstrip()
+                current_name = head.split()[0] if head else ""
+                current_len = 0
+            elif current_name is not None:
+                current_len += len(line)
+
+    if current_name is not None:
+        lengths[current_name] = current_len
+    return lengths
+
+
 def write_fasta_records(
     records: dict[str, str] | OrderedDict[str, str],
     path: Path,

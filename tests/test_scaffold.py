@@ -830,9 +830,13 @@ class TestWriteCombinedFasta:
             _row("chr1_hap1_B", "B", "chr1", "hap1", length=5),
         ]
         records = {"A": "ACGTACGTAC", "B": "GGGGCCCC"}  # len 10, 8
+        src = tmp_path / "in.fa"
+        self._write_src(src, records)
         objs = plan_combined_layout(rows, {"A": 10, "B": 8}, gap_size=5, acrocentrics=set())
         out = tmp_path / "out.fa"
-        leftovers = write_combined_fasta(records, objs, out, keep_unscaffolded=False)
+        leftovers = write_combined_fasta(
+            src, objs, out, true_lengths={"A": 10, "B": 8}, keep_unscaffolded=False
+        )
         res = read_fasta_records(out)
         assert list(res.keys()) == ["chr1_hap1"]
         assert res["chr1_hap1"] == "ACGTACGTAC" + "N" * 5 + "GGGGCCCC"
@@ -841,17 +845,23 @@ class TestWriteCombinedFasta:
     def test_flipped_component_reverse_complemented(self, tmp_path: Path) -> None:
         rows = [_row("chr1_hap1_A_rc", "A", "chr1", "hap1", flipped=True, length=3)]
         records = {"A": "AATTCG"}  # RC = CGAATT
+        src = tmp_path / "in.fa"
+        self._write_src(src, records)
         objs = plan_combined_layout(rows, {"A": 6}, gap_size=5, acrocentrics=set())
         out = tmp_path / "out.fa"
-        write_combined_fasta(records, objs, out, keep_unscaffolded=False)
+        write_combined_fasta(src, objs, out, true_lengths={"A": 6}, keep_unscaffolded=False)
         assert read_fasta_records(out)["chr1_hap1"] == "CGAATT"
 
     def test_keep_unscaffolded_returns_leftovers(self, tmp_path: Path) -> None:
         rows = [_row("chr1_hap1_A", "A", "chr1", "hap1", length=7)]
         records = {"A": "ACGTACGTAC", "tiny": "TT"}
+        src = tmp_path / "in.fa"
+        self._write_src(src, records)
         objs = plan_combined_layout(rows, {"A": 10}, gap_size=5, acrocentrics=set())
         out = tmp_path / "out.fa"
-        leftovers = write_combined_fasta(records, objs, out, keep_unscaffolded=True)
+        leftovers = write_combined_fasta(
+            src, objs, out, true_lengths={"A": 10, "tiny": 2}, keep_unscaffolded=True
+        )
         res = read_fasta_records(out)
         assert list(res.keys()) == ["chr1_hap1", "tiny"]
         assert leftovers == [("tiny", 2)]
@@ -865,11 +875,15 @@ class TestWriteCombinedFasta:
             _row("chr13_hap1_ptg2_rc", "ptg2", "chr13", "hap1", flipped=True, length=4),
         ]
         records = {"ptg1": "ACGTACGTAC", "ptg2": "AATTCG"}  # RC(ptg2) = CGAATT
+        src = tmp_path / "in.fa"
+        self._write_src(src, records)
         objs = plan_combined_layout(
             rows, {"ptg1": 10, "ptg2": 6}, gap_size=5, acrocentrics={"chr13"}
         )
         out = tmp_path / "out.fa"
-        write_combined_fasta(records, objs, out, keep_unscaffolded=False)
+        write_combined_fasta(
+            src, objs, out, true_lengths={"ptg1": 10, "ptg2": 6}, keep_unscaffolded=False
+        )
         res = read_fasta_records(out)
         assert list(res.keys()) == ["chr13_hap1_A", "chr13_hap1_B"]
         assert res["chr13_hap1_A"] == "ACGTACGTAC"
