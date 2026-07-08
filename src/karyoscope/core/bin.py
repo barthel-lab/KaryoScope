@@ -48,7 +48,6 @@ import logging
 import multiprocessing as mp
 import os
 import time
-from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import IO
@@ -169,54 +168,88 @@ def _drive(
     leaf_set: set[str] | None,
     sink: Callable[[str, int, int, str], None],
 ) -> None:
-    """Stream binning loop. Calls ``sink`` once per output row."""
+    """Stream binning loop. Calls ``sink`` once per output row.
+
+    Memory is bounded: ``active`` holds only the bins overlapping the
+    current cursor (a handful) and ``order`` the distinct bin indices of
+    the current chromosome (chromosome_length / bin_size, a few hundred
+    for a 1 Mb bin) -- both are reset at every chromosome boundary, so
+    peak footprint is independent of input length.
+    """
     coalescer = _Coalescer(sink)
-    active: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    # ``active`` maps a bin index to its ``{feature: overlap_bp}`` tally.
+    # ``order`` is the bin indices in the order they were first touched,
+    # which -- because the input is coordinate-sorted -- is strictly
+    # ascending within a chromosome. ``head`` is the position in
+    # ``order`` of the lowest not-yet-flushed bin, so flushing is a front
+    # pop rather than a rescan-and-sort of ``active`` on every record.
+    active: dict[int, dict[str, int]] = {}
+    order: list[int] = []
+    head = 0
     current_chrom: str | None = None
     current_max_end = 0
 
-    def _flush_below(limit_idx: int) -> None:
-        for b_idx in sorted(k for k in active if k < limit_idx):
-            best = _best_feature(active[b_idx], leaf_set, bin_size)
-            start = b_idx * bin_size
-            end = min(start + bin_size, current_max_end)
-            if end > start:
-                coalescer.add(current_chrom, start, end, best)  # type: ignore[arg-type]
-            del active[b_idx]
-
-    def _flush_all() -> None:
-        if not active or current_chrom is None:
-            return
-        for b_idx in sorted(active):
-            best = _best_feature(active[b_idx], leaf_set, bin_size)
-            start = b_idx * bin_size
-            end = min(start + bin_size, current_max_end)
-            if end > start:
-                coalescer.add(current_chrom, start, end, best)
-        active.clear()
+    def _flush_bin(b_idx: int) -> None:
+        counts = active.pop(b_idx)
+        best = _best_feature(counts, leaf_set, bin_size)
+        start = b_idx * bin_size
+        end = start + bin_size
+        if end > current_max_end:
+            end = current_max_end
+        if end > start:
+            coalescer.add(current_chrom, start, end, best)  # type: ignore[arg-type]
 
     for chrom, start, end, feature in records:
         if chrom != current_chrom:
-            _flush_all()
+            while head < len(order):
+                _flush_bin(order[head])
+                head += 1
+            order.clear()
+            head = 0
             coalescer.flush()
             current_chrom = chrom
             current_max_end = 0
 
-        current_max_end = max(current_max_end, end)
+        if end > current_max_end:
+            current_max_end = end
 
         start_bin = start // bin_size
         end_bin = (end - 1) // bin_size
 
-        _flush_below(start_bin)
+        # Flush every active bin strictly below start_bin. start_bin is
+        # monotonic non-decreasing within a chromosome, so the bins to
+        # flush are a contiguous prefix of the still-active run.
+        while head < len(order) and order[head] < start_bin:
+            _flush_bin(order[head])
+            head += 1
 
-        for b_idx in range(start_bin, end_bin + 1):
-            bin_start = b_idx * bin_size
-            bin_end = bin_start + bin_size
-            ov = min(end, bin_end) - max(start, bin_start)
-            if ov > 0:
-                active[b_idx][feature] += ov
+        if start_bin == end_bin:
+            # Common case: the interval falls entirely inside one bin
+            # (median interval width is far below a typical bin size).
+            bucket = active.get(start_bin)
+            if bucket is None:
+                bucket = {}
+                active[start_bin] = bucket
+                order.append(start_bin)
+            bucket[feature] = bucket.get(feature, 0) + (end - start)
+        else:
+            for b_idx in range(start_bin, end_bin + 1):
+                bin_start = b_idx * bin_size
+                bin_end = bin_start + bin_size
+                lo = start if start > bin_start else bin_start
+                hi = end if end < bin_end else bin_end
+                ov = hi - lo
+                if ov > 0:
+                    bucket = active.get(b_idx)
+                    if bucket is None:
+                        bucket = {}
+                        active[b_idx] = bucket
+                        order.append(b_idx)
+                    bucket[feature] = bucket.get(feature, 0) + ov
 
-    _flush_all()
+    while head < len(order):
+        _flush_bin(order[head])
+        head += 1
     coalescer.flush()
 
 
