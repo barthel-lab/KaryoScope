@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import gzip
 import logging
+import shutil
+import tempfile
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from itertools import groupby
 from pathlib import Path
@@ -645,6 +647,112 @@ def _open_bed_out(path: Path, *, gzip_out: bool) -> IO[str]:
     return path.open("w")
 
 
+# --- streaming per-contig access ------------------------------------
+#
+# Both BED rewriters need per-contig random access (the output is in
+# scaffold-map order, which is a permutation of the input's contig
+# order) while the input arrives grouped by contig in a *different*
+# order and may be gzip-compressed (so we can't seek it). Loading the
+# whole BED into a dict is O(total intervals) memory -- for a
+# whole-genome region BED (~21M intervals) that is multiple GB and can
+# OOM. Instead we stream the input once, spilling only the contigs the
+# map actually places to a per-contig temp file, and read each back on
+# demand. Peak memory is then O(one contig): a flipped contig is
+# buffered to reverse it, an un-flipped one streams straight through.
+
+
+class _SpilledContigs:
+    """Per-contig temp files for the contigs a scaffold map places.
+
+    Built by :func:`_spill_needed_contigs`. Acts as a context manager
+    that removes the temp directory on exit.
+    """
+
+    __slots__ = ("_paths", "_tmpdir")
+
+    def __init__(self, tmpdir: Path, paths: dict[str, Path]) -> None:
+        self._tmpdir = tmpdir
+        self._paths = paths
+
+    def has(self, contig: str) -> bool:
+        return contig in self._paths
+
+    def read(self, contig: str) -> Iterator[tuple[int, int, str]]:
+        """Yield ``(start, end, rest)`` for ``contig`` in input order.
+
+        ``rest`` is the tab-joined 4th-and-later columns (``""`` when
+        the input had exactly three columns).
+        """
+        path = self._paths[contig]
+        with path.open("r") as h:
+            for line in h:
+                start_s, end_s, rest = line.rstrip("\n").split("\t", 2)
+                yield int(start_s), int(end_s), rest
+
+    def __enter__(self) -> _SpilledContigs:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+
+def _spill_needed_contigs(input_path: Path, needed: set[str]) -> _SpilledContigs:
+    """Stream ``input_path`` once, spilling each needed contig to a temp file.
+
+    Contigs absent from ``needed`` are validated and skipped (never
+    buffered). Malformed rows raise :class:`ScaffoldError` with the
+    line number, matching the previous whole-file loader's behaviour.
+    Each spilled line is ``start\\tend\\trest`` so the reader can round-
+    trip the record without re-splitting the original name column.
+    """
+    tmpdir = Path(tempfile.mkdtemp(prefix="ks_scaffold_"))
+    handles: dict[str, IO[str]] = {}
+    paths: dict[str, Path] = {}
+    try:
+        with _open_bed_in(input_path) as h:
+            for i, raw in enumerate(h, start=1):
+                line = raw.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 3:
+                    raise ScaffoldError(
+                        f"{input_path}:{i}: expected 3+ tab-separated columns, got {len(parts)}"
+                    )
+                try:
+                    start = int(parts[1])
+                    end = int(parts[2])
+                except ValueError as e:
+                    raise ScaffoldError(
+                        f"{input_path}:{i}: non-integer coordinates: {raw!r}"
+                    ) from e
+                seq = parts[0]
+                if seq not in needed:
+                    continue
+                fh = handles.get(seq)
+                if fh is None:
+                    # Index temp files by a counter so an odd contig name
+                    # (slashes, spaces) can't produce an unsafe path.
+                    path = tmpdir / f"{len(paths)}.bed"
+                    paths[seq] = path
+                    fh = path.open("w")
+                    handles[seq] = fh
+                rest = "\t".join(parts[3:])
+                fh.write(f"{start}\t{end}\t{rest}\n")
+    finally:
+        for fh in handles.values():
+            fh.close()
+    return _SpilledContigs(tmpdir, paths)
+
+
+def _write_bed_row(out: IO[str], name: str, start: int, end: int, rest: str) -> None:
+    """Write one BED row, omitting the trailing tab when ``rest`` is empty."""
+    if rest:
+        out.write(f"{name}\t{start}\t{end}\t{rest}\n")
+    else:
+        out.write(f"{name}\t{start}\t{end}\n")
+
+
 def rewrite_bed(
     input_path: Path,
     output_path: Path,
@@ -670,49 +778,34 @@ def rewrite_bed(
     map but absent from the input BED are also silently skipped (an
     input might legitimately have produced no records for some
     feature set -- e.g. all-novel sequences with no smoothing pass).
+
+    Streaming: the input is read once, spilling only the placed contigs
+    to per-contig temp files; each is then read back in map order. Peak
+    memory is one contig, not the whole BED.
     """
     if gzip_out is None:
         gzip_out = str(output_path).endswith(".gz")
 
-    by_contig: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
-    with _open_bed_in(input_path) as h:
-        for i, raw in enumerate(h, start=1):
-            line = raw.rstrip("\n")
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) < 3:
-                raise ScaffoldError(
-                    f"{input_path}:{i}: expected 3+ tab-separated columns, got {len(parts)}"
-                )
-            seq = parts[0]
-            try:
-                start = int(parts[1])
-                end = int(parts[2])
-            except ValueError as e:
-                raise ScaffoldError(f"{input_path}:{i}: non-integer coordinates: {raw!r}") from e
-            rest = "\t".join(parts[3:])
-            by_contig[seq].append((start, end, rest))
-
-    with _open_bed_out(output_path, gzip_out=gzip_out) as out:
+    needed = {row.original_name for row in map_rows}
+    with (
+        _spill_needed_contigs(input_path, needed) as spilled,
+        _open_bed_out(output_path, gzip_out=gzip_out) as out,
+    ):
         for row in map_rows:
-            recs = by_contig.get(row.original_name)
-            if recs is None:
+            if not spilled.has(row.original_name):
                 continue
             if row.flipped:
                 # Reverse and mirror so the output stays coordinate-sorted
-                # under the new (oriented) coordinate system.
-                emit = [
-                    (row.length - stop, row.length - start, rest)
-                    for start, stop, rest in reversed(recs)
-                ]
+                # under the new (oriented) coordinate system. Only a
+                # flipped contig needs buffering (to reverse it).
+                recs = list(spilled.read(row.original_name))
+                for start, stop, rest in reversed(recs):
+                    _write_bed_row(
+                        out, row.new_name, row.length - stop, row.length - start, rest
+                    )
             else:
-                emit = recs
-            for start, end, rest in emit:
-                if rest:
-                    out.write(f"{row.new_name}\t{start}\t{end}\t{rest}\n")
-                else:
-                    out.write(f"{row.new_name}\t{start}\t{end}\n")
+                for start, end, rest in spilled.read(row.original_name):
+                    _write_bed_row(out, row.new_name, start, end, rest)
 
 
 # --- applying an existing map to a foreign BED ----------------------
@@ -1298,23 +1391,43 @@ def write_combined_fasta(
     return leftovers
 
 
-def _merge_adjacent(intervals: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
-    """Coalesce abutting intervals that carry the same 4th-column payload.
+class _ObjectCoalescer:
+    """Coalesce and write one combined object's BED rows as a stream.
 
     Concatenating per-contig BEDs only creates new adjacencies at the
     junctions (e.g. a contig ending in ``novel``, the inserted ``novel``
     gap, and the next contig starting in ``novel``). Merging them keeps
     the combined BED identical to what annotate would emit for the
-    concatenated sequence, which merges adjacent same-name records.
+    concatenated sequence.
+
+    Holds a single pending ``(start, end, rest)`` and extends it when
+    the next interval abuts and shares its label, else flushes it under
+    the object's name -- so peak memory is one row, not the whole object.
     """
-    merged: list[tuple[int, int, str]] = []
-    for start, end, rest in intervals:
-        if merged and merged[-1][1] == start and merged[-1][2] == rest:
-            ps, _, prest = merged[-1]
-            merged[-1] = (ps, end, prest)
-        else:
-            merged.append((start, end, rest))
-    return merged
+
+    __slots__ = ("_end", "_name", "_out", "_rest", "_start")
+
+    def __init__(self, out: IO[str], name: str) -> None:
+        self._out = out
+        self._name = name
+        self._start = -1
+        self._end = -1
+        self._rest: str | None = None
+
+    def push(self, start: int, end: int, rest: str) -> None:
+        if self._rest is not None and self._end == start and self._rest == rest:
+            self._end = end
+            return
+        if self._rest is not None:
+            _write_bed_row(self._out, self._name, self._start, self._end, self._rest)
+        self._start = start
+        self._end = end
+        self._rest = rest
+
+    def flush(self) -> None:
+        if self._rest is not None:
+            _write_bed_row(self._out, self._name, self._start, self._end, self._rest)
+        self._rest = None
 
 
 def rewrite_bed_combined(
@@ -1338,38 +1451,29 @@ def rewrite_bed_combined(
     ``[object_start, object_start + E)`` extent filled with ``novel`` so
     the tiling stays complete (this does not happen for real annotate
     output, which tiles every contig fully).
+
+    Streaming: the input is read once, spilling only the placed contigs
+    to per-contig temp files. Each object's tiling is coalesced on the
+    fly (a running ``_merge_adjacent`` fold) and written directly, so
+    peak memory is one contig rather than the whole BED.
     """
     if gzip_out is None:
         gzip_out = str(output_path).endswith(".gz")
 
-    by_contig: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
-    with _open_bed_in(input_path) as h:
-        for i, raw in enumerate(h, start=1):
-            line = raw.rstrip("\n")
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) < 3:
-                raise ScaffoldError(
-                    f"{input_path}:{i}: expected 3+ tab-separated columns, got {len(parts)}"
-                )
-            seq = parts[0]
-            try:
-                start = int(parts[1])
-                end = int(parts[2])
-            except ValueError as e:
-                raise ScaffoldError(f"{input_path}:{i}: non-integer coordinates: {raw!r}") from e
-            rest = "\t".join(parts[3:])
-            by_contig[seq].append((start, end, rest))
-
-    with _open_bed_out(output_path, gzip_out=gzip_out) as out:
+    needed = {comp.row.original_name for obj in objects for comp in obj.components}
+    with (
+        _spill_needed_contigs(input_path, needed) as spilled,
+        _open_bed_out(output_path, gzip_out=gzip_out) as out,
+    ):
         for obj in objects:
-            emitted: list[tuple[int, int, str]] = []
+            # Coalesce the object's tiling on the fly (a running
+            # _merge_adjacent fold) and write directly, so we never hold
+            # the whole object's intervals -- only one pending row.
+            coalescer = _ObjectCoalescer(out, obj.name)
             n = len(obj.components)
             for idx, comp in enumerate(obj.components):
                 off = comp.object_start
-                recs = by_contig.get(comp.row.original_name)
-                if recs is None:
+                if not spilled.has(comp.row.original_name):
                     # No records for this contig in this feature set: fill
                     # its extent with novel to keep the tiling complete.
                     logger.warning(
@@ -1379,25 +1483,20 @@ def rewrite_bed_combined(
                         input_path.name,
                         comp.bed_extent,
                     )
-                    emitted.append((off, off + comp.bed_extent, "novel"))
+                    coalescer.push(off, off + comp.bed_extent, "novel")
+                elif comp.row.flipped:
+                    # Mirror within [0, E) and reverse; only a flipped
+                    # contig needs buffering.
+                    recs = list(spilled.read(comp.row.original_name))
+                    ext = comp.bed_extent
+                    for start, stop, rest in reversed(recs):
+                        coalescer.push(off + ext - stop, off + ext - start, rest)
                 else:
-                    if comp.row.flipped:
-                        oriented = [
-                            (comp.bed_extent - stop, comp.bed_extent - start, rest)
-                            for start, stop, rest in reversed(recs)
-                        ]
-                    else:
-                        oriented = recs
-                    for start, end, rest in oriented:
-                        emitted.append((off + start, off + end, rest))
+                    for start, end, rest in spilled.read(comp.row.original_name):
+                        coalescer.push(off + start, off + end, rest)
                 if idx + 1 < n:
                     gap_start = off + comp.bed_extent
                     gap_end = obj.components[idx + 1].object_start
                     if gap_end > gap_start:
-                        emitted.append((gap_start, gap_end, "novel"))
-
-            for start, end, rest in _merge_adjacent(emitted):
-                if rest:
-                    out.write(f"{obj.name}\t{start}\t{end}\t{rest}\n")
-                else:
-                    out.write(f"{obj.name}\t{start}\t{end}\n")
+                        coalescer.push(gap_start, gap_end, "novel")
+            coalescer.flush()
