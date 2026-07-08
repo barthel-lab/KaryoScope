@@ -48,6 +48,7 @@ import logging
 import multiprocessing as mp
 import os
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import IO
@@ -170,22 +171,20 @@ def _drive(
 ) -> None:
     """Stream binning loop. Calls ``sink`` once per output row.
 
-    Memory is bounded: ``active`` holds only the bins overlapping the
-    current cursor (a handful) and ``order`` the distinct bin indices of
-    the current chromosome (chromosome_length / bin_size, a few hundred
-    for a 1 Mb bin) -- both are reset at every chromosome boundary, so
-    peak footprint is independent of input length.
+    Memory is bounded and independent of both input length and bin size:
+    ``active`` and ``order`` together hold only the bins that overlap the
+    current cursor (a handful), since each bin is dropped from both the
+    instant the cursor advances past it.
     """
     coalescer = _Coalescer(sink)
     # ``active`` maps a bin index to its ``{feature: overlap_bp}`` tally.
-    # ``order`` is the bin indices in the order they were first touched,
-    # which -- because the input is coordinate-sorted -- is strictly
-    # ascending within a chromosome. ``head`` is the position in
-    # ``order`` of the lowest not-yet-flushed bin, so flushing is a front
-    # pop rather than a rescan-and-sort of ``active`` on every record.
+    # ``order`` is the still-unflushed bin indices in ascending order
+    # (ascending because the input is coordinate-sorted, so a newly
+    # touched bin is always beyond every bin still queued). Flushing pops
+    # from the left, so this stays O(active bins) -- never O(bins per
+    # chromosome), which at a 100 bp bin size would be millions.
     active: dict[int, dict[str, int]] = {}
-    order: list[int] = []
-    head = 0
+    order: deque[int] = deque()
     current_chrom: str | None = None
     current_max_end = 0
 
@@ -201,11 +200,8 @@ def _drive(
 
     for chrom, start, end, feature in records:
         if chrom != current_chrom:
-            while head < len(order):
-                _flush_bin(order[head])
-                head += 1
-            order.clear()
-            head = 0
+            while order:
+                _flush_bin(order.popleft())
             coalescer.flush()
             current_chrom = chrom
             current_max_end = 0
@@ -218,10 +214,9 @@ def _drive(
 
         # Flush every active bin strictly below start_bin. start_bin is
         # monotonic non-decreasing within a chromosome, so the bins to
-        # flush are a contiguous prefix of the still-active run.
-        while head < len(order) and order[head] < start_bin:
-            _flush_bin(order[head])
-            head += 1
+        # flush are a contiguous prefix of the queue.
+        while order and order[0] < start_bin:
+            _flush_bin(order.popleft())
 
         if start_bin == end_bin:
             # Common case: the interval falls entirely inside one bin
@@ -247,9 +242,8 @@ def _drive(
                         order.append(b_idx)
                     bucket[feature] = bucket.get(feature, 0) + ov
 
-    while head < len(order):
-        _flush_bin(order[head])
-        head += 1
+    while order:
+        _flush_bin(order.popleft())
     coalescer.flush()
 
 
