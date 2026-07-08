@@ -38,7 +38,6 @@ from typing import IO
 
 from karyoscope.core.io.agp import AgpComponent, AgpGap, AgpObject
 from karyoscope.core.io.fasta import (
-    read_fasta_records,
     reverse_complement,
     write_fasta_records,
 )
@@ -998,6 +997,114 @@ def remap_bed_with_map(
 # --- FASTA rewriting ------------------------------------------------
 
 
+#: Byte budget for streaming a spilled sequence to the output when it
+#: is emitted on a single line (``line_width=None``).
+_SEQ_COPY_CHUNK = 1 << 20
+
+
+class _SpilledSeqs:
+    """Per-contig temp files holding raw (concatenated, unwrapped) sequence.
+
+    Built by :func:`_spill_fasta_seqs`. ``names`` preserves source
+    order so the leftover-contig pass can iterate deterministically.
+    Acts as a context manager that removes the temp directory on exit.
+    """
+
+    __slots__ = ("_paths", "_tmpdir")
+
+    def __init__(self, tmpdir: Path, paths: dict[str, Path]) -> None:
+        self._tmpdir = tmpdir
+        self._paths = paths
+
+    def has(self, name: str) -> bool:
+        return name in self._paths
+
+    def names(self) -> Iterable[str]:
+        """Contig names in source (first-seen) order."""
+        return self._paths.keys()
+
+    def read_full(self, name: str) -> str:
+        """Return the whole sequence -- used only to reverse-complement."""
+        with self._paths[name].open("r") as h:
+            return h.read()
+
+    def emit(self, out: IO[str], name: str, header: str, line_width: int | None) -> None:
+        """Stream ``name``'s sequence to ``out`` under ``header``.
+
+        Reproduces :func:`write_fasta_records`' single-record output
+        (``>header`` then the sequence, wrapped at ``line_width`` or on
+        one line when ``line_width`` is ``None``) without holding the
+        whole sequence in memory.
+        """
+        out.write(f">{header}\n")
+        with self._paths[name].open("r") as h:
+            if line_width is None or line_width <= 0:
+                while chunk := h.read(_SEQ_COPY_CHUNK):
+                    out.write(chunk)
+                out.write("\n")
+            else:
+                while chunk := h.read(line_width):
+                    out.write(chunk)
+                    out.write("\n")
+
+    def __enter__(self) -> _SpilledSeqs:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+
+def _spill_fasta_seqs(input_path: Path, needed: set[str] | None) -> _SpilledSeqs:
+    """Stream ``input_path`` once, spilling wanted contigs to temp files.
+
+    ``needed=None`` spills every contig (used when unscaffolded contigs
+    must be kept); otherwise only names in ``needed``. Parsing mirrors
+    :func:`karyoscope.core.io.fasta.read_fasta_records` exactly: the name
+    is the first whitespace token of the header, blank lines are
+    skipped, CR/LF are stripped, and a repeated header keeps its last
+    occurrence (the temp file is truncated and rewritten).
+    """
+    tmpdir = Path(tempfile.mkdtemp(prefix="ks_scaffold_fa_"))
+    paths: dict[str, Path] = {}
+    cur_fh: IO[str] | None = None
+    try:
+        with _open_bed_in(input_path) as h:
+            for raw in h:
+                line = raw.rstrip("\n").rstrip("\r")
+                if not line:
+                    continue
+                if line.startswith(">"):
+                    if cur_fh is not None:
+                        cur_fh.close()
+                        cur_fh = None
+                    head = line[1:].lstrip()
+                    name = head.split()[0] if head else ""
+                    if needed is None or name in needed:
+                        path = paths.get(name)
+                        if path is None:
+                            path = tmpdir / f"{len(paths)}.seq"
+                            paths[name] = path
+                        cur_fh = path.open("w")  # truncate: last header wins
+                elif cur_fh is not None:
+                    cur_fh.write(line)
+    finally:
+        if cur_fh is not None:
+            cur_fh.close()
+    return _SpilledSeqs(tmpdir, paths)
+
+
+def _emit_fasta_record(out: IO[str], name: str, seq: str, line_width: int | None) -> None:
+    """Write one in-memory record, matching :func:`write_fasta_records`."""
+    out.write(f">{name}\n")
+    if line_width is None or line_width <= 0:
+        out.write(seq)
+        out.write("\n")
+    else:
+        for i in range(0, len(seq), line_width):
+            out.write(seq[i : i + line_width])
+            out.write("\n")
+
+
 def rewrite_fasta(
     input_path: Path,
     output_path: Path,
@@ -1024,29 +1131,42 @@ def rewrite_fasta(
     Contigs in ``map_rows`` whose ``original_name`` is missing from
     the source FASTA are silently skipped -- the same forgiving
     semantics as :func:`rewrite_bed`.
+
+    Streaming: the source FASTA is read once, spilling each contig to a
+    per-contig temp file, then read back in output order. Only a
+    flipped contig is held whole (to reverse-complement it); every
+    other contig streams straight through. Peak memory is one contig
+    rather than the whole assembly.
     """
-    records = read_fasta_records(input_path)
+    if gzip_out is None:
+        gzip_out = str(output_path).endswith(".gz")
 
+    # When leftovers are kept we need every contig on hand for the
+    # source-order tail pass, so spill them all; otherwise spill only
+    # the contigs the map places.
+    needed = None if keep_unscaffolded else {row.original_name for row in map_rows}
     placed: set[str] = set()
-    out_records: dict[str, str] = {}
-
-    for row in map_rows:
-        seq = records.get(row.original_name)
-        if seq is None:
-            continue
-        if row.flipped:
-            seq = reverse_complement(seq)
-        out_records[row.new_name] = seq
-        placed.add(row.original_name)
-
-    if keep_unscaffolded:
-        # Preserve source order for the appended contigs.
-        for name, seq in records.items():
-            if name in placed:
+    with (
+        _spill_fasta_seqs(input_path, needed) as spilled,
+        _open_bed_out(output_path, gzip_out=gzip_out) as out,
+    ):
+        for row in map_rows:
+            if not spilled.has(row.original_name):
                 continue
-            out_records[name] = seq
+            placed.add(row.original_name)
+            if row.flipped:
+                rc = reverse_complement(spilled.read_full(row.original_name))
+                _emit_fasta_record(out, row.new_name, rc, line_width)
+            else:
+                spilled.emit(out, row.original_name, row.new_name, line_width)
 
-    write_fasta_records(out_records, output_path, gzip_out=gzip_out, line_width=line_width)
+        if keep_unscaffolded:
+            # Append contigs the map didn't place, in source order,
+            # under their original names.
+            for name in spilled.names():
+                if name in placed:
+                    continue
+                spilled.emit(out, name, name, line_width)
 
 
 # --- combined-chromosome scaffolding --------------------------------
