@@ -869,9 +869,7 @@ def _rewrite_bed_seek(
         for row in map_rows:
             contig_ranges = ranges.get(row.original_name)
             if contig_ranges is not None:
-                _emit_row_records(
-                    out, row, _iter_byte_ranges(f, input_path, contig_ranges)
-                )
+                _emit_row_records(out, row, _iter_byte_ranges(f, input_path, contig_ranges))
 
 
 def _iter_byte_ranges(
@@ -894,9 +892,7 @@ def _iter_byte_ranges(
             try:
                 yield int(parts[1]), int(parts[2]), "\t".join(parts[3:])
             except ValueError as e:
-                raise ScaffoldError(
-                    f"{input_path}: non-integer coordinates: {bline!r}"
-                ) from e
+                raise ScaffoldError(f"{input_path}: non-integer coordinates: {bline!r}") from e
 
 
 # --- applying an existing map to a foreign BED ----------------------
