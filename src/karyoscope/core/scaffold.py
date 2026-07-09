@@ -775,33 +775,128 @@ def rewrite_bed(
     input might legitimately have produced no records for some
     feature set -- e.g. all-novel sequences with no smoothing pass).
 
-    Streaming: the input is read once, spilling only the placed contigs
-    to per-contig temp files; each is then read back in map order. Peak
-    memory is one contig, not the whole BED.
+    Streaming: peak memory is one contig, not the whole BED. When the
+    input is a plain (seekable) file, a byte-offset index lets each
+    contig be read directly in map order -- no temp files, and the input
+    is parsed once. A gzip input can't be seeked, so its placed contigs
+    are spilled to per-contig temp files first, then read back in order.
     """
     if gzip_out is None:
         gzip_out = str(output_path).endswith(".gz")
 
     needed = {row.original_name for row in map_rows}
+    if str(input_path) != "-" and input_path.suffix != ".gz":
+        _rewrite_bed_seek(input_path, output_path, map_rows, needed, gzip_out=gzip_out)
+    else:
+        _rewrite_bed_spill(input_path, output_path, map_rows, needed, gzip_out=gzip_out)
+
+
+def _emit_row_records(
+    out: IO[str],
+    row: MapRow,
+    records: Iterable[tuple[int, int, str]],
+) -> None:
+    """Write ``records`` under ``row.new_name``, mirroring when flipped.
+
+    A flipped contig is buffered (to reverse it); an un-flipped one is
+    written straight through as it streams.
+    """
+    if row.flipped:
+        recs = list(records)
+        for start, stop, rest in reversed(recs):
+            _write_bed_row(out, row.new_name, row.length - stop, row.length - start, rest)
+    else:
+        for start, end, rest in records:
+            _write_bed_row(out, row.new_name, start, end, rest)
+
+
+def _rewrite_bed_spill(
+    input_path: Path,
+    output_path: Path,
+    map_rows: list[MapRow],
+    needed: set[str],
+    *,
+    gzip_out: bool,
+) -> None:
+    """Gzip / stdin path: spill placed contigs to temp files, read in map order."""
     with (
         _spill_needed_contigs(input_path, needed) as spilled,
         _open_bed_out(output_path, gzip_out=gzip_out) as out,
     ):
         for row in map_rows:
-            if not spilled.has(row.original_name):
+            if spilled.has(row.original_name):
+                _emit_row_records(out, row, spilled.read(row.original_name))
+
+
+def _rewrite_bed_seek(
+    input_path: Path,
+    output_path: Path,
+    map_rows: list[MapRow],
+    needed: set[str],
+    *,
+    gzip_out: bool,
+) -> None:
+    """Plain-file path: index placed contigs by byte range, seek + read in map order.
+
+    No temp files, and the coordinates are parsed once (the indexing
+    pass only scans for newlines and the first tab). Equivalent output
+    to :func:`_rewrite_bed_spill`.
+    """
+    # Pass 1: byte range(s) of each needed contig. Input is normally
+    # grouped by contig (one contiguous range each); a contig split into
+    # several runs just gets several ranges.
+    ranges: dict[str, list[list[int]]] = {}
+    with input_path.open("rb") as f:
+        offset = 0
+        for line in f:
+            length = len(line)
+            if line.strip():
+                tab = line.find(b"\t")
+                name = (line[:tab] if tab >= 0 else line.rstrip(b"\r\n")).decode()
+                if name in needed:
+                    existing = ranges.get(name)
+                    if existing is not None and existing[-1][1] == offset:
+                        existing[-1][1] = offset + length
+                    else:
+                        ranges.setdefault(name, []).append([offset, offset + length])
+            offset += length
+
+    # Pass 2: emit in map order, seeking to each contig's range(s).
+    with (
+        input_path.open("rb") as f,
+        _open_bed_out(output_path, gzip_out=gzip_out) as out,
+    ):
+        for row in map_rows:
+            contig_ranges = ranges.get(row.original_name)
+            if contig_ranges is not None:
+                _emit_row_records(
+                    out, row, _iter_byte_ranges(f, input_path, contig_ranges)
+                )
+
+
+def _iter_byte_ranges(
+    f: IO[bytes],
+    input_path: Path,
+    contig_ranges: list[list[int]],
+) -> Iterator[tuple[int, int, str]]:
+    """Yield ``(start, end, rest)`` for the lines in ``contig_ranges``."""
+    for start_byte, end_byte in contig_ranges:
+        f.seek(start_byte)
+        block = f.read(end_byte - start_byte)
+        for bline in block.split(b"\n"):
+            if not bline:
                 continue
-            if row.flipped:
-                # Reverse and mirror so the output stays coordinate-sorted
-                # under the new (oriented) coordinate system. Only a
-                # flipped contig needs buffering (to reverse it).
-                recs = list(spilled.read(row.original_name))
-                for start, stop, rest in reversed(recs):
-                    _write_bed_row(
-                        out, row.new_name, row.length - stop, row.length - start, rest
-                    )
-            else:
-                for start, end, rest in spilled.read(row.original_name):
-                    _write_bed_row(out, row.new_name, start, end, rest)
+            parts = bline.decode().split("\t")
+            if len(parts) < 3:
+                raise ScaffoldError(
+                    f"{input_path}: expected 3+ tab-separated columns, got {len(parts)}: {bline!r}"
+                )
+            try:
+                yield int(parts[1]), int(parts[2]), "\t".join(parts[3:])
+            except ValueError as e:
+                raise ScaffoldError(
+                    f"{input_path}: non-integer coordinates: {bline!r}"
+                ) from e
 
 
 # --- applying an existing map to a foreign BED ----------------------

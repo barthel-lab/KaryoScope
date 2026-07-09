@@ -423,25 +423,48 @@ def centromeres_run(
         centromere_fs,
     )
 
-    # Make sure the scaffolded region BEDs exist for every input by
-    # calling scaffold_run with mode='bed'. scaffold_run itself is
-    # cheap when its outputs already exist (the per-step _ensure_*
-    # helpers short-circuit on existing files).
-    scaffold_run(
-        inputs,
-        db_root=db_root,
-        db_id=db_id_resolved,
-        feature_sets=[centromere_fs],
-        mode="bed",
-        min_scaffold_length=min_scaffold_length,
-        acrocentrics=acrocentrics,
-        split_haps_regex=split_haps_regex,
-        threads=threads,
-        bgzip=bgzip,
-        auto=auto,
-        output_dir=output_dir,
-        write_scaffolded_beds=write_scaffolded_beds,
-    )
+    # Make sure the scaffolding cascade has run for every input, so the
+    # binning step below has either a scaffolded region BED or the
+    # (map + smoothed BED) it can bin-then-remap from.
+    #
+    # scaffold_run's per-step _ensure_* helpers short-circuit on existing
+    # prerequisites, but its final full-resolution scaffolded-BED rewrite
+    # does not -- it re-writes every time, which on a whole-genome region
+    # track is minutes. karyotype's centromere path already ran
+    # scaffold_run before calling us, so calling it again would redo that
+    # rewrite for nothing. Skip the whole call when every input already
+    # has what the binning below needs.
+    def _binning_ready(spec: InputSpec) -> bool:
+        stem = _input_stem(spec.path)
+        out_dir = output_dir if output_dir is not None else spec.path.parent
+        if _scaffolded_bed_path(out_dir, stem, db_id_resolved, centromere_fs).is_file():
+            return True
+        map_path = out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv"
+        smoothed = _annotation_bed_path(out_dir, stem, db_id_resolved, centromere_fs)
+        return map_path.is_file() and smoothed.is_file()
+
+    if all(_binning_ready(spec) for spec in inputs):
+        logger.info(
+            "scaffold prerequisites already present for all %d input(s); "
+            "skipping redundant scaffold pass",
+            len(inputs),
+        )
+    else:
+        scaffold_run(
+            inputs,
+            db_root=db_root,
+            db_id=db_id_resolved,
+            feature_sets=[centromere_fs],
+            mode="bed",
+            min_scaffold_length=min_scaffold_length,
+            acrocentrics=acrocentrics,
+            split_haps_regex=split_haps_regex,
+            threads=threads,
+            bgzip=bgzip,
+            auto=auto,
+            output_dir=output_dir,
+            write_scaffolded_beds=write_scaffolded_beds,
+        )
 
     # Per input, bin the scaffolded BED at the two bin sizes (skipping
     # the fine pass when disabled), load, run find_centromere_ranges,
