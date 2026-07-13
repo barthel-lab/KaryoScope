@@ -13,6 +13,7 @@ from karyoscope.core.io.hks import (
     _infer_prefix,
     convert_hks_tsv_to_bed,
     get_hks_binary,
+    run_hks_lookup,
 )
 
 
@@ -47,6 +48,45 @@ def test_convert_hks_tsv_only_none_in_label_column(tmp_path: Path) -> None:
     lines = bed.read_text().splitlines()
     assert lines[0] == "chr1\t0\t10\tnonesuch"
     assert lines[1] == f"chr1\t10\t20\t{NOVEL_NAME}"
+
+
+def _capture_lookup_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, report_query_names: bool
+) -> list[str]:
+    """Run ``run_hks_lookup`` with the binary + subprocess stubbed, return the cmd."""
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr(
+        "karyoscope.core.io.hks.run_tool",
+        lambda cmd, capture=False: captured.__setitem__("cmd", cmd),
+    )
+    run_hks_lookup(
+        base_path=tmp_path / "features.hksb",
+        feature_set_file=tmp_path / "features.chromosome.hksf",
+        k=31,
+        input_path=tmp_path / "input.fa",
+        output_path=tmp_path / "out.tsv",
+        report_query_names=report_query_names,
+    )
+    return captured["cmd"]
+
+
+def test_run_hks_lookup_reports_names_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Assemblies pass --report-query-names so contig names reach the output."""
+    cmd = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    assert "--report-query-names" in cmd
+    assert "--report-misses" in cmd
+
+
+def test_run_hks_lookup_omits_names_for_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reads drop --report-query-names (integer ranks) but still report misses."""
+    cmd = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=False)
+    assert "--report-query-names" not in cmd
+    assert "--report-misses" in cmd
 
 
 def test_infer_prefix_strips_extension() -> None:

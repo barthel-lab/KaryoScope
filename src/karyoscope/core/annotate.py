@@ -861,6 +861,12 @@ def _run_hks_backend(
     base_path = db_dir / (manifest.index.basename + ".hksb")
     k = manifest.kmer.size
 
+    # Reads emit integer query ranks instead of names: HKS otherwise loads
+    # every read name into memory (~10 GB at hundreds of millions of reads),
+    # and read names carry no downstream meaning (unlike assembly contig names,
+    # which map to karyotype chromosomes).
+    is_reads = _is_reads_input(input_path)
+
     t_hks_start = time.perf_counter()
     for fs in requested:
         fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
@@ -880,6 +886,7 @@ def _run_hks_backend(
             input_path=input_path,
             output_path=raw_tsv,
             threads=threads,
+            report_query_names=not is_reads,
             capture=True,
         )
         if not raw_tsv.is_file():

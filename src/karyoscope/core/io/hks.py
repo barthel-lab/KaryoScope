@@ -120,6 +120,7 @@ def run_hks_lookup(
     input_path: Path,
     output_path: Path,
     threads: int = 0,
+    report_query_names: bool = True,
     capture: bool = False,
 ) -> Path:
     """Invoke ``hks lookup`` for one feature set.
@@ -139,6 +140,14 @@ def run_hks_lookup(
         Where to write the raw HKS lookup TSV (header + ``none`` for misses).
     threads
         Number of worker threads (0 = let HKS decide, effectively ``4`` by default).
+    report_query_names
+        If ``True`` (default), pass ``--report-query-names`` so column 1 of the
+        output holds each sequence's name -- correct for assemblies, whose
+        contig names map to karyotype chromosomes. Pass ``False`` for reads:
+        HKS then emits integer query ranks and skips its pre-pass that loads
+        every sequence name into memory (~10 GB at hundreds of millions of
+        reads). The caller decides based on input type, because a BAM input is
+        materialised to a temp ``.fasta`` and cannot be reclassified here.
     capture
         If ``True``, capture subprocess stdout/stderr instead of passing through.
 
@@ -166,6 +175,7 @@ def run_hks_lookup(
             bam_path=input_path,
             output_path=output_path,
             threads=threads,
+            report_query_names=report_query_names,
             capture=capture,
         )
 
@@ -181,7 +191,10 @@ def run_hks_lookup(
         str(k),
         "-q",
         str(input_path),
-        "--report-query-names",
+    ]
+    if report_query_names:
+        cmd.append("--report-query-names")
+    cmd += [
         "--report-misses",
         "-t",
         str(n_threads),
@@ -203,6 +216,7 @@ def _run_hks_lookup_from_bam(
     bam_path: Path,
     output_path: Path,
     threads: int,
+    report_query_names: bool = True,
     capture: bool,
 ) -> Path:
     """Convert a BAM to FASTA in a temp file and run HKS lookup on it.
@@ -245,6 +259,7 @@ def _run_hks_lookup_from_bam(
             input_path=tmp_fasta,
             output_path=output_path,
             threads=threads,
+            report_query_names=report_query_names,
             capture=capture,
         )
     finally:
