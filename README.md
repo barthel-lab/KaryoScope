@@ -71,7 +71,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 - **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
 - **Human whole-genome inputs (KMC backend):** the pre-built human database is ~17 GB on disk, and loading its KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads). We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. A single human haplotype's six-feature-set run takes ~17–22 minutes at 16 threads.
-- **Human whole-genome inputs (HKS backend):** the HKS database is ~24 GB on disk (~13 GB compressed). Because HKS queries each feature set separately, `annotate` peaks at only **~10 GB of RAM** and finishes in **~7–9 minutes** per haplotype at 16 threads — so human-scale runs are feasible on ≥ 16 GB machines.
+- **Human whole-genome inputs (HKS backend):** the HKS database is ~24 GB on disk (~13 GB compressed). `annotate` holds the index (~10 GB, fixed) plus per-query buffering that grows with how much sequence one lookup processes at once, so the memory you should request depends on the input shape. A **single haplotype** peaks at **~10 GB** (request ≥ 16 GB) and finishes in **~7–9 minutes** at 16 threads. A **combined diploid assembly** — both haplotypes in one file, e.g. HG002 v1.1 — peaks at **~17 GB** (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. Measured at 16 threads on T2T-CHM13v2.0, HG008N, HG008T, and HG002 v1.1.
 
 ## Installation
 
@@ -177,8 +177,11 @@ karyoscope download
 #    Skip if you already have your own assembly to annotate.
 curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
-# 3. Annotate the assembly. Recommended: at least 16 threads and 50 GB
-#    of RAM for human-scale inputs (HG002 runs in ~30 min at -t 16).
+# 3. Annotate the assembly. Recommended: at least 16 threads and, for the
+#    HKS backend, ≥ 24 GB of RAM — HG002 v1.1 is a combined diploid
+#    assembly and its annotate peaks at ~17 GB (a single haplotype peaks
+#    at ~10 GB and fits 16 GB). The KMC backend needs ≥ 50 GB. HG002 runs
+#    in ~20-30 min at -t 16.
 #    --no-bgzip keeps the per-feature-set BEDs as plain text for easy
 #    inspection; drop it to get the default bgzipped outputs.
 #    Accepts FASTA, FASTQ (plain or .gz), and BAM. For BAM, samtools
