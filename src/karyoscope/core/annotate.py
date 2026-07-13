@@ -205,7 +205,8 @@ def resolve_database(
         if not state.databases:
             raise DatabaseNotFoundError(
                 f"no databases installed at {db_root}. "
-                "Install one with `karyoscope download`, or pass --db <ID>."
+                "Install one with `karyoscope download`, or point --db-root at a "
+                "directory that already has one (then --db <ID> selects it)."
             )
         if len(state.databases) > 1:
             ids = sorted(state.databases.keys())
