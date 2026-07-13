@@ -89,6 +89,28 @@ def test_run_hks_lookup_omits_names_for_reads(
     assert "--report-misses" in cmd
 
 
+def test_convert_hks_tsv_header_only_yields_empty_bed(tmp_path: Path) -> None:
+    """A TSV with only a header (no records) produces an empty BED."""
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_text("query_name\tfrom_kmer\tto_kmer\tlabel_name\n")
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed)
+    assert bed.read_text() == ""
+
+
+def test_convert_hks_tsv_last_line_without_newline(tmp_path: Path) -> None:
+    """A final row lacking a trailing newline is passed through unchanged."""
+    tsv = tmp_path / "raw.tsv"
+    # No trailing newline on the last line: the miss-label pattern requires a
+    # trailing newline, so it is (correctly) not rewritten -- matching the
+    # previous splitlines(keepends=True) behavior.
+    tsv.write_text("query_name\tfrom_kmer\tto_kmer\tlabel_name\n0\t0\t10\tchr1\n0\t10\t20\tnone")
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed)
+    lines = bed.read_text().splitlines()
+    assert lines == ["0\t0\t10\tchr1", "0\t10\t20\tnone"]
+
+
 def test_infer_prefix_strips_extension() -> None:
     assert _infer_prefix(Path("sample.fasta.gz"), "HKS_db") == "sample.HKS_db"
     assert _infer_prefix(Path("reads.fq"), "HKS_db") == "reads.HKS_db"

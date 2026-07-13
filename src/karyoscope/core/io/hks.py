@@ -105,11 +105,17 @@ def convert_hks_tsv_to_bed(tsv_path: Path, bed_path: Path) -> None:
 
     Strips the header line and replaces the HKS miss label ``none`` with
     KaryoScope's ``novel`` sentinel.
+
+    Streams line by line: a reads TSV can be tens of GB (one row per k-mer
+    run over hundreds of millions of reads), so the whole file must never be
+    held in memory.
     """
-    lines = tsv_path.read_text().splitlines(keepends=True)
-    with bed_path.open("w") as out:
-        for line in lines[1:]:  # skip header
-            out.write(line.replace(f"\t{_HKS_MISS_LABEL}\n", f"\t{NOVEL_NAME}\n"))
+    miss = f"\t{_HKS_MISS_LABEL}\n"
+    novel = f"\t{NOVEL_NAME}\n"
+    with tsv_path.open() as inp, bed_path.open("w") as out:
+        next(inp, None)  # skip header
+        for line in inp:
+            out.write(line.replace(miss, novel))
 
 
 def run_hks_lookup(
