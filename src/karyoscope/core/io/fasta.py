@@ -1,10 +1,11 @@
 """Minimal FASTA reader / writer and DNA helpers.
 
-KaryoScope only needs three operations on FASTA files:
+KaryoScope needs a few operations on FASTA files, all streaming so peak
+memory stays O(number of contigs) rather than O(assembly size):
 
-* Read every sequence into memory keyed by its header name. Done by
-  :func:`read_fasta_records`. Returns an :class:`collections.OrderedDict`
-  so the writer can iterate in source order when needed.
+* Read just the contig names (:func:`read_fasta_contig_names`) or the
+  per-contig lengths (:func:`read_fasta_lengths`), without holding any
+  sequence body in memory.
 * Reverse-complement a DNA string for the orientation step. Done by
   :func:`reverse_complement`. Handles the IUPAC ambiguity codes in
   addition to the canonical ``ACGT``, and preserves case (lower
@@ -15,11 +16,10 @@ KaryoScope only needs three operations on FASTA files:
   line wrapping (default: unwrapped, one sequence per line, matching
   what the archive produced).
 
-This module deliberately does not implement indexed (samtools-faidx)
-random access. The scaffold use case loads each input FASTA exactly
-once and emits a renamed/oriented copy; in-memory is fast enough
-for any current real-world genome assembly (~3 GB worst case for
-human) and avoids a samtools dependency at scaffold time.
+This module deliberately does not read whole sequence bodies into memory
+(the scaffold path streams each contig and spills to temp files as
+needed), nor does it implement indexed (samtools-faidx) random access,
+avoiding a samtools dependency at scaffold time.
 """
 
 from __future__ import annotations
@@ -60,47 +60,11 @@ def _open_out(path: Path, *, gzip_out: bool) -> IO[str]:
     return path.open("w")
 
 
-def read_fasta_records(path: Path) -> OrderedDict[str, str]:
-    """Read a FASTA file into ``{name: sequence}``.
-
-    The name is the first whitespace-delimited token of the ``>``
-    header line. Sequences are concatenated across multi-line FASTA
-    bodies. Insertion order is preserved.
-
-    Plain and ``.gz`` inputs are both supported. The whole file is
-    held in memory; for the FASTA mode of ``karyoscope scaffold``
-    this is fine (the assembly is read once per input).
-    """
-    records: OrderedDict[str, str] = OrderedDict()
-    current_name: str | None = None
-    current_chunks: list[str] = []
-
-    with _open_in(path) as h:
-        for raw in h:
-            line = raw.rstrip("\n").rstrip("\r")
-            if not line:
-                continue
-            if line.startswith(">"):
-                if current_name is not None:
-                    records[current_name] = "".join(current_chunks)
-                head = line[1:].lstrip()
-                current_name = head.split()[0] if head else ""
-                current_chunks = []
-            else:
-                if current_name is not None:
-                    current_chunks.append(line)
-
-    if current_name is not None:
-        records[current_name] = "".join(current_chunks)
-    return records
-
-
 def read_fasta_contig_names(path: Path) -> list[str]:
     """Return just the contig names from ``path``.
 
-    Lighter-weight alternative to :func:`read_fasta_records` when the
-    caller doesn't need sequence bodies. The reader stops at the
-    end of each header line and skips sequence lines entirely.
+    Streams the file, reading only header lines and skipping sequence
+    bodies entirely, so nothing scales with sequence length.
     """
     names: list[str] = []
     with _open_in(path) as h:
@@ -115,12 +79,10 @@ def read_fasta_contig_names(path: Path) -> list[str]:
 def read_fasta_lengths(path: Path) -> OrderedDict[str, int]:
     """Read a FASTA file into ``{name: sequence_length}`` in source order.
 
-    Streaming counterpart to :func:`read_fasta_records` for callers that
-    only need lengths (e.g. the combined-scaffold layout): sequence
-    bodies are counted, never held, so memory stays O(number of
-    contigs). Name parsing and the length computation match
-    :func:`read_fasta_records` exactly (first whitespace token; blank
-    lines skipped; concatenated body length).
+    Streams the file for callers that only need lengths (e.g. the
+    combined-scaffold layout): sequence bodies are counted, never held,
+    so memory stays O(number of contigs). Name = first whitespace token
+    of the header; blank lines skipped; length = concatenated body length.
     """
     lengths: OrderedDict[str, int] = OrderedDict()
     current_name: str | None = None

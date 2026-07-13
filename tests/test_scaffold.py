@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from karyoscope.core.io.fasta import read_fasta_records
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.io.telo import TeloFlags
 from karyoscope.core.scaffold import (
@@ -30,6 +29,8 @@ from karyoscope.core.scaffold import (
     scaffold_region_majority,
     write_combined_fasta,
 )
+
+from .conftest import read_fasta_records
 
 # --- pure helpers ---------------------------------------------------
 

@@ -290,7 +290,7 @@ def test_fasta_mode_writes_scaffolded_fasta(
     tmp_path: Path,
 ) -> None:
     """Default (--mode fasta) writes one scaffolded FASTA per input, no BEDs."""
-    from karyoscope.core.io.fasta import read_fasta_records
+    from .conftest import read_fasta_records
 
     out_dir = tmp_path / "out"
     result = cli_runner.invoke(
@@ -365,7 +365,7 @@ def test_drop_unscaffolded_omits_leftover_contigs(
     tmp_path: Path,
 ) -> None:
     """--drop-unscaffolded leaves out contigs that aren't in the map."""
-    from karyoscope.core.io.fasta import read_fasta_records
+    from .conftest import read_fasta_records
 
     # Build a FASTA with one matching contig and one tiny novel decoy.
     seed = "ACGTGCTAGCTAGGCTATCGTAC"
@@ -449,13 +449,14 @@ def test_combine_outputs_rename_uncombined_acrocentrics_end_to_end(tmp_path: Pat
     -- and all three output files must agree on those names, since one
     layout drives them.
     """
-    from karyoscope.core.io.fasta import read_fasta_records
     from karyoscope.core.io.scaffold_map import MapRow
     from karyoscope.core.scaffold_run import (
         InputSpec,
         _ResolvedInput,
         _write_combined_outputs,
     )
+
+    from .conftest import read_fasta_records
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -569,7 +570,7 @@ def test_combine_chromosomes_fasta_and_agp(
     tmp_path: Path,
 ) -> None:
     """--combine-chromosomes writes a combined FASTA + AGP, with N gaps."""
-    from karyoscope.core.io.fasta import read_fasta_records
+    from .conftest import read_fasta_records
 
     out_dir = tmp_path / "out"
     result = cli_runner.invoke(

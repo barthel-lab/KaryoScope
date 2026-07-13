@@ -1153,7 +1153,7 @@ def _spill_fasta_seqs(input_path: Path, needed: set[str] | None) -> _SpilledSeqs
 
     ``needed=None`` spills every contig (used when unscaffolded contigs
     must be kept); otherwise only names in ``needed``. Parsing mirrors
-    :func:`karyoscope.core.io.fasta.read_fasta_records` exactly: the name
+    :func:`karyoscope.core.io.fasta.read_fasta_lengths` exactly: the name
     is the first whitespace token of the header, blank lines are
     skipped, CR/LF are stripped, and a repeated header keeps its last
     occurrence (the temp file is truncated and rewritten).

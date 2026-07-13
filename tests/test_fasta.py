@@ -8,10 +8,11 @@ from pathlib import Path
 
 from karyoscope.core.io.fasta import (
     read_fasta_contig_names,
-    read_fasta_records,
     reverse_complement,
     write_fasta_records,
 )
+
+from .conftest import read_fasta_records
 
 # --- reverse_complement ---------------------------------------------
 
