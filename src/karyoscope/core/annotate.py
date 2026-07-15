@@ -1033,6 +1033,18 @@ def annotate(
             requested,
         )
         t_smooth_start = time.perf_counter()
+        # FIX(asat): publish the DB's smoothing.min_density (default 0.0 =
+        # disabled) to spawn workers via the environment; worker_initializer
+        # reads KARYOSCOPE_MIN_DENSITY. Sparse-probe DBs (divergent alpha-sat)
+        # set it > 0 in their manifest so density_filter reverts bridging
+        # artifacts; every other DB is unchanged.
+        _min_density = manifest.smoothing.get("min_density", 0.0)
+        try:
+            os.environ["KARYOSCOPE_MIN_DENSITY"] = str(float(_min_density))
+        except (TypeError, ValueError):
+            raise KaryoscopeError(
+                f"manifest smoothing.min_density must be a number, got {_min_density!r}"
+            ) from None
         # Quiet the benign BrokenPipe/EOF tracebacks the pool's daemon
         # threads emit if a worker is OOM-killed, so the watchdog's
         # FATAL message isn't buried under a wall of noise.

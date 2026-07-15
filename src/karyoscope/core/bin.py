@@ -114,12 +114,24 @@ def _pick_winner(candidates: dict[str, int], bin_size: int) -> str:
     return winner
 
 
-def _best_feature(counts: dict[str, int], leaf_set: set[str] | None, bin_size: int) -> str:
-    """Pick the best feature for a bin, applying leaf prioritisation."""
+def _best_feature(counts: dict[str, int], leaf_set: set[str] | None, bin_size: int,
+                  min_leaf_fraction: float = 0.0) -> str:
+    """Pick the best feature for a bin, applying leaf prioritisation.
+
+    FIX(asat): ``min_leaf_fraction`` is a coverage floor. Leaf-prioritisation
+    drops ``novel`` from the competition (novel is never a leaf), so a bin that
+    is e.g. 99% novel + a few bp of one leaf would be painted solid as that leaf
+    -- turning a diffuse/paralogous k-mer sprinkle into a solid block. When the
+    summed leaf coverage is below ``min_leaf_fraction * bin_size`` we fall
+    through to the full competition (which lets ``novel`` win via its own >half
+    floor). Default 0.0 preserves the original behaviour (needed for the
+    chromosome feature set, which legitimately calls identity from sparse
+    markers); raise it only for content sets like asat_hor/asat_divergent.
+    """
     if leaf_set is None:
         return _pick_winner(counts, bin_size)
     leaves = {k: v for k, v in counts.items() if k in leaf_set}
-    if leaves:
+    if leaves and sum(leaves.values()) >= min_leaf_fraction * bin_size:
         return _pick_winner(leaves, bin_size)
     return _pick_winner(counts, bin_size)
 
@@ -174,10 +186,20 @@ def _drive(
     active: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     current_chrom: str | None = None
     current_max_end = 0
+    # FIX(asat): coverage floor for leaf-prioritisation (see _best_feature).
+    # Read from the environment (KARYOSCOPE_MIN_LEAF_FRACTION); the karyotype
+    # command sets it from the DB manifest for content feature sets only, so
+    # the chromosome feature set (which calls identity from sparse markers)
+    # stays at 0.0. Default 0.0 = original behaviour.
+    import os as _os
+    try:
+        _min_leaf_fraction = float(_os.environ.get("KARYOSCOPE_MIN_LEAF_FRACTION", "0.0"))
+    except ValueError:
+        _min_leaf_fraction = 0.0
 
     def _flush_below(limit_idx: int) -> None:
         for b_idx in sorted(k for k in active if k < limit_idx):
-            best = _best_feature(active[b_idx], leaf_set, bin_size)
+            best = _best_feature(active[b_idx], leaf_set, bin_size, _min_leaf_fraction)
             start = b_idx * bin_size
             end = min(start + bin_size, current_max_end)
             if end > start:
@@ -188,7 +210,7 @@ def _drive(
         if not active or current_chrom is None:
             return
         for b_idx in sorted(active):
-            best = _best_feature(active[b_idx], leaf_set, bin_size)
+            best = _best_feature(active[b_idx], leaf_set, bin_size, _min_leaf_fraction)
             start = b_idx * bin_size
             end = min(start + bin_size, current_max_end)
             if end > start:

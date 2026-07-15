@@ -93,6 +93,14 @@ class SmoothError(KaryoscopeError):
 #: are treated as independent regions.
 DEFAULT_MAX_GAP = 1000
 
+#: FIX(asat): default density floor for :func:`density_filter`. 0.0 disables it
+#: (original behaviour). Sparse-probe DBs (e.g. the divergent alpha-satellite
+#: set) set this > 0 so a same-feature run that is mostly bridged-novel gets
+#: reverted to ``novel`` -- kills the sparse-paralogous-chain inflation that the
+#: root-as-gap guard alone does not (adjacent cross-mapped hits < max_gap apart
+#: still chain). A genuine dense array (novel fraction near 0) is untouched.
+DEFAULT_MIN_DENSITY = 0.0
+
 
 # --- HierarchyIndex --------------------------------------------------
 
@@ -283,7 +291,20 @@ def smooth_intervals(
                 next_start = work[j + 1].start
                 if next_start > last_related_end + max_gap:
                     break
-                if index.is_ancestor(last_related_feat, next_feat):
+                # FIX(asat): a novel run carries the ROOT label, and the root is an
+                # ancestor of every feature, so is_ancestor() alone would treat a
+                # novel interval as a 'related' continuation and advance
+                # last_related_end across its WHOLE length -- bypassing max_gap
+                # (which only measures gaps BETWEEN intervals, not the LENGTH of
+                # one; annotate emits one contiguous interval per novel run). Keep
+                # the intended short-gap smoothing (a novel run <= max_gap is still
+                # bridged and promoted to the flankers' LCA) but stop a novel run
+                # LONGER than max_gap from being bridged -- that is the 21 Mb-arm
+                # artifact. Sparse chains (many <= max_gap novel gaps) are handled
+                # separately by density_filter.
+                if index.is_ancestor(last_related_feat, next_feat) and not (
+                    work[j + 1].is_novel and work[j + 1].end - work[j + 1].start > max_gap
+                ):
                     if next_feat in disallowed_feats:
                         break
                     related_indices.append(j + 1)
@@ -309,7 +330,11 @@ def smooth_intervals(
                 next_start = work[k + 1].start
                 if next_start > last_related_end + max_gap:
                     break
-                if index.is_ancestor(next_feat, last_related_feat):
+                # FIX(asat): mirror the forward scan's length-bounded novel guard
+                # (a novel run longer than max_gap is not a bridgeable flanker).
+                if index.is_ancestor(next_feat, last_related_feat) and not (
+                    work[k + 1].is_novel and work[k + 1].end - work[k + 1].start > max_gap
+                ):
                     related_indices.append(k + 1)
                     last_related_idx = k + 1
                     last_related_feat = next_feat
@@ -362,6 +387,57 @@ def smooth_intervals(
     if out_stats is not None:
         out_stats["passes"] = pass_count
     return work
+
+
+def density_filter(
+    intervals: list[Interval],
+    root: str,
+    *,
+    min_density: float = DEFAULT_MIN_DENSITY,
+) -> list[Interval]:
+    """Revert bridged-novel bp in low-density same-feature runs to ``novel``.
+
+    FIX(asat): the smoother bridges a same-leaf hit every < ``max_gap`` amid
+    novel into one contiguous run even when the real (non-novel) support is a
+    tiny fraction of the span (a paralogous k-mer sprinkle, e.g. chr3's D3Z1
+    monomer cross-mapping across the chr10 centromere -> a 1.8 Mb ``D3Z1``
+    block from 0.18 Mb of real hits). The root-as-gap guard does not catch this
+    because each individual gap is < ``max_gap``.
+
+    For each maximal run of consecutive same-``feature`` intervals whose feature
+    is not the root, compute ``real_bp / span`` where ``real_bp`` is the summed
+    length of the non-novel intervals. If that is below ``min_density``, the run
+    is a bridging artifact: its *promoted-novel* intervals (``is_novel``) are
+    reverted to ``(root, novel)`` while the genuine hits keep their label. A
+    dense real array (density ~1) is left untouched. ``min_density == 0``
+    disables the pass (returns the input unchanged).
+
+    Operates on the pre-:func:`merge_adjacent` list so per-interval ``is_novel``
+    is still available; returns a new list.
+    """
+    if min_density <= 0.0 or not intervals:
+        return intervals
+    out = [
+        Interval(iv.seq_name, iv.start, iv.end, iv.feature, iv.is_novel)
+        for iv in intervals
+    ]
+    i = 0
+    n = len(out)
+    while i < n:
+        j = i
+        while j + 1 < n and out[j + 1].feature == out[i].feature:
+            j += 1
+        run = out[i : j + 1]
+        feat = run[0].feature
+        if feat != root:
+            span = sum(iv.end - iv.start for iv in run)
+            real_bp = sum(iv.end - iv.start for iv in run if not iv.is_novel)
+            if span > 0 and real_bp / span < min_density:
+                for iv in run:
+                    if iv.is_novel:
+                        iv.feature = root
+        i = j + 1
+    return out
 
 
 def merge_adjacent(
@@ -437,6 +513,9 @@ _worker_feature_sets: list[str] | None = None
 # Set in assembly mode (per-(fs, seq) temp files); ``None`` in reads
 # mode (worker returns output lines via IPC).
 _worker_tmpdir_by_fs: dict[str, Path] | None = None
+# FIX(asat): density-filter threshold (see density_filter). Set per-run by
+# worker_initializer from the DB manifest; 0.0 disables (original behaviour).
+_worker_min_density: float = DEFAULT_MIN_DENSITY
 
 
 # A trimmed worker-friendly view of the features table. We hold it as a
@@ -540,10 +619,18 @@ def worker_initializer(
     root.setLevel(log_level)
 
     global _worker_indices, _worker_features_by_fs
-    global _worker_feature_sets, _worker_tmpdir_by_fs
+    global _worker_feature_sets, _worker_tmpdir_by_fs, _worker_min_density
     _worker_indices = indices
     _worker_features_by_fs = features_by_fs
     _worker_feature_sets = list(feature_sets)
+    # FIX(asat): density-filter threshold via env (inherited by spawn workers);
+    # annotate() sets it from the DB manifest's smoothing.min_density. Default
+    # 0.0 disables the pass -> original behaviour for every other DB.
+    import os as _os
+    try:
+        _worker_min_density = float(_os.environ.get("KARYOSCOPE_MIN_DENSITY", DEFAULT_MIN_DENSITY))
+    except ValueError:
+        _worker_min_density = DEFAULT_MIN_DENSITY
     _worker_tmpdir_by_fs = tmpdir_by_fs
 
 
@@ -598,6 +685,7 @@ def _smooth_one_seq_for_fs(
     pre_lines = [_render_for_output(iv, root) for iv in merged_pre]
     stats: dict[str, int] = {}
     smoothed = smooth_intervals(intervals, index, out_stats=stats)
+    smoothed = density_filter(smoothed, root, min_density=_worker_min_density)
     merged_post = merge_adjacent(smoothed, root)
     smo_lines = [_render_for_output(iv, root) for iv in merged_post]
 

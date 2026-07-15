@@ -259,6 +259,40 @@ def _telomere_flags_from_stats(stats: str) -> tuple[bool, bool]:
 # --- Legend sort key (extracted to module level so it's unit-testable) ---
 
 
+def _array_chrom_key(name: str) -> int | None:
+    """Chromosome number for an alpha-satellite ARRAY legend name, else None.
+
+    FIX(asat): lets the legend order arrays by chromosome ascending
+    (D1..D22, DX->23, DY->24) instead of by the DB's priority/build order.
+    Handles divergent arrays ``D<chrom>Z<n>`` (incl. trailing letter like
+    ``D17Z1b`` and composites like ``D1Z7|D5Z2|D19Z3`` -> first array) and
+    active-HOR stocks ``S<sf>C<chrom>H<n>L`` (``S1C10H1L`` -> 10,
+    ``S1C1_5_19H1L`` -> 1, ``S3CXH1L`` -> X). Returns None for parents/
+    aggregates (SF1, asat_divergent, non_asat_hor, ...).
+    """
+    first = name.split("|", 1)[0]
+    tok = ""
+    if first[:1] == "D":  # D<chrom>Z...
+        i = 1
+        while i < len(first) and first[i] != "Z":
+            tok += first[i]
+            i += 1
+    else:  # S<sf>C<chrom>H... (stock); take the first chrom after 'C'
+        ci = first.find("C")
+        if ci >= 0:
+            i = ci + 1
+            while i < len(first) and (first[i].isdigit() or first[i] in "XY"):
+                tok += first[i]
+                i += 1
+    if not tok:
+        return None
+    if tok == "X":
+        return 23
+    if tok == "Y":
+        return 24
+    return int(tok) if tok.isdigit() else None
+
+
 def _legend_sort_key(
     name: str,
     feature_order: list[str] | None = None,
@@ -299,13 +333,19 @@ def _legend_sort_key(
         return (-1, 0, 0, "")
     if name == "novel":
         return (10**9, 0, 0, "")
+    # FIX(asat): alpha-satellite arrays sort by CHROMOSOME ascending (bucket 0),
+    # above the parent/aggregate rows (SF1, asat_divergent, ...) which keep their
+    # hierarchy order in bucket 1. Within a chromosome, sort by the full name.
+    chrom = _array_chrom_key(name)
+    if chrom is not None:
+        return (0, chrom, 0, name)
     if feature_order:
         try:
-            return (feature_order.index(name), 0, 0, name)
+            return (1, feature_order.index(name), 0, name)
         except ValueError:
-            return (len(feature_order), 0, 0, name)
+            return (1, len(feature_order), 0, name)
     # No hierarchy hint -- everything non-special goes alphabetical.
-    return (0, 0, 0, name)
+    return (1, 0, 0, name)
 
 
 def _haps_natural_sort_key(hap: str) -> tuple[int, int, str]:
