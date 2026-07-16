@@ -51,6 +51,7 @@ feature_sets:
     bed: {bed}
     background: null
 roles: {{ chromosome_assignment: chrom }}
+exclude: [ChrM, ChrC]
 """
     )
     spec = BuildSpec.from_yaml(spec_file)
@@ -59,6 +60,7 @@ roles: {{ chromosome_assignment: chrom }}
     assert spec.s == 21
     assert spec.threads == 8
     assert spec.roles == {"chromosome_assignment": "chrom"}
+    assert spec.exclude == ["ChrM", "ChrC"]
     by_name = {fs.name: fs for fs in spec.feature_sets}
     assert by_name["repeat"].background == "nonrepeat"
     assert by_name["chrom"].background is None  # explicit null disables

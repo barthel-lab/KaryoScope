@@ -77,6 +77,11 @@ class BuildSpec:
     mem_gigas: int = 8
     external_memory: Path | None = None
     forward_only: bool = False
+    #: Sequence names (e.g. organelles ``ChrM``/``ChrC``) to exclude from the
+    #: build: their records are dropped from every feature BED and from the
+    #: gap-fill ``.fai``, so no feature set covers them and they read as ``none``
+    #: everywhere (uniform across sets). Keeps non-karyotype sequences out.
+    exclude: list[str] = field(default_factory=list)
     roles: dict[str, str] = field(default_factory=dict)
     smoothing: dict[str, object] = field(default_factory=dict)
 
@@ -101,6 +106,7 @@ class BuildSpec:
         mem_gigas: int = 8,
         external_memory: Path | None = None,
         forward_only: bool = False,
+        exclude: list[str] | None = None,
     ) -> BuildSpec:
         """Build a spec from the simple ``--feature-set NAME=bed`` CLI form.
 
@@ -137,6 +143,7 @@ class BuildSpec:
             mem_gigas=mem_gigas,
             external_memory=external_memory,
             forward_only=forward_only,
+            exclude=list(exclude or []),
         )
         spec.validate()
         return spec
@@ -232,6 +239,11 @@ class BuildSpec:
         if not isinstance(smoothing, dict):
             raise BuildError(f"{path}: 'smoothing' must be a mapping")
 
+        exclude_raw = data.get("exclude") or []
+        if not isinstance(exclude_raw, list):
+            raise BuildError(f"{path}: 'exclude' must be a list of sequence names")
+        exclude = [str(x) for x in exclude_raw]
+
         spec = cls(
             id=db_id,
             version=version,
@@ -242,6 +254,7 @@ class BuildSpec:
             mem_gigas=mem_gigas,
             external_memory=external_memory,
             forward_only=forward_only,
+            exclude=exclude,
             roles=dict(roles),
             smoothing=dict(smoothing),
         )

@@ -163,6 +163,15 @@ def _named_str_map(values: tuple[str, ...], flag: str) -> dict[str, str]:
 )
 @click.option("--forward-only", is_flag=True, help="Do not add reverse-complemented k-mers.")
 @click.option(
+    "--exclude",
+    "exclude_raw",
+    multiple=True,
+    help="Sequence name to exclude from the whole build (e.g. an organelle 'ChrM'). "
+    "Repeatable; accepts comma-separated lists. Excluded sequences are dropped from every "
+    "feature BED and the gap-fill index, so they read as 'none' everywhere and never appear "
+    "as karyotype chromosomes. Keep non-karyotype sequences out of the chromosome set this way.",
+)
+@click.option(
     "--db-root",
     "db_root_arg",
     type=click.Path(file_okay=False, path_type=Path),
@@ -193,6 +202,7 @@ def cmd(
     mem_gigas: int,
     external_memory: Path | None,
     forward_only: bool,
+    exclude_raw: tuple[str, ...],
     db_root_arg: Path | None,
     no_register: bool,
     force: bool,
@@ -226,6 +236,7 @@ def cmd(
             mem_gigas=mem_gigas,
             external_memory=external_memory,
             forward_only=forward_only,
+            exclude_raw=exclude_raw,
         )
     except BuildError as e:
         raise click.ClickException(str(e)) from e
@@ -270,13 +281,14 @@ def _build_spec(
     mem_gigas: int,
     external_memory: Path | None,
     forward_only: bool,
+    exclude_raw: tuple[str, ...],
 ) -> BuildSpec:
     if spec_path is not None:
-        conflicting = feature_sets_raw or db_id or sequence or backgrounds_raw
+        conflicting = feature_sets_raw or db_id or sequence or backgrounds_raw or exclude_raw
         if conflicting:
             raise click.UsageError(
-                "--spec cannot be combined with --id/--sequence/--feature-set/--background; "
-                "put everything in the spec file or use the flags."
+                "--spec cannot be combined with --id/--sequence/--feature-set/--background/"
+                "--exclude; put everything in the spec file or use the flags."
             )
         return BuildSpec.from_yaml(spec_path)
 
@@ -301,6 +313,7 @@ def _build_spec(
         mem_gigas=mem_gigas,
         external_memory=external_memory,
         forward_only=forward_only,
+        exclude=[s.strip() for raw in exclude_raw for s in raw.split(",") if s.strip()],
     )
 
 

@@ -194,7 +194,11 @@ def _prepare_feature_set(
 
     # -- obtain (label -> FASTA) inputs --
     if fs.mode == "bed":
+        excluded = set(spec.exclude)
         intervals = partition.parse_bed(fs.bed)
+        if excluded:
+            # Drop records on excluded sequences so no set covers them.
+            intervals = [iv for iv in intervals if iv[0] not in excluded]
         if fs.flatten:
             order = (
                 [n for n, _ in sorted(prios.items(), key=lambda kv: kv[1])]
@@ -205,6 +209,9 @@ def _prepare_feature_set(
         slice_intervals = list(intervals)
         if fs.background is not None:
             fai = partition.read_fai(_ensure_fai(spec.sequence))
+            if excluded:
+                # Drop excluded sequences so gap-fill doesn't cover them either.
+                fai = {name: length for name, length in fai.items() if name not in excluded}
             slice_intervals += partition.compute_background_intervals(intervals, fai, fs.background)
         label_paths = partition.slice_features_to_fastas(
             spec.sequence, slice_intervals, k=spec.s, outdir=set_work / "fastas"
