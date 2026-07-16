@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **HKS index backend** alongside the existing KMC backend. Databases declare
+  `index.type: hks` in their manifest; `annotate` dispatches to it, querying with
+  `hks lookup` and smoothing with `hks smooth` (both threaded via `--threads`).
+  HKS (Hierarchical K-mer Sets) resolves multiply-labelled k-mers through the
+  label hierarchy at query time. On the CHM13 feature sets it runs ~2.5-3x faster
+  and at ~1/3 the peak RAM of the KMC backend. Ships the new `HKS_human_CHM13_v2`
+  database, which re-indexes the same k-mers as the KMC `KS_human_CHM13_v2` (the
+  KMC database is unchanged). `features.tsv` is not needed by this backend (see
+  Changed). Requires the `hks` binary on `PATH` (or `$KARYOSCOPE_HKS`).
+- `environment.yml` for the suite's conda environment (includes `rust`, needed to
+  build the `hks` binary from source), shared with KaryoScope-ISCN.
 - `build --exclude SEQID` (and spec `exclude:`): drop sequences (e.g. organelles
   `ChrM`/`ChrC`) from the whole build — removed from every feature BED and the
   gap-fill index, so no set covers them and they read as `none` everywhere
@@ -66,6 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ``date-released`` fields).
 
 ### Fixed
+- `annotate`'s "no databases installed" error now mentions `--db-root`, making it
+  clear the databases may simply be under a non-default root.
 - The default karyotype output filename for multi-input runs (no `--output`) is
   no longer named after only the first input. It now collapses the input stems to
   their common prefix (`GM04890.haplotype1` + `GM04890.haplotype2` -> `GM04890`),
@@ -116,6 +129,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elsewhere). `--no-human-chroms` now suppresses that seeding.
 - `karyotype` title band auto-widens the canvas so a long title over few
   chromosomes is no longer clipped.
+- Memory: the `bin`, `scaffold`, and `centromeres` stages and the HKS TSV->BED
+  conversion now stream per contig / in bounded batches instead of loading whole
+  assemblies or files into memory. Peak RAM on a whole-genome cascade drops from
+  ~32-46 GB to ~10 GB (now bounded by `annotate`), so runs fit on much smaller
+  nodes; outputs are byte-identical. Read inputs also emit integer query ranks
+  rather than names, and a redundant scaffold pass was dropped.
 - `features.tsv` is now optional for HKS databases (`index.type: hks`). It maps
   integer feature ids to names for the KMC backend only; the HKS backend reads
   label names from the index and never consults it. The manifest parser and
