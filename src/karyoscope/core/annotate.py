@@ -130,6 +130,35 @@ class AnnotateResult:
 # --- helpers ----------------------------------------------------------
 
 
+def _resolve_query_k(manifest, k: int | None, db_id: str) -> int:
+    """Return the k-mer length to query with, validating an explicit override.
+
+    Without ``k``, uses ``manifest.kmer.size``. An explicit ``k`` is honoured
+    only on a variable-k HKS index (``kmer.type == "variable"``), where any
+    ``1 <= k <= kmer.max_size`` is valid. On a fixed-k index the only queryable
+    length is ``kmer.size``, so any other ``k`` is a hard error pointing at the
+    variable-k build option.
+    """
+    if k is None:
+        return manifest.kmer.size
+    if k < 1:
+        raise KaryoscopeError(f"--k must be >= 1, got {k}")
+    if k == manifest.kmer.size:
+        return k
+    if manifest.kmer.type != "variable":
+        raise KaryoscopeError(
+            f"database {db_id!r} is a fixed-k index (kmer.type={manifest.kmer.type!r}); "
+            f"it can only be queried at k={manifest.kmer.size}. Build a variable-k index "
+            f"(`karyoscope build --variable-k`) to query other k values."
+        )
+    if k > manifest.kmer.max_size:
+        raise KaryoscopeError(
+            f"--k {k} exceeds this index's maximum queryable k "
+            f"(kmer.max_size={manifest.kmer.max_size})."
+        )
+    return k
+
+
 def _derive_input_basename(input_path: Path) -> str:
     """Strip recognised FASTA/FASTQ/BAM extensions from a path's filename.
 
@@ -844,6 +873,7 @@ def _run_hks_backend(
     presmoothed_paths: dict[str, Path],
     smoothed_paths: dict[str, Path],
     threads: int,
+    k: int,
 ) -> None:
     """Run the HKS lookup and optional smoothing for every requested feature set.
 
@@ -856,10 +886,11 @@ def _run_hks_backend(
     3. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
        -> the smoothed BED.
 
-    The raw TSV is a per-feature-set temp file, deleted after each set.
+    The raw TSV is a per-feature-set temp file, deleted after each set. ``k`` is
+    the query k-mer length (``manifest.kmer.size`` unless overridden for a
+    variable-k index).
     """
     base_path = db_dir / (manifest.index.basename + ".hksb")
-    k = manifest.kmer.size
 
     # Reads emit integer query ranks instead of names: HKS otherwise loads
     # every read name into memory (~10 GB at hundreds of millions of reads),
@@ -937,6 +968,7 @@ def annotate(
     bgzip: bool = True,
     preserve_input_order: bool = True,
     force: bool = False,
+    k: int | None = None,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
 
@@ -1003,6 +1035,12 @@ def annotate(
     manifest = validate_database_layout(db_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve the query k-mer length. Defaults to the manifest's size; an
+    # explicit override is only honoured on a variable-k HKS index (kmer.type
+    # == "variable"), which can answer any k <= max_size. A fixed-k index (KMC,
+    # or an HKS index built without --variable-k) can only be queried at its s.
+    query_k = _resolve_query_k(manifest, k, db_id_resolved)
+
     # Pick feature sets, validating the user's choices against the manifest.
     available = list(manifest.feature_sets)
     if feature_sets is None:
@@ -1018,14 +1056,19 @@ def annotate(
     logger.info("annotating %s against %s, sets=%s", input_path, db_id_resolved, requested)
     t_annotate_start = time.perf_counter()
 
-    # Parse features.tsv up front so we fail fast if it's malformed.
-    features = parse_features(db_dir / manifest.features)
-    missing_from_table = [fs for fs in requested if fs not in features.feature_sets]
-    if missing_from_table:
-        raise KaryoscopeError(
-            f"feature set(s) {missing_from_table!r} declared in manifest but "
-            f"missing from features.tsv columns ({features.feature_sets!r})"
-        )
+    # Parse features.tsv up front so we fail fast if it's malformed. It maps
+    # integer feature ids to names for the KMC backend; the HKS backend reads
+    # names from the index and omits features.tsv entirely (manifest.features is
+    # then None), so parse it only when present.
+    features: Features | None = None
+    if manifest.features is not None:
+        features = parse_features(db_dir / manifest.features)
+        missing_from_table = [fs for fs in requested if fs not in features.feature_sets]
+        if missing_from_table:
+            raise KaryoscopeError(
+                f"feature set(s) {missing_from_table!r} declared in manifest but "
+                f"missing from features.tsv columns ({features.feature_sets!r})"
+            )
 
     # Parse + validate the hierarchy if smoothing is enabled. The
     # validation is hard-fail here (in contrast to `info`, where it's
@@ -1035,10 +1078,14 @@ def annotate(
     indices: dict[str, HierarchyIndex] = {}
     if smooth:
         hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
-        # Build the features-columns map for the cross-validation check.
-        feature_columns: dict[str, set[str]] = {
-            fs: {row[fs] for row in features.table.values()} for fs in requested
-        }
+        # Build the features-columns map for the cross-validation check. Only
+        # available for the KMC backend (features.tsv); for HKS there is no
+        # feature table, so skip that particular check (pass None).
+        feature_columns: dict[str, set[str]] | None = (
+            {fs: {row[fs] for row in features.table.values()} for fs in requested}
+            if features is not None
+            else None
+        )
         issues = validate_hierarchy(hierarchy, feature_columns=feature_columns)
         if issues:
             raise KaryoscopeError(
@@ -1056,6 +1103,10 @@ def annotate(
 
     input_basename = _derive_input_basename(input_path)
     prefix = f"{input_basename}.{db_id_resolved}"
+    # When an explicit k is used, tag the outputs with it so a k-sweep into one
+    # directory doesn't overwrite itself (and the default run stays unchanged).
+    if k is not None:
+        prefix = f"{prefix}.k{query_k}"
 
     # Compute output paths (uncompressed names; bgzip later if requested).
     presmoothed_paths: dict[str, Path] = (
@@ -1085,6 +1136,7 @@ def annotate(
             presmoothed_paths=presmoothed_paths,
             smoothed_paths=smoothed_paths,
             threads=threads,
+            k=query_k,
         )
     else:  # "kmc" -- the only other supported type (guaranteed by parse_manifest)
         # Run the C++ helper -- unless a complete combined BED from a prior

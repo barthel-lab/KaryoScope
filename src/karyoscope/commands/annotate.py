@@ -103,6 +103,16 @@ logger = logging.getLogger(__name__)
     help="Threads for both k-mer querying and smoothing. 0 means auto-detect.",
 )
 @click.option(
+    "--k",
+    "k",
+    type=int,
+    default=None,
+    help="Query k-mer length. Defaults to the database's k. Only a variable-k "
+    "index (built with `karyoscope build --variable-k`) accepts a value other "
+    "than its k; use it for a k-sweep. Outputs are tagged .k<k> so runs into "
+    "one directory don't collide.",
+)
+@click.option(
     "--smooth/--no-smooth",
     default=True,
     show_default=True,
@@ -158,6 +168,7 @@ def cmd(
     db_root_arg: Path | None,
     feature_sets_arg: tuple[str, ...],
     threads: int,
+    k: int | None,
     smooth: bool,
     keep_presmoothed: bool,
     keep_intermediates: bool,
@@ -195,6 +206,7 @@ def cmd(
             db_id=db_id,
             feature_sets=feature_sets,
             threads=threads,
+            k=k,
             smooth=smooth,
             keep_presmoothed=keep_presmoothed,
             keep_intermediates=keep_intermediates,

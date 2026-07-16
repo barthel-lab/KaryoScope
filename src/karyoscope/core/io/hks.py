@@ -343,3 +343,236 @@ def run_hks_smooth(
         smooth_tsv.unlink(missing_ok=True)
 
     return output_path
+
+
+# --- index construction ----------------------------------------------
+#
+# The two phases below build a database rather than query one. ``build-base``
+# creates the shared s-mer index (``.hksb``) once; ``add-feature-set`` layers a
+# named labeling (``.hksf``) on top of it, once per feature set. See the HKS
+# README "Build an index" section and :mod:`karyoscope.core.build`.
+
+
+def run_hks_build_base(
+    *,
+    output_path: Path,
+    s: int,
+    input_path: Path | None = None,
+    input_file_list: Path | None = None,
+    threads: int = 0,
+    mem_gigas: int = 8,
+    external_memory: Path | None = None,
+    forward_only: bool = False,
+    capture: bool = False,
+) -> Path:
+    """Invoke ``hks build-base`` to build the shared base index (``*.hksb``).
+
+    Exactly one of ``input_path`` or ``input_file_list`` must be given: a single
+    FASTA/FASTQ, or a file listing one input path per line (both strands are
+    added unless ``forward_only``).
+
+    Parameters
+    ----------
+    output_path
+        Where to write the base index. Recommended extension: ``.hksb``.
+    s
+        Maximum query length (``-s``), up to 256. Every feature set built on
+        this base can later be queried at any ``k <= s``.
+    threads
+        Worker threads. ``0`` (default) lets HKS decide (effectively ``4``).
+    mem_gigas
+        RAM budget for SBWT construction, in gigabytes (``--mem-gigas``).
+    external_memory
+        If given, run in external-memory mode using this directory as scratch
+        (lower RAM peak, slower; identical output).
+    forward_only
+        Do not add reverse-complemented k-mers.
+
+    Returns
+    -------
+    Path
+        ``output_path``, after writing.
+
+    Raises
+    ------
+    ValueError
+        If neither or both of ``input_path`` / ``input_file_list`` are given.
+    ToolNotFoundError
+        If ``hks`` is not found.
+    ExternalToolError
+        If the subprocess exits with a non-zero status.
+    """
+    if (input_path is None) == (input_file_list is None):
+        raise ValueError("run_hks_build_base requires exactly one of input_path or input_file_list")
+
+    binary = get_hks_binary()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    n_threads = threads if threads > 0 else 4
+
+    cmd: list[str] = [binary, "build-base", "-s", str(s), "-o", str(output_path)]
+    if input_path is not None:
+        cmd += ["--input", str(input_path)]
+    else:
+        cmd += ["--input-file-list", str(input_file_list)]
+    cmd += ["-t", str(n_threads), "--mem-gigas", str(mem_gigas)]
+    if external_memory is not None:
+        cmd += ["--external-memory", str(external_memory)]
+    if forward_only:
+        cmd.append("--forward-only")
+
+    logger.debug("running: %s", " ".join(cmd))
+    run_tool(cmd, capture=capture)
+    return output_path
+
+
+def run_hks_add_feature_set(
+    *,
+    base_path: Path,
+    output_path: Path,
+    feature_set_name: str,
+    feature_names: Path,
+    feature_hierarchy: Path,
+    feature_file_list: Path | None = None,
+    feature_per_seq_file: Path | None = None,
+    feature_priorities: Path | None = None,
+    variable_k_support: bool = False,
+    forward_only: bool = False,
+    threads: int = 0,
+    capture: bool = False,
+) -> Path:
+    """Invoke ``hks add-feature-set`` to build one feature-set file (``*.hksf``).
+
+    Exactly one of ``feature_file_list`` (one FASTA per feature) or
+    ``feature_per_seq_file`` (a single FASTA, one sequence per feature) must be
+    given. All k-mers in those inputs must already be present in ``base_path``.
+
+    ``variable_k_support`` and ``feature_priorities`` are mutually exclusive in
+    HKS; passing both raises before invoking the tool.
+
+    Parameters
+    ----------
+    base_path
+        Existing base index (``*.hksb``).
+    output_path
+        Where to write the feature-set file (``*.hksf``).
+    feature_set_name
+        Name recorded for this labeling.
+    feature_names
+        File with one feature name per line, in input order.
+    feature_hierarchy
+        Edge-list hierarchy file (``child parent`` per line) for this set.
+    feature_priorities
+        Optional ``<name> <priority>`` file enabling priority-aware LCA. Lower
+        value = higher priority; nodes absent from the file default to ``0``.
+    variable_k_support
+        Enable queries at any ``k <= s``. Cannot be combined with
+        ``feature_priorities``.
+    forward_only
+        Do not add reverse-complemented k-mers.
+
+    Returns
+    -------
+    Path
+        ``output_path``, after writing.
+
+    Raises
+    ------
+    ValueError
+        On invalid input combinations.
+    ToolNotFoundError
+        If ``hks`` is not found.
+    ExternalToolError
+        If the subprocess exits with a non-zero status.
+    """
+    if (feature_file_list is None) == (feature_per_seq_file is None):
+        raise ValueError(
+            "run_hks_add_feature_set requires exactly one of feature_file_list "
+            "or feature_per_seq_file"
+        )
+    if variable_k_support and feature_priorities is not None:
+        raise ValueError("variable_k_support and feature_priorities are mutually exclusive in HKS")
+
+    binary = get_hks_binary()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    n_threads = threads if threads > 0 else 4
+
+    cmd: list[str] = [
+        binary,
+        "add-feature-set",
+        "-i",
+        str(base_path),
+        "-o",
+        str(output_path),
+        "--feature-set-name",
+        feature_set_name,
+        "--feature-names",
+        str(feature_names),
+        "--feature-hierarchy",
+        str(feature_hierarchy),
+    ]
+    if feature_file_list is not None:
+        cmd += ["--feature-file-list", str(feature_file_list)]
+    else:
+        cmd += ["--feature-per-seq-file", str(feature_per_seq_file)]
+    if feature_priorities is not None:
+        cmd += ["--feature-priorities", str(feature_priorities)]
+    if variable_k_support:
+        cmd.append("--variable-k-support")
+    if forward_only:
+        cmd.append("--forward-only")
+    cmd += ["-t", str(n_threads)]
+
+    logger.debug("running: %s", " ".join(cmd))
+    run_tool(cmd, capture=capture)
+    return output_path
+
+
+def validate_sibling_priorities(
+    parent_of: dict[str, str],
+    priority: dict[str, int],
+) -> list[str]:
+    """Check the HKS constraint that each sibling group is priority-consistent.
+
+    HKS's priority-aware LCA (``PriorityLca::new`` in ``priority_lca.rs``)
+    rejects any group of siblings whose priorities are neither all equal nor all
+    distinct, because a mix makes ``plca`` non-associative. We validate the same
+    rule up front so a misauthored priority file fails with a clear message here
+    rather than an opaque crash inside ``hks add-feature-set``.
+
+    Parameters
+    ----------
+    parent_of
+        ``{child: parent}`` for one feature set (the root has no entry).
+    priority
+        ``{node: priority}`` for every node; callers should default missing
+        nodes to ``0`` before calling, matching HKS.
+
+    Returns
+    -------
+    list[str]
+        Human-readable issue strings; empty when every sibling group is valid.
+    """
+    children_of: dict[str, list[str]] = {}
+    for child, parent in parent_of.items():
+        children_of.setdefault(parent, []).append(child)
+
+    issues: list[str] = []
+    for parent, kids in children_of.items():
+        if len(kids) < 2:
+            continue
+        prios = [priority.get(k, 0) for k in kids]
+        if len(set(prios)) == 1:
+            continue  # all equal — ok
+        if len(set(prios)) == len(prios):
+            continue  # all distinct — ok
+        # Mixed: report the priorities that are shared by more than one sibling.
+        by_prio: dict[int, list[str]] = {}
+        for k, p in zip(kids, prios, strict=True):
+            by_prio.setdefault(p, []).append(k)
+        dups = {p: ks for p, ks in by_prio.items() if len(ks) > 1}
+        issues.append(
+            f"children of {parent!r} have mixed priorities (must be all-equal or "
+            f"all-distinct): duplicates {dups!r}. Assign distinct priorities or "
+            f"group the tied siblings under a named parent node."
+        )
+    return issues

@@ -218,6 +218,7 @@ Pass `--format pdf` or `--format png` (repeatable) to additionally produce those
 |---|---|
 | [`karyoscope download`](docs/commands/download.md) | Acquire pre-built databases |
 | [`karyoscope register`](docs/commands/register.md) | Register a locally-placed database so commands can use it |
+| [`karyoscope build`](docs/commands/build.md) | Build an HKS database from a genome and per-feature-set BEDs |
 | [`karyoscope annotate`](docs/commands/annotate.md) | Annotate sequences with *k*-mer features |
 | [`karyoscope scaffold`](docs/commands/scaffold.md) | Order, orient, and rename assembly contigs |
 | [`karyoscope remap-bed`](docs/commands/remap-bed.md) | Apply an existing scaffold map to a separately-annotated BED |
@@ -243,7 +244,7 @@ Browse and download available databases:
 karyoscope download --list
 ```
 
-Building your own database via `karyoscope build` is planned for a future release.
+You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md).
 
 ## Pre-computed annotations
 

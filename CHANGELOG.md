@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `build` command: construct a complete, registry-ready HKS database from a
+  genome and per-feature-set BED annotations (4th column = leaf label), then
+  register it. Runs the HKS `build-base` / `add-feature-set` steps, gap-fills
+  unannotated regions with a named `background` leaf (distinct from HKS's `none`
+  novel sentinel), derives the label hierarchy (flat star by default) and
+  colours (auto palette by default), and writes `manifest.yaml` / `hierarchy.tsv`
+  / `colors.tsv`. Overlapping BEDs are allowed — HKS resolves multiply-labelled
+  k-mers via its hierarchy, and an optional per-set priority file makes the
+  higher-priority label win (the per-k-mer equivalent of pre-flattening; a
+  `--flatten` fallback remains). Two entry forms feed one pipeline: the simple
+  `--id`/`--sequence`/`--feature-set NAME=bed` flags, or a `--spec build.yaml`
+  file for multi-feature-set databases. `--variable-k` builds an index queryable
+  at any k ≤ s from a single build (e.g. a k-sweep to validate the k=31 default),
+  supported even from BED input by building the base from the generated
+  per-feature FASTAs; the manifest's `kmer.type` becomes `variable`. New
+  per-command docs at `docs/commands/build.md`.
+- `annotate --k INTEGER`: query at a chosen k-mer length. Defaults to the
+  database's k; a value other than the database's k is accepted only on a
+  variable-k HKS index, enabling a k-sweep (e.g. re-annotating the same input at
+  k=21/25/31 from one index). Outputs are tagged `.k<k>` so a sweep into one
+  directory doesn't overwrite itself; fixed-k indexes reject a differing `--k`
+  with a message pointing at `build --variable-k`.
 - `karyotype --colors PATH`: render with a custom colour file (same
   `feature_set`/`feature`/`color` format as a database `colors.tsv`) instead of
   the database default — e.g. the cytoband database's `colors_chromosome.tsv` to
@@ -69,6 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Surfaced by ISCN validation on GM03417.
 
 ### Changed
+- `features.tsv` is now optional for HKS databases (`index.type: hks`). It maps
+  integer feature ids to names for the KMC backend only; the HKS backend reads
+  label names from the index and never consults it. The manifest parser and
+  layout validator no longer require it for HKS (KMC still does), `annotate`
+  tolerates its absence, and databases built by `build` omit it. Existing HKS
+  databases that still list `features.tsv` continue to validate.
 - With ``--combine-chromosomes`` but not ``--combine-acrocentrics``, the
   acrocentric contigs that stay as separate records are now renamed in
   canonical order to ``<chrom>_<hap>_<A|B|C...>`` (e.g. ``chr14_hap2_A``,

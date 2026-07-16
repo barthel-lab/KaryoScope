@@ -59,3 +59,7 @@ class CentromereError(KaryoscopeError):
 
 class KaryotypeError(KaryoscopeError):
     """Problems rendering a karyotype SVG."""
+
+
+class BuildError(KaryoscopeError):
+    """Problems building an HKS index database (spec, inputs, or construction)."""

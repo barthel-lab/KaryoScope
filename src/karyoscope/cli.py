@@ -35,6 +35,7 @@ from karyoscope._version import __version__
 from karyoscope.commands import (
     annotate,
     bin_cmd,
+    build,
     centromeres,
     download,
     info,
@@ -130,6 +131,7 @@ def main(verbose: int, quiet: bool) -> None:
 # Register subcommands. The order here determines the order in `--help`.
 main.add_command(download.cmd, name="download")
 main.add_command(register.cmd, name="register")
+main.add_command(build.cmd, name="build")
 main.add_command(annotate.cmd, name="annotate")
 main.add_command(scaffold.cmd, name="scaffold")
 main.add_command(remap_bed.cmd, name="remap-bed")

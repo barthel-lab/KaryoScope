@@ -136,3 +136,99 @@ def test_get_hks_binary_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("karyoscope.core.io.hks.shutil.which", lambda _name: None)
     with pytest.raises(ToolNotFoundError, match="was not found on PATH"):
         get_hks_binary()
+
+
+# --- index construction wrappers -------------------------------------
+
+
+def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> dict:
+    captured: dict = {}
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr(
+        "karyoscope.core.io.hks.run_tool",
+        lambda cmd, capture=False: captured.__setitem__("cmd", [str(c) for c in cmd]),
+    )
+    return captured
+
+
+def test_build_base_input_and_external_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from karyoscope.core.io.hks import run_hks_build_base
+
+    captured = _capture_cmd(monkeypatch)
+    run_hks_build_base(
+        output_path=tmp_path / "features.hksb",
+        s=31,
+        input_path=tmp_path / "g.fa",
+        threads=8,
+        mem_gigas=16,
+        external_memory=tmp_path / "scratch",
+    )
+    cmd = captured["cmd"]
+    assert cmd[:3] == ["hks", "build-base", "-s"]
+    assert "--input" in cmd and "--input-file-list" not in cmd
+    assert "--external-memory" in cmd
+    assert cmd[cmd.index("--mem-gigas") + 1] == "16"
+
+
+def test_build_base_requires_exactly_one_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from karyoscope.core.io.hks import run_hks_build_base
+
+    _capture_cmd(monkeypatch)
+    with pytest.raises(ValueError, match="exactly one"):
+        run_hks_build_base(output_path=tmp_path / "b.hksb", s=31)
+
+
+def test_add_feature_set_priority_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from karyoscope.core.io.hks import run_hks_add_feature_set
+
+    captured = _capture_cmd(monkeypatch)
+    run_hks_add_feature_set(
+        base_path=tmp_path / "b.hksb",
+        output_path=tmp_path / "b.repeat.hksf",
+        feature_set_name="repeat",
+        feature_names=tmp_path / "names.txt",
+        feature_hierarchy=tmp_path / "h.txt",
+        feature_file_list=tmp_path / "fof.txt",
+        feature_priorities=tmp_path / "prio.txt",
+    )
+    cmd = captured["cmd"]
+    assert cmd[:2] == ["hks", "add-feature-set"]
+    assert "--feature-priorities" in cmd
+    assert "--variable-k-support" not in cmd
+    assert cmd[cmd.index("--feature-set-name") + 1] == "repeat"
+
+
+def test_add_feature_set_variable_k_and_priority_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from karyoscope.core.io.hks import run_hks_add_feature_set
+
+    _capture_cmd(monkeypatch)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        run_hks_add_feature_set(
+            base_path=tmp_path / "b.hksb",
+            output_path=tmp_path / "o.hksf",
+            feature_set_name="x",
+            feature_names=tmp_path / "n.txt",
+            feature_hierarchy=tmp_path / "h.txt",
+            feature_file_list=tmp_path / "fof.txt",
+            feature_priorities=tmp_path / "prio.txt",
+            variable_k_support=True,
+        )
+
+
+def test_validate_sibling_priorities() -> None:
+    from karyoscope.core.io.hks import validate_sibling_priorities
+
+    parent_of = {"a": "root", "b": "root", "c": "root"}
+    # all distinct -> ok
+    assert validate_sibling_priorities(parent_of, {"a": 1, "b": 2, "c": 3}) == []
+    # all equal -> ok
+    assert validate_sibling_priorities(parent_of, {"a": 0, "b": 0, "c": 0}) == []
+    # mixed (two share, one distinct) -> flagged
+    issues = validate_sibling_priorities(parent_of, {"a": 1, "b": 1, "c": 2})
+    assert len(issues) == 1 and "mixed priorities" in issues[0]

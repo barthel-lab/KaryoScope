@@ -211,3 +211,42 @@ def test_quiet_worker_pipe_errors_suppresses_and_restores() -> None:
     assert BrokenPipeError not in seen
     assert EOFError not in seen
     assert ValueError in seen
+
+
+# --- query-k resolution (variable-k support) -------------------------
+
+import pytest  # noqa: E402
+
+from karyoscope.core.annotate import _resolve_query_k  # noqa: E402
+from karyoscope.exceptions import KaryoscopeError  # noqa: E402
+
+
+def _manifest(size: int, type_: str, max_size: int) -> SimpleNamespace:
+    return SimpleNamespace(kmer=SimpleNamespace(size=size, type=type_, max_size=max_size))
+
+
+def test_resolve_query_k_defaults_to_manifest_size() -> None:
+    assert _resolve_query_k(_manifest(31, "fixed", 31), None, "db") == 31
+
+
+def test_resolve_query_k_same_as_size_always_ok() -> None:
+    assert _resolve_query_k(_manifest(31, "fixed", 31), 31, "db") == 31
+
+
+def test_resolve_query_k_variable_allows_smaller() -> None:
+    assert _resolve_query_k(_manifest(31, "variable", 31), 21, "db") == 21
+
+
+def test_resolve_query_k_fixed_rejects_override() -> None:
+    with pytest.raises(KaryoscopeError, match="fixed-k index"):
+        _resolve_query_k(_manifest(31, "fixed", 31), 21, "db")
+
+
+def test_resolve_query_k_variable_rejects_above_max() -> None:
+    with pytest.raises(KaryoscopeError, match="exceeds"):
+        _resolve_query_k(_manifest(31, "variable", 31), 40, "db")
+
+
+def test_resolve_query_k_rejects_below_one() -> None:
+    with pytest.raises(KaryoscopeError, match=">= 1"):
+        _resolve_query_k(_manifest(31, "variable", 31), 0, "db")

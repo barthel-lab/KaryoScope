@@ -64,7 +64,7 @@ class Manifest:
     karyoscope_min_version: str
     index: IndexSpec
     hierarchy: str
-    features: str
+    features: str | None
     colors: str
     kmer: KmerSpec
     feature_sets: list[str]
@@ -158,9 +158,17 @@ def parse_manifest(manifest_path: Path) -> Manifest:
         raise ManifestError(f"'feature_sets' in {where} must not be empty")
 
     hierarchy = _require(data, "hierarchy", where)
-    features = _require(data, "features", where)
     colors = _require(data, "colors", where)
-    for k, v in (("hierarchy", hierarchy), ("features", features), ("colors", colors)):
+    # ``features.tsv`` maps integer feature ids to names for the KMC backend.
+    # The HKS backend stores label names in the index itself and never reads
+    # features.tsv, so it is required only for ``type: kmc``. When an hks
+    # manifest does list it (e.g. databases predating this change), keep and
+    # validate the path for back-compat.
+    features = _require(data, "features", where) if index_type == "kmc" else data.get("features")
+    checks = [("hierarchy", hierarchy), ("colors", colors)]
+    if features is not None:
+        checks.append(("features", features))
+    for k, v in checks:
         if not isinstance(v, str):
             raise ManifestError(f"'{k}' in {where} must be a string path")
 
@@ -194,7 +202,8 @@ def validate_database_layout(db_dir: Path) -> Manifest:
     Checks:
 
     * ``manifest.yaml`` is present and parses cleanly.
-    * Files referenced from the manifest (hierarchy, features, colors) exist.
+    * Files referenced from the manifest (hierarchy, colors, and features when
+      present) exist. ``features`` is required only for ``type: kmc``.
     * For ``index.type == "kmc"``: ``<basename>.kmc_pre`` and ``<basename>.kmc_suf``
       both exist.
 
@@ -225,7 +234,8 @@ def validate_database_layout(db_dir: Path) -> Manifest:
             raise DatabaseLayoutError(f"missing {kind} file: {rel} (looked at {full})")
 
     _check_exists(manifest.hierarchy, "hierarchy")
-    _check_exists(manifest.features, "features")
+    if manifest.features is not None:
+        _check_exists(manifest.features, "features")
     _check_exists(manifest.colors, "colors")
 
     if manifest.index.type == "kmc":

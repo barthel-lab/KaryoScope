@@ -247,3 +247,66 @@ def test_validate_real_dummy_db(unpacked_dummy_db: Path) -> None:
     assert m.index.type == "kmc"
     assert "chromosome" in m.feature_sets
     assert "region" in m.feature_sets
+
+
+def _write_hks_db_optfeatures(dir_: Path, *, with_features: bool) -> Path:
+    """A minimal valid HKS database; features.tsv is optional for hks."""
+    dir_.mkdir(parents=True, exist_ok=True)
+    features_line = "features: features.tsv\n" if with_features else ""
+    (dir_ / "manifest.yaml").write_text(
+        "id: hks_db\n"
+        "version: 1.0.0\n"
+        "karyoscope_min_version: 1.0.0\n"
+        "index:\n"
+        "  type: hks\n"
+        "  basename: index/features\n"
+        "hierarchy: hierarchy.tsv\n"
+        f"{features_line}"
+        "colors: colors.tsv\n"
+        "kmer:\n"
+        "  size: 31\n"
+        "  type: fixed\n"
+        "  max_size: 31\n"
+        "feature_sets: [repeat]\n"
+    )
+    (dir_ / "hierarchy.tsv").write_text("feature_set\tchild\tparent\n")
+    (dir_ / "colors.tsv").write_text("feature_set\tfeature\tcolor\n")
+    if with_features:
+        (dir_ / "features.tsv").write_text("featureID\trepeat\n")
+    (dir_ / "index").mkdir(exist_ok=True)
+    (dir_ / "index" / "features.hksb").write_bytes(b"\x00" * 8)
+    (dir_ / "index" / "features.repeat.hksf").write_bytes(b"\x00" * 8)
+    (dir_ / "index" / "features.repeat.hierarchy.txt").write_text("")
+    return dir_
+
+
+def test_hks_manifest_without_features_is_valid(tmp_path: Path) -> None:
+    db = _write_hks_db_optfeatures(tmp_path / "db", with_features=False)
+    manifest = validate_database_layout(db)
+    assert manifest.features is None
+    assert manifest.index.type == "hks"
+
+
+def test_hks_manifest_with_features_still_accepted(tmp_path: Path) -> None:
+    db = _write_hks_db_optfeatures(tmp_path / "db", with_features=True)
+    manifest = validate_database_layout(db)
+    assert manifest.features == "features.tsv"
+
+
+def test_kmc_manifest_still_requires_features(tmp_path: Path) -> None:
+    db = tmp_path / "db"
+    db.mkdir()
+    (db / "manifest.yaml").write_text(
+        "id: kmc_db\n"
+        "version: 1.0.0\n"
+        "karyoscope_min_version: 1.0.0\n"
+        "index:\n"
+        "  type: kmc\n"
+        "  basename: index/features\n"
+        "hierarchy: hierarchy.tsv\n"
+        "colors: colors.tsv\n"
+        "kmer: { size: 21, type: fixed, max_size: 21 }\n"
+        "feature_sets: [chromosome]\n"
+    )
+    with pytest.raises(ManifestError, match="features"):
+        parse_manifest(db / "manifest.yaml")
