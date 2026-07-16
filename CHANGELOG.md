@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `build --exclude SEQID` (and spec `exclude:`): drop sequences (e.g. organelles
+  `ChrM`/`ChrC`) from the whole build — removed from every feature BED and the
+  gap-fill index, so no set covers them and they read as `none` everywhere
+  (uniform across sets) and never appear as karyotype chromosomes. The
+  `chromosome` feature set thus declares the karyotype chromosomes.
+- `karyotype` / `scaffold` / `centromeres` `--telo-motif`: telomere repeat motif
+  for the auto-run `seqtk telo` (its `-m`). Default is seqtk's `CCCTAA` (vertebrate
+  `TTAGGG`); non-vertebrates need their own (e.g. Arabidopsis/plants `CCCTAAA`,
+  `TTTAGGG`), for which the human default detects nothing.
+- `karyotype --pixels-per-mb`: pin the vertical zoom (px per Mb) to compare plots
+  across assemblies at a fixed scale.
 - `build` command: construct a complete, registry-ready HKS database from a
   genome and per-feature-set BED annotations (4th column = leaf label), then
   register it. Runs the HKS `build-base` / `add-feature-set` steps, gap-fills
@@ -91,6 +102,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Surfaced by ISCN validation on GM03417.
 
 ### Changed
+- `karyotype` rendering now scales to the data instead of fixed human-tuned
+  constants: the longest chromosome (genome view) / longest centromere (centromere
+  view) fills a fixed pixel height, the genome-view bin size is derived from the
+  longest sequence (≈ longest / 250, restoring feature diversity that a fixed 1 Mb
+  bin washed out on small genomes), and the scale bar is a "nice" round length for
+  the zoom. Human output is unchanged; small genomes (e.g. Arabidopsis) no longer
+  render tiny. Override with `--pixels-per-mb` / `--bin-size`. The centromere view
+  is also taller (fills the plot like the genome view).
+- `karyotype --no-human-chroms` / layout seeding: the karyotype layout is now
+  seeded from the database's own `chromosome` feature-set leaves rather than a
+  hardcoded human list (identical for the human database; organism-correct
+  elsewhere). `--no-human-chroms` now suppresses that seeding.
+- `karyotype` title band auto-widens the canvas so a long title over few
+  chromosomes is no longer clipped.
 - `features.tsv` is now optional for HKS databases (`index.type: hks`). It maps
   integer feature ids to names for the KMC backend only; the HKS backend reads
   label names from the index and never consults it. The manifest parser and

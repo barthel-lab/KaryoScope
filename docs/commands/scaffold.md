@@ -18,6 +18,7 @@ karyoscope scaffold -i [NAME=]PATH [OPTIONS]
 | --- | --- |
 | `-i, --input TEXT` | FASTA-format genome assembly. Repeat per haplotype. Form: `NAME=PATH` (e.g. `hap1=hap1.fa.gz`) or bare `PATH` to auto-infer the label from the filename stem. Read-level inputs (FASTQ / BAM) are rejected. [required] |
 | `--telo TEXT` | Optional precomputed seqtk telo output. Form: `NAME=PATH`. Without this, scaffold runs seqtk telo on each input automatically. |
+| `--telo-motif TEXT` | Telomere repeat motif for the auto-run `seqtk telo` (its `-m`). Default: seqtk's `CCCTAA` (the vertebrate `TTAGGG` telomere). Non-vertebrate genomes need their own — e.g. Arabidopsis / plants use `CCCTAAA` (`TTTAGGG`); the human default finds nothing on them. |
 | `--split-haps TEXT` | Optional regex applied per contig name; capture group 1 is the hap label. Overrides the built-in patterns (hifiasm h[12]tg, hap1/hap2, maternal/paternal). |
 | `--db TEXT` | Database id to use. Default: the unique installed database if exactly one is installed. |
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |

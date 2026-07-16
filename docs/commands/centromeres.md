@@ -18,6 +18,7 @@ For each scaffolded contig, this command identifies the centromere's start and e
 | --- | --- |
 | `-i, --input TEXT` | FASTA-format genome assembly. Repeat per haplotype. Form: `NAME=PATH` or bare `PATH` to auto-infer the label from the filename stem. Read-level inputs (FASTQ / BAM) are rejected. [required] |
 | `--telo TEXT` | Optional precomputed seqtk telo output. Form: `NAME=PATH`. Without this, the cascade runs seqtk telo internally. |
+| `--telo-motif TEXT` | Telomere repeat motif for the auto-run `seqtk telo` (its `-m`). Default: seqtk's `CCCTAA` (vertebrate `TTAGGG`); Arabidopsis / plants use `CCCTAAA` (`TTTAGGG`), which the human default misses. |
 | `--split-haps TEXT` | Optional regex applied per contig name; capture group 1 is the hap label. |
 | `--db TEXT` | Database id. Default: the unique installed database if exactly one is installed. |
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |

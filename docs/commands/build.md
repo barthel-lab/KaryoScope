@@ -62,6 +62,7 @@ Bases that no feature annotates are, by default, filled with a **background** le
 | `--mem-gigas INTEGER` | RAM budget (GB) for base-index construction (default `8`). |
 | `--external-memory DIRECTORY` | Build the base index in external-memory mode using this scratch dir (lower RAM, slower). |
 | `--forward-only` | Do not add reverse-complemented k-mers. |
+| `--exclude TEXT` | Sequence name to exclude from the whole build (e.g. an organelle `ChrM`). Repeatable / comma-separated. See [Excluding sequences](#excluding-sequences). |
 | `--db-root DIRECTORY` | Override the database root (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
 | `--no-register` | Build only; do not record in `installed.json`. |
 | `--force` | Overwrite an existing database directory / install record. |
@@ -87,11 +88,22 @@ feature_sets:
     colors: /path/repeat.colors.tsv       # optional; else an auto palette
   - name: gene
     bed: /path/gene.bed
+exclude: [ChrM, ChrC]                          # optional; sequences to leave out (see below)
 roles: { chromosome_assignment: chromosome }   # optional
 smoothing: { recommended_window_bp: 1000 }     # optional
 ```
 
 Relative paths in the spec are resolved against the spec file's directory.
+
+## Excluding sequences
+
+The **`chromosome` feature set declares the karyotype chromosomes** — its leaves are what `karyotype` lays out, and (unless a chromosome is present in the sample) an empty column is drawn for each. So keep **non-karyotype sequences out of the `chromosome` set**: organelles (`ChrM`, `ChrC`, …), unplaced contigs, decoys, and the like.
+
+The simplest way is `--exclude` (or `exclude:` in the spec). Excluded sequences are dropped from **every** feature BED and from the gap-fill index, so no feature set covers them and they read as `none` everywhere — uniform across sets, and absent from the karyotype. They're still real sequence; they're just not karyotype chromosomes. (This is why, for example, human CHM13 databases leave out `chrM`.) Note that `--exclude` filters BEDs and the gap-fill index, not `hierarchy`/`colors`/`priority` files — so also drop the excluded names from those if you list them there.
+
+```bash
+karyoscope build --spec build.yaml --exclude ChrM,ChrC
+```
 
 ## Examples
 
