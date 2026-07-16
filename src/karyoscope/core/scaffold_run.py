@@ -290,7 +290,7 @@ def _ensure_annotated(
     )
 
 
-def _ensure_telo(spec: _ResolvedInput, *, auto: bool) -> Path:
+def _ensure_telo(spec: _ResolvedInput, *, auto: bool, telo_motif: str | None = None) -> Path:
     """Return the telo file path, running seqtk if necessary."""
     if spec.spec.telo_path is not None:
         if not spec.spec.telo_path.is_file():
@@ -306,7 +306,7 @@ def _ensure_telo(spec: _ResolvedInput, *, auto: bool) -> Path:
             f"{out}). Re-run with auto-derive enabled, pass --telo explicitly, "
             f"or run `seqtk telo` first."
         )
-    run_seqtk_telo(spec.spec.path, out)
+    run_seqtk_telo(spec.spec.path, out, motif=telo_motif)
     return out
 
 
@@ -479,6 +479,7 @@ def scaffold_run(
     mode: ScaffoldMode = "fasta",
     bin_size: int = 1_000_000,
     min_scaffold_length: int = DEFAULT_MIN_SCAFFOLD_LENGTH,
+    telo_motif: str | None = None,
     acrocentrics: set[str] | None = None,
     split_haps_regex: str | None = None,
     threads: int = 0,
@@ -638,7 +639,7 @@ def scaffold_run(
             auto=auto,
             bgzip=bgzip,
         )
-        _ensure_telo(r, auto=auto)
+        _ensure_telo(r, auto=auto, telo_motif=telo_motif)
         _ensure_binned(
             r,
             db_id=db_id_resolved,
@@ -677,7 +678,7 @@ def scaffold_run(
         region_bins = _load_binned_bed(
             _binned_bed_path(r.out_dir, r.stem, db_id_resolved, region_fs, bin_size)
         )
-        telo_path = _ensure_telo(r, auto=auto)
+        telo_path = _ensure_telo(r, auto=auto, telo_motif=telo_motif)
         telo_flags = parse_telo_file(telo_path)
 
         for name in contig_names:

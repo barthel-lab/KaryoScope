@@ -93,8 +93,14 @@ def parse_telo_file(path: Path) -> dict[str, TeloFlags]:
     return {seq: TeloFlags(start=s, stop=e) for seq, (s, e) in flags.items()}
 
 
-def run_seqtk_telo(fasta_path: Path, out_path: Path) -> None:
+def run_seqtk_telo(fasta_path: Path, out_path: Path, *, motif: str | None = None) -> None:
     """Run ``seqtk telo`` on ``fasta_path`` and write its stdout to ``out_path``.
+
+    When ``motif`` is given it is passed as ``seqtk telo -m <motif>`` (the
+    telomeric repeat unit to search for). When omitted, seqtk's default motif
+    ``CCCTAA`` (the vertebrate ``TTAGGG`` telomere) is used — which finds nothing
+    on genomes with a different telomere, e.g. *Arabidopsis*/plants (``TTTAGGG``,
+    motif ``CCCTAAA``).
 
     Raises :class:`karyoscope.core.external.ToolNotFoundError` if seqtk
     isn't on ``$PATH``, and
@@ -105,8 +111,17 @@ def run_seqtk_telo(fasta_path: Path, out_path: Path) -> None:
         "seqtk",
         install_hint="Install with: conda install -c bioconda seqtk",
     )
-    logger.info("running seqtk telo on %s -> %s", fasta_path, out_path)
+    cmd = [seqtk, "telo"]
+    if motif:
+        cmd += ["-m", motif]
+    cmd.append(str(fasta_path))
+    logger.info(
+        "running seqtk telo on %s -> %s%s",
+        fasta_path,
+        out_path,
+        f" (motif {motif})" if motif else "",
+    )
     t0 = time.perf_counter()
-    result = run_tool([seqtk, "telo", str(fasta_path)], capture=True)
+    result = run_tool(cmd, capture=True)
     out_path.write_text(result.stdout or "")
     logger.info("ran seqtk telo on %s in %.1fs", fasta_path.name, time.perf_counter() - t0)
