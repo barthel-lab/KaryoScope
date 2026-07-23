@@ -37,7 +37,7 @@ import click
 
 from karyoscope import paths
 from karyoscope import progress as _progress
-from karyoscope.core.annotate import annotate
+from karyoscope.core.annotate import annotate_batch
 from karyoscope.exceptions import (
     KaryoscopeError,
 )
@@ -52,14 +52,18 @@ logger = logging.getLogger(__name__)
 @click.option(
     "--input",
     "-i",
-    "input_path",
+    "input_paths",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
+    multiple=True,
     help="Input sequence file. Accepts FASTA (.fasta/.fa/.fna, plain "
     "or .gz), FASTQ (.fastq/.fq, plain or .gz), or BAM (.bam). BAM "
     "inputs are piped through `samtools fasta` (requires samtools on "
     "PATH); no intermediate file is written. See --preserve-order for "
-    "how the smoothing implementation adapts to the input type.",
+    "how the smoothing implementation adapts to the input type. "
+    "Repeatable: pass -i several times to annotate multiple inputs in "
+    "one run; on the HKS backend the index is loaded once per feature "
+    "set for the whole cohort instead of once per input.",
 )
 @click.option(
     "--outdir",
@@ -67,7 +71,9 @@ logger = logging.getLogger(__name__)
     "output_dir",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
-    help="Directory to write output BEDs into. Default: same directory as --input.",
+    help="Directory to write output BEDs into. Default: same directory as "
+    "--input (required when more than one -i is given). Output filenames are "
+    "prefixed by each input's basename, so multiple inputs never collide.",
 )
 @click.option(
     "--db",
@@ -170,7 +176,7 @@ logger = logging.getLogger(__name__)
     "temp files would scale poorly.",
 )
 def cmd(
-    input_path: Path,
+    input_paths: tuple[Path, ...],
     output_dir: Path | None,
     db_id: str | None,
     db_root_arg: Path | None,
@@ -185,12 +191,15 @@ def cmd(
     preserve_input_order: bool,
     force: bool,
 ) -> None:
-    """Run the annotate pipeline for ``--input``.
+    """Run the annotate pipeline for one or more ``--input`` files.
 
     \b
     Examples:
         # Default: produce both presmoothed and smoothed BEDs
         karyoscope annotate -i my_assembly.fa.gz -o results/
+
+        # Several inputs in one run (HKS: one index load per feature set)
+        karyoscope annotate -i a.fa.gz -i b.fa.gz -i c.fa.gz -o results/
 
         # Only the presmoothed BED (skip smoothing)
         karyoscope annotate -i reads.fa.gz --no-smooth
@@ -203,35 +212,49 @@ def cmd(
                             --feature-set chromosome
     """
     db_root = paths.ensure_db_root(db_root_arg)
+    inputs = list(input_paths)
     if output_dir is None:
-        output_dir = input_path.parent
+        if len(inputs) > 1:
+            raise click.ClickException(
+                "--outdir is required when annotating more than one input "
+                "(multiple inputs share one output directory)."
+            )
+        output_dir = inputs[0].parent
     feature_sets = list(feature_sets_arg) if feature_sets_arg else None
 
+    common = dict(
+        output_dir=output_dir,
+        db_root=db_root,
+        db_id=db_id,
+        feature_sets=feature_sets,
+        threads=threads,
+        k=k,
+        smooth=smooth,
+        keep_presmoothed=keep_presmoothed,
+        keep_intermediates=keep_intermediates,
+        bgzip=bgzip,
+        preserve_input_order=preserve_input_order,
+        force=force,
+        check_space=not no_space_check,
+        progress=_progress.from_context(),
+    )
+
     try:
-        result = annotate(
-            input_path=input_path,
-            output_dir=output_dir,
-            db_root=db_root,
-            db_id=db_id,
-            feature_sets=feature_sets,
-            threads=threads,
-            k=k,
-            smooth=smooth,
-            keep_presmoothed=keep_presmoothed,
-            keep_intermediates=keep_intermediates,
-            bgzip=bgzip,
-            preserve_input_order=preserve_input_order,
-            force=force,
-            check_space=not no_space_check,
-            progress=_progress.from_context(),
-        )
+        # annotate_batch delegates a single input to the battle-tested
+        # single-input annotate() and batches when there are several.
+        results = annotate_batch(input_paths=inputs, **common)
     except KaryoscopeError as e:
         raise click.ClickException(str(e)) from e
 
-    click.echo("Wrote:")
-    for fs, path in result.presmoothed_paths.items():
-        click.echo(f"  {fs} (presmoothed): {path}")
-    for fs, path in result.smoothed_paths.items():
-        click.echo(f"  {fs} (smoothed):    {path}")
-    if result.combined_intermediate is not None:
-        click.echo(f"  (intermediate: {result.combined_intermediate})")
+    multi = len(results) > 1
+    for input_path, result in results.items():
+        if multi:
+            click.echo(f"Wrote ({input_path.name}):")
+        else:
+            click.echo("Wrote:")
+        for fs, path in result.presmoothed_paths.items():
+            click.echo(f"  {fs} (presmoothed): {path}")
+        for fs, path in result.smoothed_paths.items():
+            click.echo(f"  {fs} (smoothed):    {path}")
+        if result.combined_intermediate is not None:
+            click.echo(f"  (intermediate: {result.combined_intermediate})")

@@ -307,6 +307,99 @@ def _run_hks_lookup_from_bam(
         tmp_fasta.unlink(missing_ok=True)
 
 
+def run_hks_lookup_batch(
+    *,
+    base_path: Path,
+    feature_set_file: Path,
+    k: int,
+    io_pairs: list[tuple[Path, Path]],
+    threads: int = 0,
+    report_query_names: bool = True,
+    capture: bool = False,
+) -> None:
+    """Invoke ``hks lookup`` ONCE for a feature set, querying many inputs.
+
+    ``io_pairs`` is a list of ``(input_path, output_tsv_path)``. The (large) base
+    index and feature-set file are loaded a single time and every input is queried
+    against them in turn, each written to its paired output TSV — so annotating N
+    inputs against one feature set costs one index load instead of N.
+
+    ``report_query_names`` is a single ``hks`` flag applied to the whole batch, so
+    every input here must want the same setting (the caller groups inputs by type;
+    see :func:`karyoscope.core.io.hks._is_reads_input`-based grouping in the
+    annotate batch backend). BAM inputs are materialised to temp FASTA (via
+    ``samtools fasta``) up front, mirroring the single-input path; the temp files
+    are removed afterwards.
+    """
+    if not io_pairs:
+        return
+
+    binary = get_hks_binary()
+    n_threads = threads if threads > 0 else 4
+
+    tmp_fastas: list[Path] = []
+    samtools: str | None = None
+    try:
+        # Resolve each input to a seekable query path (converting BAM up front).
+        query_paths: list[Path] = []
+        for input_path, output_path in io_pairs:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if input_path.suffix.lower() == ".bam":
+                if samtools is None:
+                    samtools = require_tool(
+                        "samtools",
+                        install_hint=(
+                            "Install samtools to use BAM inputs:\n"
+                            "  conda install -c bioconda samtools\n"
+                            "Or convert the BAM to FASTA first:\n"
+                            "  samtools fasta input.bam | gzip > input.fasta.gz"
+                        ),
+                    )
+                with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp:
+                    tmp_fasta = Path(tmp.name)
+                tmp_fastas.append(tmp_fasta)
+                logger.debug("converting BAM to FASTA: %s -> %s", input_path, tmp_fasta)
+                result = subprocess.run(
+                    [samtools, "fasta", str(input_path)],
+                    stdout=tmp_fasta.open("wb"),
+                    stderr=subprocess.PIPE if capture else None,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    stderr = result.stderr.decode() if result.stderr else ""
+                    raise ExternalToolError(
+                        cmd=[samtools, "fasta", str(input_path)],
+                        returncode=result.returncode,
+                        stderr=stderr,
+                    )
+                query_paths.append(tmp_fasta)
+            else:
+                query_paths.append(input_path)
+
+        cmd: list[str] = [
+            binary,
+            "lookup",
+            "-i",
+            str(base_path),
+            "--feature-set-file",
+            str(feature_set_file),
+            "-k",
+            str(k),
+        ]
+        if report_query_names:
+            cmd.append("--report-query-names")
+        cmd += ["--report-misses", "-t", str(n_threads)]
+        for query_path, (_input_path, output_path) in zip(query_paths, io_pairs, strict=True):
+            cmd += ["-q", str(query_path), "-o", str(output_path)]
+
+        logger.debug("running (batch, %d queries): %s", len(io_pairs), " ".join(cmd))
+        run_tool(cmd, capture=capture)
+    finally:
+        for p in tmp_fastas:
+            if p.exists():
+                p.unlink()
+
+
 def run_hks_smooth(
     *,
     hierarchy_file: Path,
