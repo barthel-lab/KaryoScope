@@ -115,6 +115,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Surfaced by ISCN validation on GM03417.
 
 ### Changed
+- With a second reference database now shipped (`HKS_human_CHM13_v2` alongside the
+  KMC `KS_human_CHM13_v2`), `annotate` / `karyotype` / `scaffold` require `--db`
+  when more than one database is installed, erroring with the list of installed
+  databases. A single-database install still selects it automatically, and
+  existing annotations are reused per database (every intermediate filename is
+  tagged with its database id), so upgrading and switching backends never mixes them.
 - `karyotype` rendering now scales to the data instead of fixed human-tuned
   constants: the longest chromosome (genome view) / longest centromere (centromere
   view) fills a fixed pixel height, the genome-view bin size is derived from the
