@@ -63,7 +63,8 @@ A pre-built database for the human genome is distributed alongside the tool, der
 | C++20 compiler | building the bundled `get_featureIDs` helper | GCC ≥ 11 or Clang ≥ 13 (Apple Clang) |
 | `bgzip`, `tabix` (htslib) | compressing and indexing BED output | 1.22.1 |
 | seqtk | telomere detection (`scaffold`, `centromeres`, `karyotype`) | 1.5 |
-| KMC | building databases (the bundled helper queries the resulting index; not needed to *use* a pre-built database) | 3.2.x (vendored API 3.2.4) |
+| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | 0.2.0 |
+| KMC | building a *KMC-backend* database (legacy — `karyoscope build` produces HKS databases). Not needed to *use* a pre-built KMC database; the bundled `get_featureIDs` helper queries its index directly | 3.2.x (vendored API 3.2.4) |
 | libcairo | rendering `--format pdf` / `--format png` | any recent release |
 | samtools | only for BAM input to `annotate` | 1.22.1 |
 
@@ -244,7 +245,7 @@ Browse and download available databases:
 karyoscope download --list
 ```
 
-You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md).
+You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; producing that BED from raw annotation sources (GFF3/GTF, RepeatMasker/EDTA, satellite catalogs) is currently done with example prep scripts, and a dedicated `karyoscope prep-bed` helper for these conversions is [planned](docs/commands/build.md#preparing-a-feature-set-bed).
 
 ## Pre-computed annotations
 
@@ -272,7 +273,7 @@ A `CITATION.cff` file in this repository provides machine-readable citation meta
 
 ## License
 
-KaryoScope is licensed under [GPL-3.0-or-later](LICENSE) due to its dependency on the GPL-3.0 KMC library. A future release will switch to MIT once we migrate to [HKS](https://github.com/jnalanko/HKS) for *k*-mer indexing.
+KaryoScope is licensed under [GPL-3.0-or-later](LICENSE) because the KMC backend links the GPL-3.0 KMC library. The [HKS](https://github.com/jnalanko/HKS) backend (MIT) is now available alongside KMC; a future release will remove the KMC dependency and relicense to MIT.
 
 ## Contributing
 

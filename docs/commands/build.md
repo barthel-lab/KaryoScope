@@ -135,6 +135,8 @@ done
 
 `build` starts from a final BED; producing one is dataset-specific. A worked example for a RepeatMasker-derived repeat feature set (download reference, simplify the RepeatMasker output, optionally priority-merge overlaps, then hand the BED to `build`) is kept with the archived workflow scripts in the KaryoScope-archive repository. The key point is that overlaps and gaps are fine — `build` gap-fills automatically and HKS resolves overlaps per k-mer.
 
+> **Planned: `karyoscope prep-bed`.** Turning raw annotation sources into a final labelled BED — GFF3/GTF gene models into exon/intron/intergenic, RepeatMasker/EDTA tables into labelled repeat BEDs with a hierarchy, satellite monomer files into merged array bands — is the main friction in building a database today. A dedicated `karyoscope prep-bed` helper for these common conversions is planned. It will be a **separate subcommand**, not folded into `build`: `build`'s contract stays "a final labelled BED", so it never has to sniff and guess at raw file formats. Until it lands, use the example prep scripts referenced above.
+
 ## Notes
 
 - Requires the `hks` binary on `PATH` (or `$KARYOSCOPE_HKS`); `--background` gap-fill also uses `samtools faidx` to index the genome if a `.fai` is not already present.
