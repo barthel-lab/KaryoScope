@@ -28,7 +28,7 @@
 
 KaryoScope is an alignment-free annotation tool that assigns each *k*-mer in a query assembly or sequencing read to a feature drawn from one or more user-defined hierarchical feature sets, producing a base-pair resolution annotation in a single pass. Because a feature set is simply any tiling of a reference with labelled regions, KaryoScope is extensible to arbitrary annotation sources, from satellite catalogs and repeat libraries to cytobands, FISH-probe coordinates, and structural-variant breakpoints.
 
-A pre-built database for the human genome is distributed alongside the tool, derived from T2T-CHM13v2.0 with six feature sets covering chromosome of origin, satellite composition, interspersed repeats, subtelomeric structure, gene boundaries, and acrocentric-specific features. From these annotations, KaryoScope produces karyotype visualizations and cytogenetic reports without ever performing read alignment. Additional databases can be built for any reference genome or community-curated annotation source.
+A pre-built database for the human genome is distributed alongside the tool, derived from T2T-CHM13v2.0 with six feature sets covering chromosome of origin, satellite composition, interspersed repeats, subtelomeric structure, gene boundaries, and acrocentric-specific features. From these annotations, KaryoScope produces karyotype visualizations and cytogenetic reports without ever performing read alignment. Additional databases can be built for any reference genome or community-curated annotation source, and pre-built databases are shared through the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry).
 
 <!-- TODO: hero figure of a KaryoScope output, e.g. the HG008T karyotype -->
 <!-- <p align="center"><img src="assets/hero_karyotype.png" alt="Example KaryoScope karyotype" width="800"/></p> -->
@@ -80,7 +80,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 > Installation via Bioconda is planned. For now, install from source.
 
-KaryoScope requires Python ≥3.10 and several external tools (`KMC`, `bgzip`, `tabix`, `seqtk`, `cairo` for PDF/PNG karyotype output, and `librsvg`/`rsvg-convert` for the SVG→PNG export used by `karyoplot` and `karyoscope-iscn zoom --png`). The simplest setup is a dedicated conda environment:
+KaryoScope requires Python ≥3.10 and several external tools (`bgzip`, `tabix`, `seqtk`, `cairo` for PDF/PNG karyotype output, and `librsvg`/`rsvg-convert` for the SVG→PNG export used by `karyoplot` and `karyoscope-iscn zoom --png`). It also needs a *k*-mer backend query helper — see [k-mer index backends](#k-mer-index-backends) below. The simplest setup is a dedicated conda environment:
 
 ```bash
 git clone https://github.com/barthel-lab/KaryoScope.git
@@ -95,16 +95,23 @@ conda activate karyoscope
 
 # Install KaryoScope
 pip install -e .
-
-# Build the bundled C++ helper (`get_featureIDs`) for the KMC backend.
-# `pip install` is Python-only and does NOT compile the C++ tree.
-cd native/get_featureIDs && make && cd ../..
 ```
 
-For the **HKS backend** — the shipped `HKS_human_CHM13_v2` database, any other
-`index.type: hks` database, and building your own with [`karyoscope build`](docs/commands/build.md) —
-you also need the `hks` query binary. The Rust toolchain is already in the
-environment, so clone HKS with its submodules and install it onto `PATH`:
+### k-mer index backends
+
+KaryoScope queries a database through one of two interchangeable *k*-mer backends;
+each database declares which one it uses in its manifest (`index.type`). Install the
+backend(s) your databases need — most users need only one. `pip install` is
+Python-only and builds neither, so each backend's query helper is a separate step.
+
+#### HKS
+
+[HKS](https://github.com/jnalanko/HKS) powers the `HKS_human_CHM13_v2` database, any
+other `index.type: hks` database, and databases you create with
+[`karyoscope build`](docs/commands/build.md). It annotates a human haplotype
+~2.5–3× faster than KMC at about a third of the memory. The Rust toolchain is already
+in the environment, so clone HKS with its submodules and install the `hks` binary
+onto `PATH`:
 
 ```bash
 git clone --recurse-submodules https://github.com/jnalanko/HKS.git
@@ -112,14 +119,23 @@ cargo install --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/h
 ```
 
 KaryoScope finds `hks` on `PATH` automatically (or set `$KARYOSCOPE_HKS` to its
-path). The KMC backend does not need it, and the HKS backend does not need the
-C++ `get_featureIDs` helper — install only what your database(s) use. (A future
-release will bundle `hks` via conda so this step goes away.)
+path). A future release will bundle `hks` via conda so this step goes away.
 
-The build produces `native/get_featureIDs/build/get_featureIDs`; the
-Python wrapper finds it automatically. See [`native/README.md`](native/README.md)
-for build-system details (CXX selection, `pkg-config`-driven zlib lookup,
-and the macOS + conda `-Wl,-rpath,$CONDA_PREFIX/lib` shim).
+#### KMC
+
+KMC powers the `KS_human_CHM13_v2` database — the current default from
+`karyoscope download`. Its query helper is a bundled C++ tool, `get_featureIDs`,
+that you compile in place:
+
+```bash
+cd native/get_featureIDs && make && cd ../..
+```
+
+This produces `native/get_featureIDs/build/get_featureIDs`; the Python wrapper finds
+it automatically. See [`native/README.md`](native/README.md) for build-system details
+(CXX selection, `pkg-config`-driven zlib lookup, and the macOS + conda
+`-Wl,-rpath,$CONDA_PREFIX/lib` shim). The `KMC` tool itself is only needed to *build*
+a KMC database, not to query one.
 
 **Typical install time.** On a normal desktop with a good network connection, creating the conda environment is the bulk of the time — usually ~5–10 minutes to resolve and download the bioinformatics tools. `pip install -e .` then takes under a minute, and building the C++ helper takes a few seconds. Reinstalls into an existing environment are much faster.
 
@@ -253,7 +269,7 @@ Browse and download available databases:
 karyoscope download --list
 ```
 
-You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; producing that BED from raw annotation sources (GFF3/GTF, RepeatMasker/EDTA, satellite catalogs) is currently done with example prep scripts, and a dedicated `karyoscope prep-bed` helper for these conversions is [planned](docs/commands/build.md#preparing-a-feature-set-bed).
+You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; producing that BED from raw annotation sources (GFF3/GTF, RepeatMasker/EDTA, satellite catalogs) is currently a manual, source-specific step, and a dedicated `karyoscope prep-bed` helper to automate it is [planned](docs/commands/build.md#preparing-a-feature-set-bed).
 
 ## Pre-computed annotations
 

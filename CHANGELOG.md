@@ -401,9 +401,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FASTA/FASTQ reader that queries every k-mer in each input sequence
   against a KMC database and emits run-length-encoded BED records of
   per-position feature ids. Supports plain FASTA/FASTQ, gzipped input,
-  and stdin. Adapted from the version in the KaryoScope archive repo;
-  the only changes are include paths driven by the new Makefile's `-I`
-  flags rather than the previous `../external/...` relative paths.
+  and stdin. Adapted from an earlier internal version; the only changes
+  are include paths driven by the new Makefile's `-I` flags rather than
+  the previous `../external/...` relative paths.
 - `native/get_featureIDs/Makefile` — cross-platform build with
   incremental compilation. Defaults `CXX` to `c++` (the system's
   default C++ compiler — g++ on Linux, Apple Clang on macOS). Locates
