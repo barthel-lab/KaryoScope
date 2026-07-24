@@ -20,6 +20,8 @@
 
 > ℹ️ **KaryoScope follows [semantic versioning](https://semver.org); v1.0.0 is the first stable release.** The command-line interface is stable: deprecations ship with warnings and a back-compatible transition, and any breaking change will come with a major-version bump. The project is being prepared for journal submission, and new features continue to land between releases — see the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/barthel-lab/KaryoScope/releases).
 
+> 🚀 **New in v2.0.0.** An [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend now runs alongside KMC — annotating a human haplotype **~2.5–3× faster at about a third of the memory** — and a new [`karyoscope build`](docs/commands/build.md) command constructs a ready-to-use database from any genome and per-feature-set BEDs. Both are additive: existing KMC databases and workflows are unchanged. See the [CHANGELOG](CHANGELOG.md).
+
 ---
 
 ## Overview
@@ -99,14 +101,20 @@ pip install -e .
 cd native/get_featureIDs && make && cd ../..
 ```
 
-To use an **HKS** database (`index.type: hks`), also build the `hks` query
-binary (the Rust toolchain is already in the environment). Clone HKS with its
-submodules and install it onto `PATH`:
+For the **HKS backend** — the shipped `HKS_human_CHM13_v2` database, any other
+`index.type: hks` database, and building your own with [`karyoscope build`](docs/commands/build.md) —
+you also need the `hks` query binary. The Rust toolchain is already in the
+environment, so clone HKS with its submodules and install it onto `PATH`:
 
 ```bash
 git clone --recurse-submodules https://github.com/jnalanko/HKS.git
 cargo install --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/hks
 ```
+
+KaryoScope finds `hks` on `PATH` automatically (or set `$KARYOSCOPE_HKS` to its
+path). The KMC backend does not need it, and the HKS backend does not need the
+C++ `get_featureIDs` helper — install only what your database(s) use. (A future
+release will bundle `hks` via conda so this step goes away.)
 
 The build produces `native/get_featureIDs/build/get_featureIDs`; the
 Python wrapper finds it automatically. See [`native/README.md`](native/README.md)
