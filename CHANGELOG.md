@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-23
+
 ### Added
 - **HKS index backend** alongside the existing KMC backend. Databases declare
   `index.type: hks` in their manifest; `annotate` dispatches to it, querying with
@@ -1318,6 +1320,7 @@ For releases, copy the [Unreleased] section to a new heading like:
 ## [1.1.0] - YYYY-MM-DD
 -->
 
-[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.0.0
 [1.1.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.1.0
 [1.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.0.0
