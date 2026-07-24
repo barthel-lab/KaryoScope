@@ -194,6 +194,14 @@ The synthetic database maps three 21-mers to features (`chr1`/`rA`, `chr1`/`rB`,
 
 This walkthrough uses the [HG002 v1.1 T2T diploid assembly](https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz) as input, but any FASTA will work. Substitute your own with `--input <path>` throughout.
 
+<!-- TODO(hks-default): this Quick start uses the default `karyoscope download`,
+     which currently installs the KMC KS_human_CHM13_v2 database (hence the KMC
+     name in the output filenames below and the ~17 GB / KMC RAM figures). When
+     the registry default flips to HKS_human_CHM13_v2 (after KMC removal + the
+     conda recipe guarantees `hks` on every install), switch this walkthrough to
+     HKS: the output names become HKS_human_CHM13_v2 and the RAM guidance drops
+     to the HKS figures (~16-24 GB). Keep it on KMC until then. -->
+
 ```bash
 # 1. Download the recommended human reference database (~17 GB, one-time)
 karyoscope download
