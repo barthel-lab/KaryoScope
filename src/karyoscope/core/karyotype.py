@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from math import floor
+from math import floor, log10
 from pathlib import Path
 from typing import Literal
 
@@ -115,6 +115,43 @@ _MODE_PARAMS: dict[str, _ModeParams] = {
         pixels_per_pos=1 / 25_000, scale_bar_length=1_000_000, scale_bar_label="1 Mbp"
     ),
 }
+
+#: Target pixel heights for the default data-driven zoom: the mode's longest
+#: extent (longest chromosome for ``genome``, longest **centromere** for
+#: ``centromere``) is scaled to fill this many pixels, so the main object fills
+#: the plot regardless of genome size (small genomes no longer render tiny). The
+#: genome value reproduces the old fixed scale on a human 250 Mb chromosome
+#: (1000 px = the old 4 px/Mb). The centromere view fills the same height so the
+#: centromere isn't dwarfed -- the old fixed 1 px/25 kb left even human
+#: centromeres short. Overridable per call with ``pixels_per_mb``.
+_GENOME_TARGET_PX = 1000
+_CENTROMERE_TARGET_PX = 1000
+
+#: Target on-screen height (px) of the scale bar. Its physical length is chosen
+#: as the nearest "nice" 1/2/5x10^n value that renders near this height at the
+#: current (data-driven or overridden) zoom -- so the bar is a sensible fraction
+#: of any genome (human genome -> 10 Mbp as before; Arabidopsis -> ~1 Mbp,
+#: instead of a fixed 10 Mbp that's a third of the chromosome).
+_SCALE_BAR_TARGET_PX = 40
+
+
+def _nice_round(value: float) -> int:
+    """Nearest 'nice' 1/2/5 x 10^n number (for scale-bar lengths)."""
+    if value <= 0:
+        return 1
+    power = 10 ** floor(log10(value))
+    frac = value / power
+    nice = 1 if frac < 1.5 else 2 if frac < 3.5 else 5 if frac < 7.5 else 10
+    return int(nice * power)
+
+
+def _format_bp(n: int) -> str:
+    """bp length as a short label, e.g. 10_000_000 -> '10 Mbp', 500_000 -> '500 kbp'."""
+    if n >= 1_000_000 and n % 1_000_000 == 0:
+        return f"{n // 1_000_000} Mbp"
+    if n >= 1_000 and n % 1_000 == 0:
+        return f"{n // 1_000} kbp"
+    return f"{n} bp"
 
 
 # --- inputs --------------------------------------------------------------
@@ -404,6 +441,8 @@ def render_karyotype(
     subtelomere_boundary: int = 250_000,
     max_num_sequences: int = 400,
     seed_human_chromosomes: bool = True,
+    expected_chromosomes: list[str] | None = None,
+    pixels_per_mb: float | None = None,
     output_path: Path,
     sample_label: str | None = None,
     database_id: str | None = None,
@@ -506,9 +545,16 @@ def render_karyotype(
         chroms_seen.add(row.chromosome)
         haps_seen.add(_effective_hap(row))
 
+    # Seed the layout with the database's declared chromosome set (the
+    # chromosome feature-set leaves) so a chromosome missing from the sample
+    # still gets an empty column. ``seed_human_chromosomes`` (the
+    # ``--no-human-chroms`` gate, kept for compatibility) turns seeding off to
+    # show only chromosomes present in the data. Non-karyotype sequences
+    # (organelles) should be kept out of the chromosome set (or `build
+    # --exclude`d) rather than appearing as empty columns.
     CHROMOSOMES: list[str] = []
-    if seed_human_chromosomes:
-        CHROMOSOMES = list(DEFAULT_HUMAN_CHROMOSOMES)
+    if seed_human_chromosomes and expected_chromosomes:
+        CHROMOSOMES = list(expected_chromosomes)
     for c in chroms_seen:
         if c not in CHROMOSOMES:
             CHROMOSOMES.append(c)
@@ -541,6 +587,20 @@ def render_karyotype(
         max_centromere_length = max(end - start for start, end in centromere_coords.values())
     else:
         max_centromere_length = 0
+
+    # Zoom: an explicit ``pixels_per_mb`` fixes the scale (e.g. to compare
+    # plots across assemblies); otherwise it's data-driven so the mode's
+    # longest extent fills a target height. This keeps human output at the
+    # old fixed scale while small genomes (Arabidopsis) fill the same height
+    # instead of rendering tiny. ``subtelomere`` keeps its fixed-window scale.
+    if pixels_per_mb is not None:
+        pixels_per_pos = pixels_per_mb / 1_000_000
+    elif mode == "genome":
+        longest = max(sequence_lengths.values(), default=0)
+        if longest > 0:
+            pixels_per_pos = _GENOME_TARGET_PX / longest
+    elif mode == "centromere" and max_centromere_length > 0:
+        pixels_per_pos = _CENTROMERE_TARGET_PX / max_centromere_length
 
     # --- layout constants (from archive) -----------------------------
 
@@ -733,18 +793,16 @@ def render_karyotype(
         legend_band_width = 0
         karyotype_right_edge = karyotype_content_right + x_border
 
-    layout.image_width = (
+    image_width = (
         karyotype_content_right + legend_band_width if legend_band_width else karyotype_right_edge
     )
-    image_height = final_image_height
 
-    # --- prepare the SVG canvas -------------------------------------
-
-    d = draw.Drawing(layout.image_width, image_height, id_prefix="k")
-    d.append(draw.Rectangle(0, 0, layout.image_width, image_height, fill=background_color))
-
-    # --- title band (top) ------------------------------------------
-
+    # Compose the title before fixing the canvas width: over few chromosomes
+    # a long title would otherwise overflow the narrow canvas and be clipped
+    # on both sides. We centre it over the karyotype columns, but never let it
+    # run off the left edge, and widen the canvas to hold its right edge.
+    title_text = ""
+    title_center = karyotype_right_edge / 2
     if show_title:
         title_parts: list[str] = []
         if sample_label:
@@ -757,13 +815,29 @@ def render_karyotype(
         if smoothed:
             title_parts.append("smoothed")
         title_text = "  |  ".join(title_parts)
-        # Centre the title over the karyotype area (excluding the
-        # legend band) so it visually balances the chromosome columns.
+        title_margin = 15
+        # ~7.5 px/char for 14 pt bold sans-serif (a rough over-estimate so
+        # the title never clips).
+        title_half = (len(title_text) * 7.5) / 2
+        title_center = max(title_center, title_half + title_margin)
+        image_width = max(image_width, title_center + title_half + title_margin)
+
+    layout.image_width = image_width
+    image_height = final_image_height
+
+    # --- prepare the SVG canvas -------------------------------------
+
+    d = draw.Drawing(layout.image_width, image_height, id_prefix="k")
+    d.append(draw.Rectangle(0, 0, layout.image_width, image_height, fill=background_color))
+
+    # --- title band (top) ------------------------------------------
+
+    if title_text:
         d.append(
             draw.Text(
                 title_text,
                 14,
-                karyotype_right_edge / 2,
+                title_center,
                 title_band_height - 12,
                 text_anchor="middle",
                 fill=text_color,
@@ -1020,7 +1094,12 @@ def render_karyotype(
 
     # --- scale bar ---------------------------------------------------
 
-    scale_bar_pixel_height = mode_params.scale_bar_length * pixels_per_pos
+    # Data-driven scale bar: a "nice" round length that renders near a target
+    # height at the current zoom (respects --pixels-per-mb). Non-regressive for
+    # human (genome -> 10 Mbp, centromere -> 1 Mbp, subtelomere -> 10 kbp).
+    scale_bar_length = _nice_round(_SCALE_BAR_TARGET_PX / pixels_per_pos)
+    scale_bar_label = _format_bp(scale_bar_length)
+    scale_bar_pixel_height = scale_bar_length * pixels_per_pos
     scale_bar_x = 40
     scale_bar_width = 2
     label1_x = 35
@@ -1038,7 +1117,7 @@ def render_karyotype(
     )
     d.append(
         draw.Text(
-            mode_params.scale_bar_label,
+            scale_bar_label,
             10,
             label1_x,
             label_y_center,

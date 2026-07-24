@@ -32,8 +32,10 @@ except ImportError as _import_err:
     )
     raise RuntimeError(_msg) from _import_err
 
+import gzip
 import shutil
 import tarfile
+from collections import OrderedDict
 from pathlib import Path
 
 import pytest
@@ -67,6 +69,42 @@ def _extractall_compat(tar: tarfile.TarFile, dest: Path) -> None:
         tar.extractall(dest, filter="data")  # type: ignore[arg-type]
     except TypeError:  # pragma: no cover — exercised only on older Pythons
         tar.extractall(dest)
+
+
+def read_fasta_records(path: Path) -> OrderedDict[str, str]:
+    """Read a FASTA into ``{name: sequence}`` -- a whole-file test helper.
+
+    Used by scaffold/FASTA tests to read a (small) output assembly back and
+    assert on sequence content. It deliberately lives here, not in
+    production ``karyoscope.core.io.fasta``, because it holds the whole file
+    in memory: the pipeline itself streams FASTA (``read_fasta_lengths`` /
+    per-contig spill), so no production code should ever reach for a
+    whole-file reader. Test fixtures are tiny, so the in-memory read is fine.
+
+    Name = first whitespace token of the ``>`` header; multi-line bodies are
+    concatenated; blank lines skipped; CR/LF stripped; insertion order kept.
+    Plain and ``.gz`` inputs both supported.
+    """
+    opener = gzip.open if path.suffix == ".gz" else open
+    records: OrderedDict[str, str] = OrderedDict()
+    current_name: str | None = None
+    current_chunks: list[str] = []
+    with opener(path, "rt") as h:
+        for raw in h:
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if current_name is not None:
+                    records[current_name] = "".join(current_chunks)
+                head = line[1:].lstrip()
+                current_name = head.split()[0] if head else ""
+                current_chunks = []
+            elif current_name is not None:
+                current_chunks.append(line)
+    if current_name is not None:
+        records[current_name] = "".join(current_chunks)
+    return records
 
 
 @pytest.fixture

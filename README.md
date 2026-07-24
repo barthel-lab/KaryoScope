@@ -20,20 +20,22 @@
 
 > ℹ️ **KaryoScope follows [semantic versioning](https://semver.org); v1.0.0 is the first stable release.** The command-line interface is stable: deprecations ship with warnings and a back-compatible transition, and any breaking change will come with a major-version bump. The project is being prepared for journal submission, and new features continue to land between releases — see the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/barthel-lab/KaryoScope/releases).
 
+> 🚀 **New in v2.0.0.** An [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend now runs alongside KMC — annotating a human haplotype **~2.5–3× faster at about a third of the memory** — and a new [`karyoscope build`](docs/commands/build.md) command constructs a ready-to-use database from any genome and per-feature-set BEDs. Both are additive: existing KMC databases and workflows are unchanged. See the [CHANGELOG](CHANGELOG.md).
+
 ---
 
 ## Overview
 
 KaryoScope is an alignment-free annotation tool that assigns each *k*-mer in a query assembly or sequencing read to a feature drawn from one or more user-defined hierarchical feature sets, producing a base-pair resolution annotation in a single pass. Because a feature set is simply any tiling of a reference with labelled regions, KaryoScope is extensible to arbitrary annotation sources, from satellite catalogs and repeat libraries to cytobands, FISH-probe coordinates, and structural-variant breakpoints.
 
-A pre-built database for the human genome is distributed alongside the tool, derived from T2T-CHM13v2.0 with six feature sets covering chromosome of origin, satellite composition, interspersed repeats, subtelomeric structure, gene boundaries, and acrocentric-specific features. From these annotations, KaryoScope produces karyotype visualizations and cytogenetic reports without ever performing read alignment. Additional databases can be built for any reference genome or community-curated annotation source.
+A pre-built database for the human genome is distributed alongside the tool, derived from T2T-CHM13v2.0 with six feature sets covering chromosome of origin, satellite composition, interspersed repeats, subtelomeric structure, gene boundaries, and acrocentric-specific features. From these annotations, KaryoScope produces karyotype visualizations and cytogenetic reports without ever performing read alignment. Additional databases can be built for any reference genome or community-curated annotation source, and pre-built databases are shared through the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry).
 
 <!-- TODO: hero figure of a KaryoScope output, e.g. the HG008T karyotype -->
 <!-- <p align="center"><img src="assets/hero_karyotype.png" alt="Example KaryoScope karyotype" width="800"/></p> -->
 
 ### Why alignment-free?
 
-- **Pangenome-scale throughput.** Annotates a single feature set on a complete human haplotype in ~8 minutes on a standard workstation, or the full six-feature-set pipeline for a diploid sample in ~30 minutes at 16 threads — scaling to cohorts of hundreds of phased assemblies. The in-progress migration to the [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend will further reduce runtime and memory footprint.
+- **Pangenome-scale throughput.** Annotates a single feature set on a complete human haplotype in ~8 minutes on a standard workstation, or the full six-feature-set pipeline for a diploid sample in ~30 minutes at 16 threads — scaling to cohorts of hundreds of phased assemblies. The [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend, now available alongside KMC, annotates all six feature sets for a human haplotype in ~7–9 minutes at a ~10 GB memory peak — roughly 2.5–3× faster than KMC and about a third of the RAM (measured at 16 threads on the T2T-CHM13v2.0, HG008N, and HG008T assemblies).
 - **Base-pair resolution across the entire genome.** Performs well in the satellite-dense centromeres, subtelomeres, and acrocentric short arms where alignment-based pipelines suffer from reference bias and ambiguous mappings.
 - **Multiple feature classes in a single pass.** The same *k*-mer can carry labels across feature sets simultaneously, so a single position can be annotated as belonging to a specific chromosome, satellite family, repeat class, and gene at once.
 - **Extensible.** Any annotation that tiles a reference of interest can serve as a feature set.
@@ -63,44 +65,77 @@ A pre-built database for the human genome is distributed alongside the tool, der
 | C++20 compiler | building the bundled `get_featureIDs` helper | GCC ≥ 11 or Clang ≥ 13 (Apple Clang) |
 | `bgzip`, `tabix` (htslib) | compressing and indexing BED output | 1.22.1 |
 | seqtk | telomere detection (`scaffold`, `centromeres`, `karyotype`) | 1.5 |
-| KMC | building databases (the bundled helper queries the resulting index; not needed to *use* a pre-built database) | 3.2.x (vendored API 3.2.4) |
+| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | 0.2.0 |
+| KMC | building a *KMC-backend* database (legacy — `karyoscope build` produces HKS databases). Not needed to *use* a pre-built KMC database; the bundled `get_featureIDs` helper queries its index directly | 3.2.x (vendored API 3.2.4) |
 | libcairo | rendering `--format pdf` / `--format png` | any recent release |
 | samtools | only for BAM input to `annotate` | 1.22.1 |
 
 **Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Resource needs scale with the input:
 
 - **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
-- **Human whole-genome inputs:** the pre-built human database is ~17 GB on disk, and loading its KMC index during `annotate` needs roughly 20–30 GB of RAM. We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. At 16 threads, a single human haplotype annotates in ~8 minutes and a full diploid six-feature-set run completes in ~30 minutes.
+- **Human whole-genome inputs (KMC backend):** the pre-built human database is ~17 GB on disk, and loading its KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads). We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. A single human haplotype's six-feature-set run takes ~17–22 minutes at 16 threads.
+- **Human whole-genome inputs (HKS backend):** the HKS database is ~24 GB on disk (~13 GB compressed). `annotate` holds the index (~10 GB, fixed) plus per-query buffering that grows with how much sequence one lookup processes at once, so the memory you should request depends on the input shape. A **single haplotype** peaks at **~10 GB** (request ≥ 16 GB) and finishes in **~7–9 minutes** at 16 threads. A **combined diploid assembly** — both haplotypes in one file, e.g. HG002 v1.1 — peaks at **~17 GB** (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. Measured at 16 threads on T2T-CHM13v2.0, HG008N, HG008T, and HG002 v1.1.
 
 ## Installation
 
 > Installation via Bioconda is planned. For now, install from source.
 
-KaryoScope requires Python ≥3.10 and several external tools (`KMC`, `bgzip`, `tabix`, `seqtk`, `cairo` for PDF/PNG karyotype output, and `librsvg`/`rsvg-convert` for the SVG→PNG export used by `karyoplot` and `karyoscope-iscn zoom --png`). The simplest setup is a dedicated conda environment:
+KaryoScope requires Python ≥3.10 and several external tools (`bgzip`, `tabix`, `seqtk`, `cairo` for PDF/PNG karyotype output, and `librsvg`/`rsvg-convert` for the SVG→PNG export used by `karyoplot` and `karyoscope-iscn zoom --png`). It also needs a *k*-mer backend query helper — see [k-mer index backends](#k-mer-index-backends) below. The simplest setup is a dedicated conda environment:
 
 ```bash
 git clone https://github.com/barthel-lab/KaryoScope.git
 cd KaryoScope
 
-# Create a dedicated environment with Python and the bioinformatics tools.
-# `samtools` is only needed if you plan to annotate BAM inputs; drop it
-# if you only work with FASTA or FASTQ.
-conda create -n karyoscope -c conda-forge -c bioconda \
-    python=3.12 pip kmc htslib samtools seqtk cairo librsvg zlib compilers
+# Create the shared environment from environment.yml (Python, the
+# bioinformatics tools, and the C/C++ + Rust toolchains for the query
+# helpers). This is the same environment used across the KaryoScope
+# ecosystem, so it works unchanged if you later add the sibling repos or ISCN.
+conda env create -f environment.yml
 conda activate karyoscope
 
 # Install KaryoScope
 pip install -e .
+```
 
-# Build the bundled C++ helper (`get_featureIDs`).
-# `pip install` is Python-only and does NOT compile the C++ tree.
+### k-mer index backends
+
+KaryoScope queries a database through one of two interchangeable *k*-mer backends;
+each database declares which one it uses in its manifest (`index.type`). Install the
+backend(s) your databases need — most users need only one. `pip install` is
+Python-only and builds neither, so each backend's query helper is a separate step.
+
+#### HKS
+
+[HKS](https://github.com/jnalanko/HKS) powers the `HKS_human_CHM13_v2` database, any
+other `index.type: hks` database, and databases you create with
+[`karyoscope build`](docs/commands/build.md). It annotates a human haplotype
+~2.5–3× faster than KMC at about a third of the memory. The Rust toolchain is already
+in the environment, so clone HKS with its submodules and install the `hks` binary
+onto `PATH`:
+
+```bash
+git clone --recurse-submodules https://github.com/jnalanko/HKS.git
+cargo install --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/hks
+```
+
+KaryoScope finds `hks` on `PATH` automatically (or set `$KARYOSCOPE_HKS` to its
+path). A future release will bundle `hks` via conda so this step goes away.
+
+#### KMC
+
+KMC powers the `KS_human_CHM13_v2` database — the current default from
+`karyoscope download`. Its query helper is a bundled C++ tool, `get_featureIDs`,
+that you compile in place:
+
+```bash
 cd native/get_featureIDs && make && cd ../..
 ```
 
-The build produces `native/get_featureIDs/build/get_featureIDs`; the
-Python wrapper finds it automatically. See [`native/README.md`](native/README.md)
-for build-system details (CXX selection, `pkg-config`-driven zlib lookup,
-and the macOS + conda `-Wl,-rpath,$CONDA_PREFIX/lib` shim).
+This produces `native/get_featureIDs/build/get_featureIDs`; the Python wrapper finds
+it automatically. See [`native/README.md`](native/README.md) for build-system details
+(CXX selection, `pkg-config`-driven zlib lookup, and the macOS + conda
+`-Wl,-rpath,$CONDA_PREFIX/lib` shim). The `KMC` tool itself is only needed to *build*
+a KMC database, not to query one.
 
 **Typical install time.** On a normal desktop with a good network connection, creating the conda environment is the bulk of the time — usually ~5–10 minutes to resolve and download the bioinformatics tools. `pip install -e .` then takes under a minute, and building the C++ helper takes a few seconds. Reinstalls into an existing environment are much faster.
 
@@ -159,6 +194,14 @@ The synthetic database maps three 21-mers to features (`chr1`/`rA`, `chr1`/`rB`,
 
 This walkthrough uses the [HG002 v1.1 T2T diploid assembly](https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz) as input, but any FASTA will work. Substitute your own with `--input <path>` throughout.
 
+<!-- TODO(hks-default): this Quick start uses the default `karyoscope download`,
+     which currently installs the KMC KS_human_CHM13_v2 database (hence the KMC
+     name in the output filenames below and the ~17 GB / KMC RAM figures). When
+     the registry default flips to HKS_human_CHM13_v2 (after KMC removal + the
+     conda recipe guarantees `hks` on every install), switch this walkthrough to
+     HKS: the output names become HKS_human_CHM13_v2 and the RAM guidance drops
+     to the HKS figures (~16-24 GB). Keep it on KMC until then. -->
+
 ```bash
 # 1. Download the recommended human reference database (~17 GB, one-time)
 karyoscope download
@@ -167,8 +210,11 @@ karyoscope download
 #    Skip if you already have your own assembly to annotate.
 curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
-# 3. Annotate the assembly. Recommended: at least 16 threads and 50 GB
-#    of RAM for human-scale inputs (HG002 runs in ~30 min at -t 16).
+# 3. Annotate the assembly. Recommended: at least 16 threads and, for the
+#    HKS backend, ≥ 24 GB of RAM — HG002 v1.1 is a combined diploid
+#    assembly and its annotate peaks at ~17 GB (a single haplotype peaks
+#    at ~10 GB and fits 16 GB). The KMC backend needs ≥ 50 GB. HG002 runs
+#    in ~20-30 min at -t 16.
 #    --no-bgzip keeps the per-feature-set BEDs as plain text for easy
 #    inspection; drop it to get the default bgzipped outputs.
 #    Accepts FASTA, FASTQ (plain or .gz), and BAM. For BAM, samtools
@@ -205,6 +251,7 @@ Pass `--format pdf` or `--format png` (repeatable) to additionally produce those
 |---|---|
 | [`karyoscope download`](docs/commands/download.md) | Acquire pre-built databases |
 | [`karyoscope register`](docs/commands/register.md) | Register a locally-placed database so commands can use it |
+| [`karyoscope build`](docs/commands/build.md) | Build an HKS database from a genome and per-feature-set BEDs |
 | [`karyoscope annotate`](docs/commands/annotate.md) | Annotate sequences with *k*-mer features |
 | [`karyoscope scaffold`](docs/commands/scaffold.md) | Order, orient, and rename assembly contigs |
 | [`karyoscope remap-bed`](docs/commands/remap-bed.md) | Apply an existing scaffold map to a separately-annotated BED |
@@ -230,7 +277,7 @@ Browse and download available databases:
 karyoscope download --list
 ```
 
-Building your own database via `karyoscope build` is planned for a future release.
+You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; producing that BED from raw annotation sources (GFF3/GTF, RepeatMasker/EDTA, satellite catalogs) is currently a manual, source-specific step, and a dedicated `karyoscope prep-bed` helper to automate it is [planned](docs/commands/build.md#preparing-a-feature-set-bed).
 
 ## Pre-computed annotations
 
@@ -258,7 +305,7 @@ A `CITATION.cff` file in this repository provides machine-readable citation meta
 
 ## License
 
-KaryoScope is licensed under [GPL-3.0-or-later](LICENSE) due to its dependency on the GPL-3.0 KMC library. A future release will switch to MIT once we migrate to [HKS](https://github.com/jnalanko/HKS) for *k*-mer indexing.
+KaryoScope is licensed under [GPL-3.0-or-later](LICENSE) because the KMC backend links the GPL-3.0 KMC library. The [HKS](https://github.com/jnalanko/HKS) backend (MIT) is now available alongside KMC; a future release will remove the KMC dependency and relicense to MIT.
 
 ## Contributing
 

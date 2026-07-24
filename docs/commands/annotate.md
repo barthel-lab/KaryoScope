@@ -22,6 +22,7 @@ karyoscope annotate -i INPUT [OPTIONS]
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
 | `--feature-set TEXT` | Restrict output to this feature set. Repeatable. Default: all feature sets declared in the database's manifest. |
 | `-t`, `--threads INTEGER` | Threads for both k-mer querying and smoothing. `0` means auto-detect. [default: `0`] |
+| `--k INTEGER` | Query k-mer length. Defaults to the database's k. Only a variable-k HKS index (built with `karyoscope build --variable-k`) accepts a value other than its k — use it for a k-sweep. Outputs are tagged `.k<k>` so runs into one directory don't collide. |
 | `--smooth` / `--no-smooth` | Produce the hierarchy-smoothed BED in addition to the presmoothed BED. [default: `smooth`] |
 | `--keep-presmoothed` / `--no-keep-presmoothed` | Keep the presmoothed BED. Pass `--no-keep-presmoothed` to write only the smoothed output. [default: `keep-presmoothed`] |
 | `--keep-intermediates` | Keep the combined `.featureIDs.bed` from the C++ step (useful for debugging). |
@@ -54,7 +55,7 @@ Each BED's 4th column is the human-readable feature name. k-mers absent from the
 
 Smoothing promotes short noisy intervals (especially short `novel` runs flanked by specific features) to the lowest common ancestor of their flankers in the feature set's hierarchy.
 
-For human-scale inputs, at least 16 threads and ~50 GB RAM are recommended; HG002 runs in ~30 min at `-t 16`.
+For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, a single haplotype peaks at ~10 GB (request ≥ 16 GB) and a combined diploid assembly such as HG002 v1.1 peaks at ~17 GB (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. The **KMC backend** peaks at ~30–35 GB (request ≥ 50 GB). HG002 runs in ~20–30 min at `-t 16`.
 
 ## See also
 

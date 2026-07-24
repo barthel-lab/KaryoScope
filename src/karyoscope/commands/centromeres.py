@@ -117,6 +117,12 @@ logger = logging.getLogger(__name__)
     help="Drop contigs shorter than this (no telomere) during the scaffold step.",
 )
 @click.option(
+    "--telo-motif",
+    default=None,
+    help="Telomere repeat motif for `seqtk telo` (its -m). Default: seqtk's CCCTAA "
+    "(vertebrate TTAGGG). Plants (e.g. Arabidopsis) use CCCTAAA (TTTAGGG).",
+)
+@click.option(
     "--acrocentric",
     "acrocentrics_raw",
     multiple=True,
@@ -161,6 +167,7 @@ def cmd(
     coarse_bin_size: int,
     fine_bin_size: int,
     min_scaffold_length: int,
+    telo_motif: str | None,
     acrocentrics_raw: tuple[str, ...],
     threads: int,
     bgzip: bool,
@@ -242,6 +249,7 @@ def cmd(
             coarse_bin_size=coarse_bin_size,
             fine_bin_size=fine,
             min_scaffold_length=min_scaffold_length,
+            telo_motif=telo_motif,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
             threads=threads,

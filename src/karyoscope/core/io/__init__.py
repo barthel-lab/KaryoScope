@@ -4,6 +4,7 @@
   describing the feature-set / feature / parent relationships within a
   KaryoScope database.
 
-More modules (BED, FASTA, KMC, features.tsv, colors.txt) will be added
-here as commands need them.
+Other modules in this package cover the remaining formats (FASTA,
+features.tsv, colors, the KMC and HKS index backends, AGP / scaffold
+maps, and telomere data), each added as commands need them.
 """

@@ -8,6 +8,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **HKS index backend** alongside the existing KMC backend. Databases declare
+  `index.type: hks` in their manifest; `annotate` dispatches to it, querying with
+  `hks lookup` and smoothing with `hks smooth` (both threaded via `--threads`).
+  HKS (Hierarchical K-mer Sets) resolves multiply-labelled k-mers through the
+  label hierarchy at query time. On the CHM13 feature sets it runs ~2.5-3x faster
+  and at ~1/3 the peak RAM of the KMC backend. Ships the new `HKS_human_CHM13_v2`
+  database, which re-indexes the same k-mers as the KMC `KS_human_CHM13_v2` (the
+  KMC database is unchanged). `features.tsv` is not needed by this backend (see
+  Changed). Requires the `hks` binary on `PATH` (or `$KARYOSCOPE_HKS`).
+- `environment.yml` for the suite's conda environment (includes `rust`, needed to
+  build the `hks` binary from source), shared with KaryoScope-ISCN.
+- `build --exclude SEQID` (and spec `exclude:`): drop sequences (e.g. organelles
+  `ChrM`/`ChrC`) from the whole build — removed from every feature BED and the
+  gap-fill index, so no set covers them and they read as `none` everywhere
+  (uniform across sets) and never appear as karyotype chromosomes. The
+  `chromosome` feature set thus declares the karyotype chromosomes.
+- `karyotype` / `scaffold` / `centromeres` `--telo-motif`: telomere repeat motif
+  for the auto-run `seqtk telo` (its `-m`). Default is seqtk's `CCCTAA` (vertebrate
+  `TTAGGG`); non-vertebrates need their own (e.g. Arabidopsis/plants `CCCTAAA`,
+  `TTTAGGG`), for which the human default detects nothing.
+- `karyotype --pixels-per-mb`: pin the vertical zoom (px per Mb) to compare plots
+  across assemblies at a fixed scale.
+- `build` command: construct a complete, registry-ready HKS database from a
+  genome and per-feature-set BED annotations (4th column = leaf label), then
+  register it. Runs the HKS `build-base` / `add-feature-set` steps, gap-fills
+  unannotated regions with a named `background` leaf (distinct from HKS's `none`
+  novel sentinel), derives the label hierarchy (flat star by default) and
+  colours (auto palette by default), and writes `manifest.yaml` / `hierarchy.tsv`
+  / `colors.tsv`. Overlapping BEDs are allowed — HKS resolves multiply-labelled
+  k-mers via its hierarchy, and an optional per-set priority file makes the
+  higher-priority label win (the per-k-mer equivalent of pre-flattening; a
+  `--flatten` fallback remains). Two entry forms feed one pipeline: the simple
+  `--id`/`--sequence`/`--feature-set NAME=bed` flags, or a `--spec build.yaml`
+  file for multi-feature-set databases. `--variable-k` builds an index queryable
+  at any k ≤ s from a single build (e.g. a k-sweep to validate the k=31 default),
+  supported even from BED input by building the base from the generated
+  per-feature FASTAs; the manifest's `kmer.type` becomes `variable`. New
+  per-command docs at `docs/commands/build.md`.
+- `annotate --k INTEGER`: query at a chosen k-mer length. Defaults to the
+  database's k; a value other than the database's k is accepted only on a
+  variable-k HKS index, enabling a k-sweep (e.g. re-annotating the same input at
+  k=21/25/31 from one index). Outputs are tagged `.k<k>` so a sweep into one
+  directory doesn't overwrite itself; fixed-k indexes reject a differing `--k`
+  with a message pointing at `build --variable-k`.
 - `karyotype --colors PATH`: render with a custom colour file (same
   `feature_set`/`feature`/`color` format as a database `colors.tsv`) instead of
   the database default — e.g. the cytoband database's `colors_chromosome.tsv` to
@@ -33,6 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ``date-released`` fields).
 
 ### Fixed
+- `annotate`'s "no databases installed" error now mentions `--db-root`, making it
+  clear the databases may simply be under a non-default root.
 - The default karyotype output filename for multi-input runs (no `--output`) is
   no longer named after only the first input. It now collapses the input stems to
   their common prefix (`GM04890.haplotype1` + `GM04890.haplotype2` -> `GM04890`),
@@ -69,6 +115,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Surfaced by ISCN validation on GM03417.
 
 ### Changed
+- With a second reference database now shipped (`HKS_human_CHM13_v2` alongside the
+  KMC `KS_human_CHM13_v2`), `annotate` / `karyotype` / `scaffold` require `--db`
+  when more than one database is installed, erroring with the list of installed
+  databases. A single-database install still selects it automatically, and
+  existing annotations are reused per database (every intermediate filename is
+  tagged with its database id), so upgrading and switching backends never mixes them.
+- `karyotype` rendering now scales to the data instead of fixed human-tuned
+  constants: the longest chromosome (genome view) / longest centromere (centromere
+  view) fills a fixed pixel height, the genome-view bin size is derived from the
+  longest sequence (≈ longest / 250, restoring feature diversity that a fixed 1 Mb
+  bin washed out on small genomes), and the scale bar is a "nice" round length for
+  the zoom. Human output is unchanged; small genomes (e.g. Arabidopsis) no longer
+  render tiny. Override with `--pixels-per-mb` / `--bin-size`. The centromere view
+  is also taller (fills the plot like the genome view).
+- `karyotype --no-human-chroms` / layout seeding: the karyotype layout is now
+  seeded from the database's own `chromosome` feature-set leaves rather than a
+  hardcoded human list (identical for the human database; organism-correct
+  elsewhere). `--no-human-chroms` now suppresses that seeding.
+- `karyotype` title band auto-widens the canvas so a long title over few
+  chromosomes is no longer clipped.
+- Memory: the `bin`, `scaffold`, and `centromeres` stages and the HKS TSV->BED
+  conversion now stream per contig / in bounded batches instead of loading whole
+  assemblies or files into memory. Peak RAM on a whole-genome cascade drops from
+  ~32-46 GB to ~10 GB (now bounded by `annotate`), so runs fit on much smaller
+  nodes; outputs are byte-identical. Read inputs also emit integer query ranks
+  rather than names, and a redundant scaffold pass was dropped.
+- `features.tsv` is now optional for HKS databases (`index.type: hks`). It maps
+  integer feature ids to names for the KMC backend only; the HKS backend reads
+  label names from the index and never consults it. The manifest parser and
+  layout validator no longer require it for HKS (KMC still does), `annotate`
+  tolerates its absence, and databases built by `build` omit it. Existing HKS
+  databases that still list `features.tsv` continue to validate.
 - With ``--combine-chromosomes`` but not ``--combine-acrocentrics``, the
   acrocentric contigs that stay as separate records are now renamed in
   canonical order to ``<chrom>_<hap>_<A|B|C...>`` (e.g. ``chr14_hap2_A``,
@@ -323,9 +401,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FASTA/FASTQ reader that queries every k-mer in each input sequence
   against a KMC database and emits run-length-encoded BED records of
   per-position feature ids. Supports plain FASTA/FASTQ, gzipped input,
-  and stdin. Adapted from the version in the KaryoScope archive repo;
-  the only changes are include paths driven by the new Makefile's `-I`
-  flags rather than the previous `../external/...` relative paths.
+  and stdin. Adapted from an earlier internal version; the only changes
+  are include paths driven by the new Makefile's `-I` flags rather than
+  the previous `../external/...` relative paths.
 - `native/get_featureIDs/Makefile` — cross-platform build with
   incremental compilation. Defaults `CXX` to `c++` (the system's
   default C++ compiler — g++ on Linux, Apple Clang on macOS). Locates

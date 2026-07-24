@@ -80,6 +80,22 @@ DEFAULT_BIN_SIZE_BY_MODE: dict[str, int] = {
     "subtelomere": 100,
 }
 
+#: Target number of render bins across the longest sequence when the genome-view
+#: bin size is chosen automatically (no ``--bin-size`` override). Human 250 Mb /
+#: 250 -> ~1 Mb (the old default); Arabidopsis ~32 Mb / 250 -> ~130 kb, which
+#: restores feature diversity that 1 Mb bins wash out via the plurality-per-bin
+#: rule. Only ``genome`` scales; ``centromere``/``subtelomere`` keep fixed
+#: fine-grained bins (scaling them to the whole-genome target would coarsen them).
+_GENOME_TARGET_BIN_COUNT = 250
+_MIN_AUTO_BIN_SIZE = 10_000
+
+
+def _auto_bin_size(mode: str, max_seq_len: int) -> int:
+    """Genome-view bin size scaled to the longest sequence; fixed otherwise."""
+    if mode != "genome" or max_seq_len <= 0:
+        return DEFAULT_BIN_SIZE_BY_MODE[mode]
+    return max(_MIN_AUTO_BIN_SIZE, round(max_seq_len / _GENOME_TARGET_BIN_COUNT))
+
 
 #: All available render modes, in canonical order. Used when the
 #: user doesn't specify ``--mode`` -- the default is to render every
@@ -577,8 +593,10 @@ def karyotype_run(
     sex_determination_system: str = "XY",
     background_color: str = "white",
     bin_size: int | None = None,
+    pixels_per_mb: float | None = None,
     subtelomere_boundary: int = 250_000,
     min_scaffold_length: int = DEFAULT_MIN_SCAFFOLD_LENGTH,
+    telo_motif: str | None = None,
     acrocentrics: set[str] | None = None,
     combine_chromosomes: bool = False,
     scaffold_gap_size: int = DEFAULT_SCAFFOLD_GAP_SIZE,
@@ -698,6 +716,13 @@ def karyotype_run(
     colors = parse_colors(colors_source)
     colors_tag = _colors_filename_tag(colors_path)
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
+    # Chromosomes to seed the karyotype layout with (so one missing from the
+    # sample still gets an empty column): the chromosome-role feature set's
+    # leaves. Replaces the old hardcoded human list; identical for the human DB
+    # (chr1..chrY), and organism-correct elsewhere. Empty if unresolvable ->
+    # only chromosomes present in the data are drawn.
+    chromosome_role_fs = _resolve_roles(scaffold_manifest.roles, scaffold_available)[0]
+    expected_chromosomes = list(leaves_for(hierarchy, chromosome_role_fs))
 
     # Hard check that every hierarchy node has a colour. ``download``
     # runs the same check at install time; we re-run it here so
@@ -757,6 +782,7 @@ def karyotype_run(
             feature_sets=scaffold_feature_sets,
             mode="both",
             min_scaffold_length=min_scaffold_length,
+            telo_motif=telo_motif,
             acrocentrics=acros_set,
             combine_chromosomes=True,
             scaffold_gap_size=scaffold_gap_size,
@@ -786,6 +812,7 @@ def karyotype_run(
             feature_sets=[],
             mode="bed",
             min_scaffold_length=min_scaffold_length,
+            telo_motif=telo_motif,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
             threads=threads,
@@ -836,6 +863,7 @@ def karyotype_run(
             feature_sets=requested,
             mode="bed",
             min_scaffold_length=min_scaffold_length,
+            telo_motif=telo_motif,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
             threads=threads,
@@ -859,6 +887,7 @@ def karyotype_run(
             db_root=scaffold_db_root_eff,
             db_id=scaffold_db_id_resolved,
             min_scaffold_length=min_scaffold_length,
+            telo_motif=telo_motif,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
             bgzip=bgzip,
@@ -936,13 +965,22 @@ def karyotype_run(
     results: list[KaryotypeResult] = []
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    # Longest scaffolded sequence across inputs -- drives the auto (data-
+    # driven) genome-view bin size below (and, in the renderer, the zoom).
+    max_seq_len = 0
+    for _spec, out_dir, stem in per_input_state:
+        map_path = out_dir / f"{stem}.{scaffold_db_id_resolved}.scaffold_map.tsv"
+        if map_path.is_file():
+            for row in read_map(map_path):
+                max_seq_len = max(max_seq_len, row.length)
+
     # Outer loop: mode (sets bin_size). Inner loop: feature set.
     # Binned BEDs are cached per (input, fs, bin_size) on disk so the
     # second time we hit the same fs at a different bin_size, we just
     # do a fresh bin call -- not re-running scaffold/annotate.
     for current_mode in requested_modes:
         current_bin_size = (
-            bin_size if bin_size is not None else DEFAULT_BIN_SIZE_BY_MODE[current_mode]
+            bin_size if bin_size is not None else _auto_bin_size(current_mode, max_seq_len)
         )
 
         for fs in requested:
@@ -1026,6 +1064,8 @@ def karyotype_run(
                 background_color=background_color,
                 subtelomere_boundary=subtelomere_boundary,
                 seed_human_chromosomes=seed_human_chromosomes,
+                expected_chromosomes=expected_chromosomes,
+                pixels_per_mb=pixels_per_mb,
                 output_path=svg_path,
                 sample_label=sample_label,
                 database_id=db_id_resolved,

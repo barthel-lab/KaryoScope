@@ -21,9 +21,8 @@ import yaml
 
 from karyoscope.exceptions import DatabaseLayoutError, ManifestError
 
-#: Supported index types. New backends (e.g. ``hks``) will be added here as
-#: they land. See DATABASE_LAYOUT.md for the manifest schema details.
-_SUPPORTED_INDEX_TYPES = frozenset({"kmc"})
+#: Supported index types. See DATABASE_LAYOUT.md for the manifest schema details.
+_SUPPORTED_INDEX_TYPES = frozenset({"kmc", "hks"})
 
 
 @dataclass
@@ -32,6 +31,10 @@ class IndexSpec:
 
     For ``type == "kmc"``, ``basename`` is a path relative to the database
     directory; KMC opens ``<basename>.kmc_pre`` and ``<basename>.kmc_suf``.
+
+    For ``type == "hks"``, ``basename`` is likewise relative; HKS opens the
+    base index ``<basename>.hksb`` and, per feature set, ``<basename>.<fs>.hksf``
+    and ``<basename>.<fs>.hierarchy.txt``.
     """
 
     type: str
@@ -61,7 +64,7 @@ class Manifest:
     karyoscope_min_version: str
     index: IndexSpec
     hierarchy: str
-    features: str
+    features: str | None
     colors: str
     kmer: KmerSpec
     feature_sets: list[str]
@@ -123,7 +126,7 @@ def parse_manifest(manifest_path: Path) -> Manifest:
             f"unsupported index type '{index_type}' in {where} "
             f"(supported: {sorted(_SUPPORTED_INDEX_TYPES)})"
         )
-    if index_type == "kmc":
+    if index_type in ("kmc", "hks"):
         basename = _require(index_raw, "basename", f"{where}:index")
         if not isinstance(basename, str):
             raise ManifestError(f"'index.basename' in {where} must be a string")
@@ -155,9 +158,17 @@ def parse_manifest(manifest_path: Path) -> Manifest:
         raise ManifestError(f"'feature_sets' in {where} must not be empty")
 
     hierarchy = _require(data, "hierarchy", where)
-    features = _require(data, "features", where)
     colors = _require(data, "colors", where)
-    for k, v in (("hierarchy", hierarchy), ("features", features), ("colors", colors)):
+    # ``features.tsv`` maps integer feature ids to names for the KMC backend.
+    # The HKS backend stores label names in the index itself and never reads
+    # features.tsv, so it is required only for ``type: kmc``. When an hks
+    # manifest does list it (e.g. databases predating this change), keep and
+    # validate the path for back-compat.
+    features = _require(data, "features", where) if index_type == "kmc" else data.get("features")
+    checks = [("hierarchy", hierarchy), ("colors", colors)]
+    if features is not None:
+        checks.append(("features", features))
+    for k, v in checks:
         if not isinstance(v, str):
             raise ManifestError(f"'{k}' in {where} must be a string path")
 
@@ -191,7 +202,8 @@ def validate_database_layout(db_dir: Path) -> Manifest:
     Checks:
 
     * ``manifest.yaml`` is present and parses cleanly.
-    * Files referenced from the manifest (hierarchy, features, colors) exist.
+    * Files referenced from the manifest (hierarchy, colors, and features when
+      present) exist. ``features`` is required only for ``type: kmc``.
     * For ``index.type == "kmc"``: ``<basename>.kmc_pre`` and ``<basename>.kmc_suf``
       both exist.
 
@@ -222,12 +234,25 @@ def validate_database_layout(db_dir: Path) -> Manifest:
             raise DatabaseLayoutError(f"missing {kind} file: {rel} (looked at {full})")
 
     _check_exists(manifest.hierarchy, "hierarchy")
-    _check_exists(manifest.features, "features")
+    if manifest.features is not None:
+        _check_exists(manifest.features, "features")
     _check_exists(manifest.colors, "colors")
 
     if manifest.index.type == "kmc":
         assert manifest.index.basename is not None  # guaranteed by parse_manifest
         _check_exists(manifest.index.basename + ".kmc_pre", "KMC index (.kmc_pre)")
         _check_exists(manifest.index.basename + ".kmc_suf", "KMC index (.kmc_suf)")
+    elif manifest.index.type == "hks":
+        assert manifest.index.basename is not None  # guaranteed by parse_manifest
+        _check_exists(manifest.index.basename + ".hksb", "HKS base index (.hksb)")
+        for fs in manifest.feature_sets:
+            _check_exists(
+                manifest.index.basename + f".{fs}.hksf",
+                f"HKS feature set file (.{fs}.hksf)",
+            )
+            _check_exists(
+                manifest.index.basename + f".{fs}.hierarchy.txt",
+                f"HKS hierarchy file (.{fs}.hierarchy.txt)",
+            )
 
     return manifest

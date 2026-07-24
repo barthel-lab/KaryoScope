@@ -151,8 +151,18 @@ logger = logging.getLogger(__name__)
     "--bin-size",
     type=int,
     default=None,
-    help="Bin size (bp) for the SVG. Default depends on --mode: 1Mb for genome, "
-    "100Kb for centromere, 100bp for subtelomere. Only valid with exactly one --mode.",
+    help="Bin size (bp) for the SVG. Default: data-driven for genome view "
+    "(~longest sequence / 250, so ~1Mb for human, ~130kb for Arabidopsis; finer "
+    "bins keep feature diversity that coarse bins wash out); 100Kb for centromere, "
+    "100bp for subtelomere. Only valid with exactly one --mode.",
+)
+@click.option(
+    "--pixels-per-mb",
+    type=float,
+    default=None,
+    help="Fix the vertical zoom at this many pixels per Mb (e.g. to compare plots "
+    "across assemblies at the same scale). Default: data-driven so the longest "
+    "chromosome fills a fixed height regardless of genome size.",
 )
 @click.option(
     "--subtelomere-boundary",
@@ -167,6 +177,13 @@ logger = logging.getLogger(__name__)
     default=5_000_000,
     show_default=True,
     help="Drop contigs shorter than this (no telomere) during the scaffold step.",
+)
+@click.option(
+    "--telo-motif",
+    default=None,
+    help="Telomere repeat motif for `seqtk telo` (its -m). Default: seqtk's CCCTAA "
+    "(vertebrate TTAGGG). Non-vertebrate genomes need their own, e.g. Arabidopsis / "
+    "plants use CCCTAAA (TTTAGGG).",
 )
 @click.option(
     "--acrocentric",
@@ -209,9 +226,10 @@ logger = logging.getLogger(__name__)
     "no_human_chroms",
     is_flag=True,
     default=False,
-    help="Don't seed the chromosome list with the standard human set "
-    "(chr1..chr22, chrX, chrY). Use for non-human assemblies so the SVG "
-    "shows only the chromosomes actually in the data.",
+    help="Don't seed the layout with the database's declared chromosome set "
+    "(the chromosome feature-set leaves); show only the chromosomes actually "
+    "present in the data. By default a chromosome missing from the sample still "
+    "gets an empty column.",
 )
 @click.option(
     "--format",
@@ -329,8 +347,10 @@ def cmd(
     sex_determination_system: str,
     background_color: str,
     bin_size: int | None,
+    pixels_per_mb: float | None,
     subtelomere_boundary: int,
     min_scaffold_length: int,
+    telo_motif: str | None,
     acrocentrics_raw: tuple[str, ...],
     combine_chromosomes: bool,
     scaffold_gap_size: int,
@@ -455,8 +475,10 @@ def cmd(
             show_title=not no_title,
             show_legend=not no_legend,
             bin_size=bin_size,
+            pixels_per_mb=pixels_per_mb,
             subtelomere_boundary=subtelomere_boundary,
             min_scaffold_length=min_scaffold_length,
+            telo_motif=telo_motif,
             acrocentrics=acrocentrics,
             combine_chromosomes=combine_chromosomes,
             scaffold_gap_size=scaffold_gap_size,

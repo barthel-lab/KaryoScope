@@ -24,6 +24,9 @@ from karyoscope.paths import default_db_root, installed_databases
 #: (display_name, executable_name, --version flag).
 _EXTERNAL_TOOLS: tuple[tuple[str, str, str], ...] = (
     ("KMC", "kmc", "--version"),
+    # hks 0.2.0 has no --version flag; run with no args and read the
+    # "Running hks version X" banner it prints (like seqtk below).
+    ("HKS", "hks", ""),
     ("bgzip", "bgzip", "--version"),
     ("tabix", "tabix", "--version"),
     ("seqtk", "seqtk", ""),

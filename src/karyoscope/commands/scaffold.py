@@ -133,6 +133,12 @@ def _split_comma(value: str) -> list[str]:
     help="Drop contigs shorter than this that have no telomere.",
 )
 @click.option(
+    "--telo-motif",
+    default=None,
+    help="Telomere repeat motif for `seqtk telo` (its -m). Default: seqtk's CCCTAA "
+    "(vertebrate TTAGGG). Plants (e.g. Arabidopsis) use CCCTAAA (TTTAGGG).",
+)
+@click.option(
     "--acrocentric",
     "acrocentrics_raw",
     multiple=True,
@@ -221,6 +227,7 @@ def cmd(
     feature_sets_arg: tuple[str, ...],
     bin_size: int,
     min_scaffold_length: int,
+    telo_motif: str | None,
     acrocentrics_raw: tuple[str, ...],
     mode: str,
     keep_unscaffolded: bool,
@@ -334,6 +341,7 @@ def cmd(
             mode=mode_normalised,
             bin_size=bin_size,
             min_scaffold_length=min_scaffold_length,
+            telo_motif=telo_motif,
             acrocentrics=acrocentrics,
             split_haps_regex=split_haps_regex,
             threads=threads,
