@@ -494,3 +494,140 @@ def test_enospc_during_extraction_is_reported_as_a_space_problem(
     with pytest.raises(InsufficientDiskSpaceError) as excinfo:
         install_database(entry, db_root, show_progress=False)
     assert "ran out of disk space" in str(excinfo.value)
+
+
+# --- Archive reuse after a failed install -------------------------------
+
+
+def _staged(db_root: Path, db_id: str = "KS_dummy_test_v1") -> Path:
+    from karyoscope.download import staged_archive_path
+
+    return staged_archive_path(db_root, db_id)
+
+
+def test_failed_extraction_keeps_the_downloaded_archive(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported bug: a failed extraction cost a second full download.
+
+    The archive used to be removed in a `finally`, so a run that got all
+    the way through a 25-minute transfer and then hit ENOSPC during
+    extraction left nothing to resume from.
+    """
+    import errno
+
+    from karyoscope import download as download_module
+
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+
+    def boom(*_args: object, **_kwargs: object) -> Path:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(download_module, "_safe_extract_tar", boom)
+    with pytest.raises(InsufficientDiskSpaceError):
+        install_database(entry, db_root, show_progress=False)
+
+    assert _staged(db_root).is_file(), "the verified archive was discarded on failure"
+
+
+def test_a_retry_reuses_the_staged_archive_instead_of_downloading(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the failure above, re-running must not re-fetch."""
+    import errno
+
+    from karyoscope import download as download_module
+
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+
+    real_extract = download_module._safe_extract_tar
+
+    def boom(*_args: object, **_kwargs: object) -> Path:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(download_module, "_safe_extract_tar", boom)
+    with pytest.raises(InsufficientDiskSpaceError):
+        install_database(entry, db_root, show_progress=False)
+
+    # Second attempt: extraction works again, but any fetch is a failure.
+    monkeypatch.setattr(download_module, "_safe_extract_tar", real_extract)
+
+    def no_fetching(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("re-downloaded an archive that was already on disk")
+
+    monkeypatch.setattr(download_module, "fetch", no_fetching)
+    target = install_database(entry, db_root, show_progress=False)
+
+    assert target.is_dir()
+    assert is_installed(db_root, entry.id)
+    # A successful install disposes of the archive; only failure keeps it.
+    assert not _staged(db_root).exists()
+
+
+def test_a_corrupt_staged_archive_is_discarded_and_refetched(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+) -> None:
+    """Reuse is gated on the checksum, not merely on the file existing.
+
+    A truncated leftover must not be extracted as if it were complete.
+    """
+    db_root = tmp_path / "db"
+    db_root.mkdir(parents=True)
+    _staged(db_root).write_bytes(b"this is not the archive you are looking for")
+
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+    target = install_database(entry, db_root, show_progress=False)
+
+    assert target.is_dir()
+    assert is_installed(db_root, entry.id)
+
+
+def test_partially_extracted_directory_is_removed_on_failure(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Half an extracted database is unusable and, on ENOSPC, in the way.
+
+    It occupies exactly the space the retry needs, and the next attempt
+    deletes it regardless.
+    """
+    import errno
+
+    from karyoscope import download as download_module
+
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+    target_dir = db_root / entry.id
+
+    def half_extract(*_args: object, **_kwargs: object) -> Path:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "manifest.yaml").write_bytes(b"x" * 4096)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(download_module, "_safe_extract_tar", half_extract)
+    with pytest.raises(InsufficientDiskSpaceError):
+        install_database(entry, db_root, show_progress=False)
+
+    assert not target_dir.exists(), "partial extraction left gigabytes behind"
+    assert _staged(db_root).is_file(), "the archive should still be reusable"
+
+
+def test_a_successful_install_removes_the_archive(
+    tmp_path: Path, dummy_db_url: str, dummy_db_sha256: str
+) -> None:
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+    install_database(entry, db_root, show_progress=False)
+    assert not _staged(db_root).exists()

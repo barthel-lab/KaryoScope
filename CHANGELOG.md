@@ -35,6 +35,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HKS_human_CHM13_v2`. Entries without `download_size_gb` fall back to
   `size_gb` for both and are labelled as estimates.
 
+### Fixed
+- `download` no longer discards a completed archive when the install fails.
+  The archive was unlinked in a `finally`, so a run that finished a 25-minute
+  transfer and then hit ENOSPC during extraction left nothing behind and the
+  retry re-downloaded everything. It is now kept (its SHA-256 proves the bytes
+  are identical to a fresh fetch), re-verified on the next run, and extracted
+  directly — a failed install costs one extraction, not a second transfer.
+  Conversely, a partially-extracted database directory is now *removed* on
+  failure: it is unusable, is deleted at the start of the next attempt anyway,
+  and when the failure was ENOSPC it occupies exactly the space the retry
+  needs. Both outcomes are reported at WARNING so they are visible by default.
+  A staged archive whose checksum doesn't match is discarded and re-fetched.
+
 ### Changed
 - `download --list` and `--info` report the download size and the on-disk size
   separately, and `--info` also reports the free space needed to install. The

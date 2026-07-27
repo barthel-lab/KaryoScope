@@ -264,6 +264,18 @@ def _action_install(
             f"{diskspace.format_bytes(diskspace.free_bytes(db_root))} available "
             f"on {db_root}"
         )
+        # An archive left by a failed run is reused if it verifies. Say so
+        # here rather than only in the log: without it, the pause while we
+        # hash 13 GB looks like a hang, and the absence of a progress bar
+        # looks like nothing is happening. The verdict itself is logged by
+        # install_database, which is where the hashing happens.
+        staged = _download.staged_archive_path(db_root, entry.id)
+        if staged.is_file():
+            click.echo(
+                f"  Found an archive from an earlier run "
+                f"({diskspace.format_bytes(staged.stat().st_size)}); "
+                "verifying it — if it matches, the download is skipped."
+            )
         target = _download.install_database(
             entry,
             db_root,
