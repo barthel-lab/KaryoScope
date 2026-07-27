@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from karyoscope import cpus as _cpus
 from karyoscope import diskspace, preflight
 from karyoscope import installed as _installed
 from karyoscope.core.external import require_tool, run_tool
@@ -671,7 +672,7 @@ def _smooth_all_feature_sets(
             "internal error: _smooth_all_feature_sets called with no output paths"
         )
 
-    pool_size = threads if threads > 0 else (os.cpu_count() or 1)
+    pool_size = _cpus.resolve_threads(threads)
     features_by_fs = {fs: make_features_for_worker(features, fs) for fs in feature_sets}
 
     ctx = mp.get_context("spawn")
@@ -1139,7 +1140,8 @@ def annotate(
         declared in the database's manifest".
     threads
         Threads for both the C++ k-mer query and the smoothing pool.
-        ``0`` means auto (``os.cpu_count()``).
+        ``0`` means auto (the CPUs this process may actually use --
+        a SLURM allocation or CPU affinity, not the machine's core count).
     smooth
         Produce the hierarchy-smoothed BED. Default: ``True``.
     keep_presmoothed
@@ -1226,6 +1228,7 @@ def annotate(
         _annotate_dependencies(index_type=manifest.index.type, input_path=input_path, bgzip=bgzip),
         context=f"annotate against {db_id_resolved}",
     )
+    _cpus.warn_if_oversubscribed(threads, what=f"annotate against {db_id_resolved}")
     input_bases = estimate_input_bases(input_path)
     needed_bytes = estimate_output_bytes(
         input_bases=input_bases,
@@ -1259,7 +1262,7 @@ def annotate(
     # Announce the run before the first expensive step. Everything below
     # this point can take twenty minutes, and until now the terminal stayed
     # blank for all of it.
-    n_threads = threads if threads > 0 else (os.cpu_count() or 1)
+    n_threads = _cpus.resolve_threads(threads)
     progress.start(
         f"Annotating {input_path.name} against {db_id_resolved}",
         f"{len(requested)} feature set(s), {n_threads} thread(s), "

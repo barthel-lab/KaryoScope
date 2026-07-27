@@ -46,13 +46,13 @@ from __future__ import annotations
 import gzip
 import logging
 import multiprocessing as mp
-import os
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import IO
 
+from karyoscope import cpus as _cpus
 from karyoscope.core.io.features import NOVEL_NAME
 from karyoscope.core.io.hierarchy import Hierarchy
 from karyoscope.core.smooth import chunked_seq_reader
@@ -341,11 +341,12 @@ def _iter_bed(handle: IO[str]) -> Iterator[tuple[str, int, int, str]]:
 def _resolve_pool_size(threads: int) -> int:
     """Translate the user-facing ``threads`` arg into an actual pool size.
 
-    ``threads <= 0`` means "auto" (``os.cpu_count()``). ``threads == 1``
+    ``threads <= 0`` means "auto" (the CPUs this process may actually
+    use -- see :mod:`karyoscope.cpus`). ``threads == 1``
     is single-threaded (caller short-circuits the pool entirely).
     """
     if threads <= 0:
-        return os.cpu_count() or 1
+        return _cpus.usable_cpus()
     return threads
 
 
@@ -432,7 +433,7 @@ def bin_features(
     the pool path requires a real on-disk input).
 
     Parallelism: ``threads`` (default 1) controls the worker-pool
-    size. ``threads == 0`` means "auto" (``os.cpu_count()``).
+    size. ``threads == 0`` means "auto" (see :mod:`karyoscope.cpus`).
     ``threads == 1`` short-circuits the pool entirely and runs the
     in-process binner directly -- output is byte-for-byte identical
     to the multi-threaded path.
