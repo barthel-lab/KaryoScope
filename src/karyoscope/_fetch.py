@@ -27,7 +27,7 @@ from karyoscope.exceptions import ChecksumError, FetchError, UnsupportedSchemeEr
 _CHUNK_SIZE = 1024 * 1024
 
 
-def _sha256_file(path: Path) -> str:
+def sha256_file(path: Path) -> str:
     """Return the hex SHA-256 digest of a file's contents."""
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -175,7 +175,7 @@ def fetch(
         raise UnsupportedSchemeError(f"unsupported URL scheme {scheme!r}; expected http(s) or file")
 
     if expected_sha256 is not None:
-        actual = _sha256_file(dest)
+        actual = sha256_file(dest)
         if actual.lower() != expected_sha256.lower():
             raise ChecksumError(
                 f"SHA-256 mismatch for {dest.name}: "

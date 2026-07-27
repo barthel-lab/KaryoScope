@@ -77,6 +77,41 @@ karyoscope karyotype -i asm.fa --mode genome --feature-set chromosome \
 
 One image is written per (mode, feature_set) combination, named `<base>.<dbid>.<mode>.<feature_set>.smoothed.karyotype.svg`. `<base>` is the basename of `--output PATH` when given; otherwise it is derived from the input stems — a single input's stem, or for multi-input runs the longest common prefix of the stems (e.g. `GM04890.haplotype1` + `GM04890.haplotype2` → `GM04890`), falling back to the first stem when the stems share no separator-delimited prefix. Passing `--format pdf` / `--format png` (repeatable) additionally produces those formats by converting the SVG via cairosvg (which needs libcairo at runtime). Using `--presmoothed` renders from raw annotations, and the filename then reflects that variant. The cascade also writes the intermediate scaffolded / binned / centromere BEDs unless suppressed.
 
+## Progress output
+
+The cascade reports as it goes, so a run that takes tens of minutes is distinguishable from a hung one. Nested steps — the `annotate` the cascade runs to derive missing annotations, which is usually the bulk of the wall time — are indented one level, so their headline reads as part of this run rather than a separate command:
+
+```
+Rendering karyotypes for hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+  3 mode(s) x 6 feature set(s) = 18 render(s)
+  Annotating hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+    6 feature set(s), 16 thread(s), ~34 GB estimated output
+    [1/6] chromosome    4m05s
+    ...
+  [1/18] genome/chromosome      52.1s
+  [2/18] genome/region          48.7s
+  ...
+Wrote:
+  ...
+```
+
+When you restrict `--feature-set` to sets that don't cover the layout roles, an extra line names what the cascade pulls in — so a request for two feature sets that makes `annotate` report three is self-explanatory:
+
+```
+Rendering karyotypes for hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+  1 mode(s) x 2 feature set(s) = 2 render(s)
+  scaffolding also needs region (annotated if missing; not rendered)
+  Annotating hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+    3 feature set(s), 16 thread(s), ~17 GB estimated output
+    ...
+```
+
+That line appears when the cascade requires a feature set you didn't ask to render. Laying out a karyotype needs the chromosome-assignment set (which chromosome each contig belongs to) and the region-assignment set (which way round it goes, and where the centromere is) whatever is being plotted, so `annotate` may report more feature sets than `--feature-set` requested. The line is omitted when your `--feature-set` choices already cover those roles.
+
+Each render's time is measured from the top of its loop, so the first view of a mode carries its binning pass (and any cascade work its feature set needed) rather than reporting a misleadingly fast render.
+
+Pass `-q` (before the subcommand: `karyoscope -q karyotype ...`) to suppress the narration; the closing `Wrote:` block still prints. Use `-v` for the full per-step logging on stderr.
+
 ## See also
 
 - [`karyoscope annotate`](annotate.md), [`karyoscope scaffold`](scaffold.md), [`karyoscope centromeres`](centromeres.md) — the cascade stages karyotype drives

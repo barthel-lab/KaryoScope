@@ -18,7 +18,8 @@ import logging
 import tarfile
 from pathlib import Path
 
-from karyoscope._fetch import fetch
+from karyoscope import diskspace
+from karyoscope._fetch import fetch, sha256_file
 from karyoscope._version import __version__
 from karyoscope.exceptions import (
     DatabaseLayoutError,
@@ -208,6 +209,114 @@ def _safe_extract_tar(archive: Path, dest_dir: Path, expected_top_level: str) ->
     return extracted
 
 
+def staged_archive_path(db_root: Path, db_id: str) -> Path:
+    """Where :func:`install_database` stages a database's ``.tar.gz``.
+
+    Public so the CLI can report on a leftover archive without duplicating
+    the naming convention.
+    """
+    return db_root / f".{db_id}.tar.gz"
+
+
+def _archive_is_reusable(
+    archive_path: Path, entry: DatabaseEntry, *, verify_checksum: bool
+) -> bool:
+    """Whether a staged archive from an earlier run can be extracted as-is.
+
+    An install that gets as far as extraction has already paid for the
+    whole download. When extraction then fails — a full disk, an
+    interrupted run — throwing the archive away costs the user the entire
+    transfer again (25 minutes for the human databases). A SHA-256 match
+    against the registry proves the bytes are exactly what a fresh
+    download would produce, so there is nothing to gain by re-fetching.
+
+    With ``--no-checksum`` there is no way to tell a good archive from a
+    truncated one, so we reuse it (consistent with what that flag means
+    elsewhere) but say so — if extraction then fails on a corrupt file,
+    the error points at the archive.
+    """
+    if not archive_path.is_file():
+        return False
+
+    size = archive_path.stat().st_size
+    if not verify_checksum:
+        logger.warning(
+            "reusing staged archive %s (%s) without verifying it: --no-checksum was "
+            "passed. Delete it and re-run if extraction fails.",
+            archive_path,
+            diskspace.format_bytes(size),
+        )
+        return True
+
+    logger.info(
+        "found a staged archive from an earlier run (%s); verifying its SHA-256 "
+        "before deciding whether to re-download",
+        diskspace.format_bytes(size),
+    )
+    actual = sha256_file(archive_path)
+    if actual.lower() == entry.sha256.lower():
+        logger.info("staged archive verified; skipping the download")
+        return True
+
+    logger.warning(
+        "staged archive %s does not match the registry SHA-256 (expected %s, got %s); "
+        "discarding it and downloading again",
+        archive_path,
+        entry.sha256.lower(),
+        actual,
+    )
+    return False
+
+
+def _check_install_space(entry: DatabaseEntry, db_root: Path, *, skip: bool) -> None:
+    """Verify ``db_root`` can hold the archive *and* its extracted form.
+
+    Installing peaks at ``download + installed`` bytes: :func:`fetch` writes
+    the whole ``.tar.gz`` into ``db_root`` first, and it is only unlinked
+    after :func:`_safe_extract_tar` returns. For the human databases that is
+    ~33 GB (KMC) or ~36 GB (HKS) — well above what the archive size alone
+    suggests, which is exactly the trap this check exists to close.
+
+    Two adjustments make the number honest rather than merely conservative:
+
+    * a partially-downloaded archive from an interrupted run is credited
+      back, since :func:`fetch` resumes into it rather than re-fetching;
+    * an existing install being replaced is credited back, since it is
+      removed before the download starts.
+    """
+    archive_path = staged_archive_path(db_root, entry.id)
+    partial_path = Path(str(archive_path) + ".part")
+    credit = 0
+    for staged in (archive_path, partial_path):
+        if staged.is_file():
+            credit += staged.stat().st_size
+    target_dir = db_root / entry.id
+    credit += diskspace.directory_size(target_dir)
+
+    hint_lines = [
+        "Free up space, or install elsewhere with:",
+        "    karyoscope download --db-root /path/on/a/larger/disk " + entry.id,
+        "  (set $KARYOSCOPE_DB to that path to make it the default).",
+    ]
+    if not entry.download_size_is_declared:
+        hint_lines.append(
+            "  This registry entry does not declare a download_size_gb, so the "
+            "archive was assumed to be the same size as the extracted database. "
+            "Refresh the registry with --refresh-registry."
+        )
+    hint_lines.append("  Pass --no-space-check to attempt the install anyway.")
+
+    diskspace.require_free_space(
+        db_root,
+        entry.peak_install_bytes,
+        what=f"installing {entry.id}",
+        credit_bytes=credit,
+        estimated=not entry.download_size_is_declared,
+        hint="\n".join(hint_lines),
+        skip=skip,
+    )
+
+
 def install_database(
     entry: DatabaseEntry,
     db_root: Path,
@@ -215,6 +324,7 @@ def install_database(
     verify_checksum: bool = True,
     show_progress: bool = True,
     force: bool = False,
+    check_space: bool = True,
 ) -> Path:
     """Download, verify, extract, and register a single database.
 
@@ -233,6 +343,10 @@ def install_database(
     force
         If True, re-download and re-extract even if the database appears to
         be already installed.
+    check_space
+        If True (the default), refuse to start when ``db_root``'s filesystem
+        cannot hold the archive and its extracted form at once. Set to False
+        to attempt the install regardless.
 
     Returns
     -------
@@ -243,6 +357,9 @@ def install_database(
     ------
     IncompatibleVersionError
         If the database requires a newer KaryoScope than this one.
+    InsufficientDiskSpaceError
+        If ``check_space`` is True and there isn't room for the install, or
+        if the filesystem fills up part-way through it anyway.
     ChecksumError
         If verification fails (only raised when ``verify_checksum=True``).
     DatabaseLayoutError
@@ -261,6 +378,11 @@ def install_database(
         logger.debug("%s already installed at %s; skipping", entry.id, target_dir)
         return target_dir
 
+    # Space check goes here: after the "already installed" short-circuit (no
+    # point checking for work we won't do) but before the rmtree below, so a
+    # doomed install can never destroy a working one.
+    _check_install_space(entry, db_root, skip=not check_space)
+
     # If the directory exists but isn't recorded (or force=True), clean it up
     # so we don't merge old and new file sets.
     if target_dir.exists():
@@ -277,23 +399,68 @@ def install_database(
         shutil.rmtree(target_dir)
 
     # Stage the download to a temp file inside db_root.
-    archive_path = db_root / f".{entry.id}.tar.gz"
+    archive_path = staged_archive_path(db_root, entry.id)
     try:
-        logger.info("fetching %s from %s", entry.id, entry.url)
-        fetch(
-            entry.url,
-            archive_path,
-            expected_sha256=entry.sha256 if verify_checksum else None,
-            show_progress=show_progress,
-        )
-        if verify_checksum:
-            logger.debug("SHA-256 verified: %s", entry.sha256)
+        if _archive_is_reusable(archive_path, entry, verify_checksum=verify_checksum):
+            logger.info("reusing staged archive %s", archive_path)
         else:
-            logger.warning("SHA-256 verification skipped for %s", entry.id)
+            logger.info("fetching %s from %s", entry.id, entry.url)
+            fetch(
+                entry.url,
+                archive_path,
+                expected_sha256=entry.sha256 if verify_checksum else None,
+                show_progress=show_progress,
+            )
+            if verify_checksum:
+                logger.debug("SHA-256 verified: %s", entry.sha256)
+            else:
+                logger.warning("SHA-256 verification skipped for %s", entry.id)
 
         logger.debug("extracting %s into %s", archive_path.name, db_root)
         _safe_extract_tar(archive_path, db_root, expected_top_level=entry.id)
-    finally:
+    except BaseException as exc:
+        # Everything from here to the `else` runs only when the install
+        # failed. Two clean-up decisions, and they go in opposite
+        # directions on purpose:
+        #
+        #   - KEEP the archive. It is the expensive part (25 minutes for
+        #     the human databases) and, when checksummed, provably
+        #     complete. Deleting it here is what made a failed extraction
+        #     cost a second full download.
+        #   - DISCARD whatever was extracted. A half-written database
+        #     directory is unusable, is deleted at the top of the next
+        #     attempt anyway, and — when the failure was ENOSPC — is
+        #     sitting on exactly the space needed to retry.
+        reclaimed = diskspace.directory_size(target_dir)
+        if reclaimed:
+            import shutil
+
+            shutil.rmtree(target_dir, ignore_errors=True)
+            logger.warning(
+                "removed the partially-extracted %s, reclaiming %s",
+                target_dir,
+                diskspace.format_bytes(reclaimed),
+            )
+        if archive_path.is_file():
+            logger.warning(
+                "keeping the downloaded archive at %s (%s); re-running "
+                "`karyoscope download %s` will verify and reuse it instead of "
+                "downloading again. Delete it to reclaim that space.",
+                archive_path,
+                diskspace.format_bytes(archive_path.stat().st_size),
+                entry.id,
+            )
+        # The up-front check uses registry-declared sizes; a filesystem that
+        # was already close to full, or shared with another job, can still
+        # fill up here. Report that as a disk-space problem rather than a
+        # bare "[Errno 28]" traceback out of tarfile.
+        if isinstance(exc, OSError):
+            raise diskspace.reframe_enospc(
+                exc, what=f"installing {entry.id}", path=db_root
+            ) from exc
+        raise
+    else:
+        # Only now is the archive genuinely disposable.
         archive_path.unlink(missing_ok=True)
 
     # Validate the extracted layout. If this fails, leave the broken directory

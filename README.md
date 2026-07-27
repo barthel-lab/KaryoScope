@@ -73,8 +73,30 @@ A pre-built database for the human genome is distributed alongside the tool, der
 **Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Resource needs scale with the input:
 
 - **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
-- **Human whole-genome inputs (KMC backend):** the pre-built human database is ~17 GB on disk, and loading its KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads). We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. A single human haplotype's six-feature-set run takes ~17–22 minutes at 16 threads.
-- **Human whole-genome inputs (HKS backend):** the HKS database is ~24 GB on disk (~13 GB compressed). `annotate` holds the index (~10 GB, fixed) plus per-query buffering that grows with how much sequence one lookup processes at once, so the memory you should request depends on the input shape. A **single haplotype** peaks at **~10 GB** (request ≥ 16 GB) and finishes in **~7–9 minutes** at 16 threads. A **combined diploid assembly** — both haplotypes in one file, e.g. HG002 v1.1 — peaks at **~17 GB** (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. Measured at 16 threads on T2T-CHM13v2.0, HG008N, HG008T, and HG002 v1.1.
+- **Human whole-genome inputs (KMC backend):** loading the KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads). We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. A single human haplotype's six-feature-set run takes ~17–22 minutes at 16 threads. See [Disk space](#disk-space) for storage.
+- **Human whole-genome inputs (HKS backend):** `annotate` holds the index (~10 GB, fixed) plus per-query buffering that grows with how much sequence one lookup processes at once, so the memory you should request depends on the input shape. A **single haplotype** peaks at **~10 GB** (request ≥ 16 GB) and finishes in **~7–9 minutes** at 16 threads. A **combined diploid assembly** — both haplotypes in one file, e.g. HG002 v1.1 — peaks at **~17 GB** (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. Measured at 16 threads on T2T-CHM13v2.0, HG008N, HG008T, and HG002 v1.1.
+
+### Disk space
+
+Databases are large, and the archive is **not** deleted until extraction finishes — so installing needs room for the download *and* the extracted database at the same time. That peak, not the download size, is the number to check against `df -h`:
+
+| Database | Backend | Download (`.tar.gz`) | On disk after install | **Free space to install** |
+|---|---|---|---|---|
+| `KS_human_CHM13_v2` (default) | KMC | 16.3 GB | 17.2 GB | **~34 GB** |
+| `HKS_human_CHM13_v2` | HKS | 13.3 GB | 22.7 GB | **~36 GB** |
+
+The HKS archive compresses far better than the KMC one, so its download is the *smaller* of the two while its installed footprint is the larger. Once the install completes the archive is removed and only the "on disk" column remains occupied.
+
+`karyoscope download` checks free space before it starts transferring anything and refuses with the shortfall spelled out rather than failing after a 25-minute download. `karyoscope download --info <ID>` prints all three figures for any database. Sizes here are decimal GB (10⁹ bytes); `df -h` reports binary GiB, so 36 GB shows there as 34 GiB.
+
+**Annotation output** is also substantial, and `--bgzip` does not reduce the peak — every BED is written in full before the compression pass runs. Budget roughly **0.8 GB per feature set per Gbp of input**, plus one intermediate:
+
+| Input | Feature sets | Output BEDs (uncompressed) | Peak including intermediate |
+|---|---|---|---|
+| Single human haplotype (~3.1 Gbp) | 6 | ~15 GB | ~18 GB |
+| Diploid assembly, e.g. HG002 v1.1 (~6.0 Gbp) | 6 | ~29 GB | ~34 GB |
+
+Measured on HG002 v1.1 against `HKS_human_CHM13_v2`. Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-space-check` to override the estimate.
 
 ## Installation
 
@@ -203,7 +225,10 @@ This walkthrough uses the [HG002 v1.1 T2T diploid assembly](https://s3-us-west-2
      to the HKS figures (~16-24 GB). Keep it on KMC until then. -->
 
 ```bash
-# 1. Download the recommended human reference database (~17 GB, one-time)
+# 1. Download the recommended human reference database (one-time).
+#    16.3 GB download, 17.2 GB on disk once installed -- but you need
+#    ~34 GB free to install, because the archive isn't deleted until
+#    extraction finishes. See "Disk space" above.
 karyoscope download
 
 # 2. Download the HG002 v1.1 diploid assembly (~3 GB, one-time)
@@ -215,8 +240,11 @@ curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblie
 #    assembly and its annotate peaks at ~17 GB (a single haplotype peaks
 #    at ~10 GB and fits 16 GB). The KMC backend needs ≥ 50 GB. HG002 runs
 #    in ~20-30 min at -t 16.
-#    --no-bgzip keeps the per-feature-set BEDs as plain text for easy
-#    inspection; drop it to get the default bgzipped outputs.
+#    Needs ~34 GB free in results/ -- six feature sets over a 6 Gbp
+#    diploid assembly. --no-bgzip keeps the per-feature-set BEDs as plain
+#    text for easy inspection; drop it to get the default bgzipped
+#    outputs (which shrink the result but not the peak, since compression
+#    runs after every BED has been written).
 #    Accepts FASTA, FASTQ (plain or .gz), and BAM. For BAM, samtools
 #    must be on PATH (it's invoked as `samtools fasta` to stream into
 #    get_featureIDs). For read-level inputs also pass --no-preserve-order
@@ -269,12 +297,13 @@ Per-command reference pages live under [`docs/commands/`](docs/commands/) — on
 
 ## Databases
 
-KaryoScope works with pre-built databases distributed via the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry). The current default is `KS_human_CHM13_v2` (~17 GB), built from the T2T-CHM13v2.0 reference.
+KaryoScope works with pre-built databases distributed via the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry). The current default is `KS_human_CHM13_v2` (17.2 GB installed; see [Disk space](#disk-space) for the free space needed to install it), built from the T2T-CHM13v2.0 reference.
 
 Browse and download available databases:
 
 ```bash
-karyoscope download --list
+karyoscope download --list           # download and on-disk size for each
+karyoscope download --info <ID>      # ...plus the free space needed to install
 ```
 
 You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; producing that BED from raw annotation sources (GFF3/GTF, RepeatMasker/EDTA, satellite catalogs) is currently a manual, source-specific step, and a dedicated `karyoscope prep-bed` helper to automate it is [planned](docs/commands/build.md#preparing-a-feature-set-bed).

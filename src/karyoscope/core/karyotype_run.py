@@ -67,6 +67,7 @@ from karyoscope.core.scaffold import (
 from karyoscope.core.scaffold_run import InputSpec, _resolve_roles, scaffold_run
 from karyoscope.exceptions import KaryotypeError
 from karyoscope.manifest import validate_database_layout
+from karyoscope.progress import SILENT, Progress
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,51 @@ DEFAULT_BIN_SIZE_BY_MODE: dict[str, int] = {
 #: fine-grained bins (scaling them to the whole-genome target would coarsen them).
 _GENOME_TARGET_BIN_COUNT = 250
 _MIN_AUTO_BIN_SIZE = 10_000
+
+
+def _scaffolding_prereq_note(
+    *,
+    requested: list[str],
+    scaffold_manifest_roles: dict[str, str],
+    scaffold_available: list[str],
+    centromere_fs: str | None,
+    scaffold_db_id: str | None,
+) -> str:
+    """Explain feature sets the cascade needs but the user didn't ask to plot.
+
+    Laying out a karyotype needs more than the sets being drawn: the
+    chromosome-assignment set says which chromosome each contig belongs to,
+    and the region-assignment set orients it (and, in centromere mode,
+    locates the centromere). :func:`scaffold_run` therefore appends those
+    role sets to whatever ``--feature-set`` asked for.
+
+    Without this note the progress output is quietly baffling — asking for
+    two feature sets and watching ``annotate`` report three, with no hint
+    which extra one appeared or why. Returns ``""`` when the requested sets
+    already cover the roles, so the common case stays uncluttered.
+
+    Deliberately phrased as a requirement rather than an action: the BEDs
+    may already exist from an earlier run, in which case the cascade
+    short-circuits and nothing is annotated at all.
+    """
+    try:
+        chromosome_fs, region_fs = _resolve_roles(scaffold_manifest_roles, scaffold_available)
+    except Exception:
+        # Role resolution failing is reported properly by the cascade; a
+        # missing progress line is not worth turning into an error here.
+        return ""
+
+    already = set(requested)
+    extras: list[str] = []
+    for fs in (chromosome_fs, region_fs, centromere_fs):
+        if fs is not None and fs not in already and fs not in extras:
+            extras.append(fs)
+    if not extras:
+        return ""
+
+    names = ", ".join(extras)
+    source = f" from {scaffold_db_id}" if scaffold_db_id else ""
+    return f"scaffolding also needs {names}{source} (annotated if missing; not rendered)"
 
 
 def _auto_bin_size(mode: str, max_seq_len: int) -> int:
@@ -611,6 +657,7 @@ def karyotype_run(
     output_path: Path | None = None,
     seed_human_chromosomes: bool = True,
     formats: list[str] | None = None,
+    progress: Progress = SILENT,
     sample_label: str | None = None,
     show_title: bool = True,
     show_legend: bool = True,
@@ -753,6 +800,35 @@ def karyotype_run(
         centromere_fs = _resolve_centromere_role(manifest.roles, available)
         centromere_leaves = leaves_for(hierarchy, centromere_fs)
 
+    # Announce the run before the cascade starts. Everything from here --
+    # annotate, scaffold, bin, render -- can take tens of minutes, and the
+    # nested annotate reports through a child of this reporter, so the user
+    # sees the expensive middle of the pipeline rather than a blank terminal.
+    #
+    # Placed after role resolution rather than at the top of the function so
+    # the announcement can name the feature sets the cascade will pull in
+    # beyond the ones being rendered. Nothing above this point is expensive
+    # (manifest, hierarchy, and colour validation), so nothing is hidden by
+    # announcing here.
+    sample_names = ", ".join(spec.path.name for spec in inputs)
+    progress.start(
+        f"Rendering karyotypes for {sample_names} against {db_id_resolved}",
+        f"{len(requested_modes)} mode(s) x {len(requested)} feature set(s) "
+        f"= {len(requested_modes) * len(requested)} render(s)",
+        _scaffolding_prereq_note(
+            requested=requested,
+            scaffold_manifest_roles=scaffold_manifest.roles,
+            scaffold_available=scaffold_available,
+            centromere_fs=centromere_fs,
+            scaffold_db_id=scaffold_db_id_resolved if use_scaffold_db else None,
+        ),
+    )
+    tracker = progress.track([f"{mode}/{fs}" for mode in requested_modes for fs in requested])
+    # The cascade's own reporters nest one level in, so their headlines read
+    # as steps of this run rather than as separate commands that started on
+    # their own.
+    cascade_progress = progress.child()
+
     logger.info(
         "rendering karyotype(s): %d input(s), modes=%s, feature_sets=%s "
         "(= %d SVG(s) x %d format(s))%s",
@@ -777,6 +853,7 @@ def karyotype_run(
             scaffold_feature_sets.append(centromere_fs)
         scaffold_run(
             inputs,
+            progress=cascade_progress,
             db_root=db_root,
             db_id=db_id_resolved,
             feature_sets=scaffold_feature_sets,
@@ -807,6 +884,7 @@ def karyotype_run(
         # scaffolded BEDs are produced.
         scaffold_run(
             inputs,
+            progress=cascade_progress,
             db_root=scaffold_db_root_eff,
             db_id=scaffold_db_id_resolved,
             feature_sets=[],
@@ -854,10 +932,12 @@ def karyotype_run(
                 threads=threads,
                 smooth=(annotation_variant == "smoothed"),
                 bgzip=bgzip,
+                progress=cascade_progress,
             )
     else:
         scaffold_run(
             inputs,
+            progress=cascade_progress,
             db_root=db_root,
             db_id=db_id_resolved,
             feature_sets=requested,
@@ -984,6 +1064,7 @@ def karyotype_run(
         )
 
         for fs in requested:
+            t_view = time.perf_counter()
             leaves = leaves_for(hierarchy, fs)
             # Legend sort: hand the renderer the list of child names
             # in hierarchy.tsv file order. Internal nodes appear first
@@ -1102,6 +1183,11 @@ def karyotype_run(
                     output_paths=output_paths,
                 )
             )
+            # Timed from the top of the inner loop, so the first view of a
+            # mode carries its bin pass (and, on a cold run, the cascade
+            # work its feature set needed) rather than reporting a
+            # misleadingly fast render.
+            tracker.step(f"{current_mode}/{fs}", time.perf_counter() - t_view)
 
     logger.info(
         "karyotype complete in %.1fs (%d render(s) -> %d file(s))",

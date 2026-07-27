@@ -27,7 +27,8 @@ from pathlib import Path
 
 import click
 
-from karyoscope import paths
+from karyoscope import paths, preflight
+from karyoscope import progress as _progress
 from karyoscope.commands.scaffold import _parse_named_path, _split_comma
 from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.karyotype_run import karyotype_run
@@ -451,6 +452,25 @@ def cmd(
     modes = [m.lower() for m in modes_raw] if modes_raw else None
     formats = [f.lower() for f in formats_raw] if formats_raw else None
 
+    # The cascade is the longest-running command in the suite -- a whole-
+    # genome diploid render is tens of minutes of annotate, scaffold, and
+    # bin before the first pixel is drawn. Anything we can check now saves
+    # all of that. cairosvg in particular is only touched at the very last
+    # step, so a missing libcairo used to surface after the entire pipeline
+    # had already succeeded.
+    #
+    # The k-mer backend binary is deliberately not checked here: whether
+    # it's needed depends on which intermediates already exist, and
+    # `annotate` runs its own preflight the moment the cascade decides to
+    # invoke it.
+    needed: list[str] = []
+    if formats is not None and any(fmt in ("pdf", "png") for fmt in formats):
+        needed.append("cairosvg")
+    if bgzip:
+        needed.append("bgzip")
+    if auto and any(spec.telo_path is None for spec in inputs):
+        needed.append("seqtk")
+
     db_root = paths.ensure_db_root(db_root_arg)
     # --scaffold-db-root defaults to --db-root when unset (the layout DB
     # usually lives in the same registry). None here => karyotype_run
@@ -459,8 +479,10 @@ def cmd(
         paths.ensure_db_root(scaffold_db_root_arg) if scaffold_db_root_arg is not None else None
     )
     try:
+        preflight.require(needed, context="the karyotype cascade")
         results = karyotype_run(
             inputs,
+            progress=_progress.from_context(),
             db_root=db_root,
             db_id=db_id,
             scaffold_db_id=scaffold_db_id,

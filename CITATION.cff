@@ -14,8 +14,11 @@ authors:
 repository-code: "https://github.com/barthel-lab/KaryoScope"
 url: "https://github.com/barthel-lab/KaryoScope"
 license: "GPL-3.0-or-later"
-version: "2.0.0"
-date-released: "2026-07-23"
+version: "2.1.0"
+date-released: "2026-07-27"
+# Concept DOI (conceptrecid 20657816): always resolves to the latest
+# version, so it stays fixed across releases. Zenodo mints a separate
+# version DOI per GitHub release automatically.
 doi: "10.5281/zenodo.20657816"
 keywords:
   - bioinformatics

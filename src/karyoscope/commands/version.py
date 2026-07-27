@@ -10,20 +10,28 @@ pasting into bug reports.
 from __future__ import annotations
 
 import platform
-import shutil
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
 import click
 
+from karyoscope import preflight
 from karyoscope._version import __version__
 from karyoscope.paths import default_db_root, installed_databases
 
 #: External tools KaryoScope shells out to. Each entry is
 #: (display_name, executable_name, --version flag).
+#:
+#: ``hks`` and ``get_featureIDs`` are resolved through
+#: :mod:`karyoscope.preflight` rather than a bare ``which``, because both
+#: honour an environment override and ``get_featureIDs`` also resolves out
+#: of the source tree in an editable install. Reporting "not found" for a
+#: working install is worse than not reporting at all -- it sends people
+#: chasing a problem they don't have.
 _EXTERNAL_TOOLS: tuple[tuple[str, str, str], ...] = (
     ("KMC", "kmc", "--version"),
+    ("get_featureIDs", "get_featureIDs", ""),
     # hks 0.2.0 has no --version flag; run with no args and read the
     # "Running hks version X" banner it prints (like seqtk below).
     ("HKS", "hks", ""),
@@ -59,11 +67,11 @@ def _external_tool_version(executable: str, version_flag: str) -> tuple[str | No
     with no arguments (covers tools like seqtk that print usage with a version
     in their header).
     """
-    path = shutil.which(executable)
+    path = preflight.resolve_binary(executable)
     if path is None:
         return None, None
 
-    cmd = [executable, version_flag] if version_flag else [executable]
+    cmd = [path, version_flag] if version_flag else [path]
     try:
         proc = subprocess.run(
             cmd,

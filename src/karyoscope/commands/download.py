@@ -19,9 +19,9 @@ from pathlib import Path
 
 import click
 
+from karyoscope import diskspace, paths
 from karyoscope import download as _download
 from karyoscope import installed as _installed
-from karyoscope import paths
 from karyoscope import registry as _registry
 from karyoscope.commands._options import resolve_db_root_flag
 from karyoscope.exceptions import (
@@ -30,6 +30,7 @@ from karyoscope.exceptions import (
     DatabaseNotFoundError,
     FetchError,
     IncompatibleVersionError,
+    InsufficientDiskSpaceError,
     KaryoscopeError,
     ManifestError,
     RegistryError,
@@ -43,6 +44,27 @@ def _format_size_gb(gb: float) -> str:
     return f"{gb:.1f} GB"
 
 
+def _format_bytes_gb(n: float) -> str:
+    """Render a byte count in GB with one decimal."""
+    return _format_size_gb(n / diskspace.GB)
+
+
+def _format_sizes(entry: _registry.DatabaseEntry) -> str:
+    """Render an entry's download and on-disk sizes.
+
+    These differ enough to matter — the HKS human database is a 13 GB
+    download that unpacks to 23 GB — so both are shown rather than the one
+    unlabelled figure we used to print. Entries that predate
+    ``download_size_gb`` only have the on-disk number to show.
+    """
+    if not entry.download_size_is_declared:
+        return f"{_format_bytes_gb(entry.installed_size_bytes)} on disk"
+    return (
+        f"{_format_bytes_gb(entry.download_size_bytes)} download, "
+        f"{_format_bytes_gb(entry.installed_size_bytes)} on disk"
+    )
+
+
 def _format_db_short(entry: _registry.DatabaseEntry) -> str:
     """One-line summary used by ``--list``."""
     default_tag = " (default)" if entry.is_default else ""
@@ -51,7 +73,7 @@ def _format_db_short(entry: _registry.DatabaseEntry) -> str:
     return (
         f"{entry.id}{default_tag}{community_tag}  "
         f"v{entry.version}  "
-        f"{_format_size_gb(entry.size_gb)}  "
+        f"{_format_sizes(entry)}  "
         f"({taxa})"
     )
 
@@ -124,7 +146,16 @@ def _action_info(
     if entry.release_date:
         click.echo(f"  Release date: {entry.release_date}")
     click.echo(f"  KaryoScope min version: {entry.karyoscope_min_version}")
-    click.echo(f"  Size: {_format_size_gb(entry.size_gb)}")
+    click.echo(f"  Size on disk after install: {_format_bytes_gb(entry.installed_size_bytes)}")
+    if entry.download_size_is_declared:
+        click.echo(f"  Download size: {_format_bytes_gb(entry.download_size_bytes)} (.tar.gz)")
+        click.echo(
+            f"  Free space needed to install: "
+            f"{_format_bytes_gb(entry.peak_install_bytes)} "
+            "(archive and extracted database coexist until extraction finishes)"
+        )
+    else:
+        click.echo("  Download size: not declared in the registry")
     taxa_str = "; ".join(
         f"{t.genus} {t.species}" + (f" ({t.common_name})" if t.common_name else "")
         for t in entry.taxonomy
@@ -196,6 +227,7 @@ def _action_install(
     force: bool,
     verify_checksum: bool,
     show_progress: bool,
+    check_space: bool,
 ) -> None:
     registry = _registry.load_registry(db_root, registry_url, refresh=refresh)
 
@@ -223,13 +255,34 @@ def _action_install(
             click.echo(f"{entry.id}: already installed, skipping (use --force to reinstall)")
             continue
 
-        click.echo(f"Installing {entry.id} v{entry.version} ({_format_size_gb(entry.size_gb)})...")
+        click.echo(f"Installing {entry.id} v{entry.version} ({_format_sizes(entry)})...")
+        # Spelled out before the progress bar starts, because the peak is the
+        # number that matters and it is larger than either figure above: the
+        # archive is not deleted until extraction succeeds.
+        click.echo(
+            f"  Needs {_format_bytes_gb(entry.peak_install_bytes)} free during install; "
+            f"{diskspace.format_bytes(diskspace.free_bytes(db_root))} available "
+            f"on {db_root}"
+        )
+        # An archive left by a failed run is reused if it verifies. Say so
+        # here rather than only in the log: without it, the pause while we
+        # hash 13 GB looks like a hang, and the absence of a progress bar
+        # looks like nothing is happening. The verdict itself is logged by
+        # install_database, which is where the hashing happens.
+        staged = _download.staged_archive_path(db_root, entry.id)
+        if staged.is_file():
+            click.echo(
+                f"  Found an archive from an earlier run "
+                f"({diskspace.format_bytes(staged.stat().st_size)}); "
+                "verifying it — if it matches, the download is skipped."
+            )
         target = _download.install_database(
             entry,
             db_root,
             verify_checksum=verify_checksum,
             show_progress=show_progress,
             force=force,
+            check_space=check_space,
         )
         click.echo(f"  Installed to {target}")
 
@@ -315,6 +368,13 @@ def _action_install(
     help="Skip SHA-256 verification (not recommended; useful for debugging).",
 )
 @click.option(
+    "--no-space-check",
+    is_flag=True,
+    help="Install even if the database root looks too small to hold the archive "
+    "and its extracted contents. Only useful when the registry's declared "
+    "sizes are wrong for your copy of the database.",
+)
+@click.option(
     "-y",
     "--yes",
     is_flag=True,
@@ -341,6 +401,7 @@ def cmd(
     refresh_registry: bool,
     force: bool,
     no_checksum: bool,
+    no_space_check: bool,
     yes: bool,
     quiet: bool,
 ) -> None:
@@ -407,6 +468,7 @@ def cmd(
             force=force,
             verify_checksum=not no_checksum,
             show_progress=not quiet,
+            check_space=not no_space_check,
         )
     except (
         RegistryError,
@@ -416,6 +478,7 @@ def cmd(
         ChecksumError,
         FetchError,
         IncompatibleVersionError,
+        InsufficientDiskSpaceError,
         KaryoscopeError,
     ) as e:
         # Convert known KaryoScope errors to clean user-facing messages.
