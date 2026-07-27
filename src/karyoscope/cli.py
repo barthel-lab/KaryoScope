@@ -31,6 +31,7 @@ import sys
 
 import click
 
+from karyoscope import diskspace
 from karyoscope._version import __version__
 from karyoscope.commands import (
     annotate,
@@ -50,6 +51,34 @@ CONTEXT_SETTINGS = {
     "help_option_names": ["-h", "--help"],
     "max_content_width": 100,
 }
+
+
+class _KaryoscopeGroup(click.Group):
+    """Command group that turns a full disk into a message, not a traceback.
+
+    Commands check free space before they start, but an estimate can be
+    beaten: a shared filesystem fills up underneath a long run, a quota
+    lands mid-write, or a database's registry entry understates its size.
+    When that happens the failure is a bare ``OSError: [Errno 28]`` from
+    whichever write happened to be unlucky — a stack trace through
+    ``tarfile`` or a BED writer that tells the user nothing about their
+    actual problem.
+
+    Catching it here covers every subcommand, including ones that don't
+    (yet) run their own space check.
+    """
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except OSError as exc:
+            if not diskspace.is_enospc(exc):
+                raise
+            command = ctx.invoked_subcommand or "karyoscope"
+            raise click.ClickException(
+                str(diskspace.enospc_error(exc, what=f"running `karyoscope {command}`"))
+            ) from exc
+
 
 #: Maps a verbosity integer (negative for quiet, 0 default, positive for verbose)
 #: to a stdlib logging level. Anything beyond ``2`` is clamped to DEBUG.
@@ -93,7 +122,7 @@ def _configure_logging(verbosity: int) -> None:
     root.setLevel(level)
 
 
-@click.group(context_settings=CONTEXT_SETTINGS)
+@click.group(cls=_KaryoscopeGroup, context_settings=CONTEXT_SETTINGS)
 @click.version_option(
     __version__,
     "-V",

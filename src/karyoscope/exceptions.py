@@ -63,3 +63,22 @@ class KaryotypeError(KaryoscopeError):
 
 class BuildError(KaryoscopeError):
     """Problems building an HKS index database (spec, inputs, or construction)."""
+
+
+class InsufficientDiskSpaceError(KaryoscopeError):
+    """A command would need more free disk space than the target filesystem has.
+
+    Raised by the up-front checks in :mod:`karyoscope.diskspace`, and also
+    used to re-frame an ``OSError`` with ``errno.ENOSPC`` that escaped from
+    the middle of a run (a filesystem that filled up while we were writing).
+    """
+
+
+class MissingDependencyError(KaryoscopeError):
+    """One or more required external tools are not available.
+
+    Distinct from :class:`karyoscope.core.external.ToolNotFoundError`, which
+    reports a single tool at the point of use. This one is raised by the
+    up-front check in :mod:`karyoscope.preflight` and reports *every*
+    missing tool a command needs, before any expensive work starts.
+    """

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from karyoscope import diskspace
 from karyoscope.download import (
     _looks_like_sha256,
     _looks_like_url,
@@ -19,6 +20,7 @@ from karyoscope.exceptions import (
     DatabaseLayoutError,
     FetchError,
     IncompatibleVersionError,
+    InsufficientDiskSpaceError,
 )
 from karyoscope.installed import load
 from karyoscope.registry import DatabaseEntry, TaxonomyEntry
@@ -369,3 +371,126 @@ def test_install_version_compat_fires_before_hygiene(tmp_path: Path) -> None:
     # Compat error fires first.
     with pytest.raises(IncompatibleVersionError, match=r"999\.0\.0"):
         install_database(entry, db_root, show_progress=False)
+
+
+# --- Free-space precheck ------------------------------------------------
+
+
+def test_install_refuses_when_the_database_root_is_too_small(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported bug: a 13 GB download that needs 36 GB of free space.
+
+    The old code only learned this at the very end, when tarfile hit
+    ENOSPC after a 25-minute transfer had already completed.
+    """
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256, size_gb=22.7, download_size_gb=13.3)
+    monkeypatch.setattr(diskspace, "free_bytes", lambda _p: 12 * 1024**3)
+
+    with pytest.raises(InsufficientDiskSpaceError) as excinfo:
+        install_database(entry, db_root, show_progress=False)
+    message = str(excinfo.value)
+    assert "KS_dummy_test_v1" in message
+    # The peak, not either individual size, is what the user must have free.
+    assert "36" in message or "37" in message
+    assert not is_installed(db_root, entry.id)
+
+
+def test_space_check_is_skippable(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-space-check exists for entries whose declared sizes are wrong."""
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256, size_gb=999.0)
+    monkeypatch.setattr(diskspace, "free_bytes", lambda _p: 1024**3)
+
+    target = install_database(entry, db_root, show_progress=False, check_space=False)
+    assert target.is_dir()
+    assert is_installed(db_root, entry.id)
+
+
+def test_space_check_runs_before_an_existing_install_is_removed(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A doomed --force reinstall must not destroy the working install first.
+
+    install_database rmtree's the target directory before downloading, so
+    ordering the check after it would leave a user with neither the old
+    database nor the new one.
+    """
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+    install_database(entry, db_root, show_progress=False)
+    target = db_root / entry.id
+    assert target.is_dir()
+
+    huge = _entry_from_dummy(dummy_db_url, dummy_db_sha256, size_gb=999.0)
+    monkeypatch.setattr(diskspace, "free_bytes", lambda _p: 1024**3)
+    with pytest.raises(InsufficientDiskSpaceError):
+        install_database(huge, db_root, show_progress=False, force=True)
+
+    assert target.is_dir(), "the existing install was destroyed by a check that came too late"
+    assert is_installed(db_root, entry.id)
+
+
+def test_space_check_credits_the_install_being_replaced(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reinstalling the same database frees its own space first.
+
+    Without the credit, `--force` on a nearly-full disk would be rejected
+    even though the replacement is the same size as what it removes.
+    """
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+    install_database(entry, db_root, show_progress=False)
+    existing = diskspace.directory_size(db_root / entry.id)
+    assert existing > 0
+
+    # Free space is zero; only the credit for the outgoing install can
+    # make room for the incoming one.
+    big = _entry_from_dummy(
+        dummy_db_url,
+        dummy_db_sha256,
+        size_gb=existing / diskspace.GB / 4,
+        download_size_gb=existing / diskspace.GB / 4,
+    )
+    monkeypatch.setattr(diskspace, "free_bytes", lambda _p: 0)
+    install_database(big, db_root, show_progress=False, force=True)
+    assert is_installed(db_root, entry.id)
+
+
+def test_enospc_during_extraction_is_reported_as_a_space_problem(
+    tmp_path: Path,
+    dummy_db_url: str,
+    dummy_db_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A disk that fills up mid-extract must not surface as a tarfile traceback."""
+    import errno
+
+    from karyoscope import download as download_module
+
+    db_root = tmp_path / "db"
+    entry = _entry_from_dummy(dummy_db_url, dummy_db_sha256)
+
+    def boom(*_args: object, **_kwargs: object) -> Path:
+        raise OSError(errno.ENOSPC, "No space left on device", str(db_root / "x"))
+
+    monkeypatch.setattr(download_module, "_safe_extract_tar", boom)
+    with pytest.raises(InsufficientDiskSpaceError) as excinfo:
+        install_database(entry, db_root, show_progress=False)
+    assert "ran out of disk space" in str(excinfo.value)

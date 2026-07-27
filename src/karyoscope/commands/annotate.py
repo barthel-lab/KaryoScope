@@ -41,8 +41,10 @@ from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.exceptions import (
     DatabaseLayoutError,
     DatabaseNotFoundError,
+    InsufficientDiskSpaceError,
     KaryoscopeError,
     ManifestError,
+    MissingDependencyError,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,7 +146,18 @@ logger = logging.getLogger(__name__)
     "--bgzip/--no-bgzip",
     default=True,
     show_default=True,
-    help="bgzip the per-feature-set output BEDs. Pass --no-bgzip to write plain .bed files.",
+    help="bgzip the per-feature-set output BEDs. Pass --no-bgzip to write plain .bed files. "
+    "Note this shrinks the final output but not the peak disk usage: compression runs "
+    "after every BED has been written in full.",
+)
+@click.option(
+    "--no-space-check",
+    is_flag=True,
+    default=False,
+    help="Skip the up-front free-space check on --outdir. The check estimates the "
+    "output footprint from the input size (roughly 0.8 GB per feature set per Gbp "
+    "of input, plus one intermediate); pass this if that estimate is wrong for "
+    "your input.",
 )
 @click.option(
     "--preserve-order/--no-preserve-order",
@@ -173,6 +186,7 @@ def cmd(
     keep_presmoothed: bool,
     keep_intermediates: bool,
     bgzip: bool,
+    no_space_check: bool,
     preserve_input_order: bool,
     force: bool,
 ) -> None:
@@ -213,6 +227,7 @@ def cmd(
             bgzip=bgzip,
             preserve_input_order=preserve_input_order,
             force=force,
+            check_space=not no_space_check,
         )
     except (
         DatabaseNotFoundError,
@@ -220,6 +235,8 @@ def cmd(
         ManifestError,
         ToolNotFoundError,
         ExternalToolError,
+        InsufficientDiskSpaceError,
+        MissingDependencyError,
         KaryoscopeError,
     ) as e:
         raise click.ClickException(str(e)) from e

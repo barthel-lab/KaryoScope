@@ -282,3 +282,46 @@ def test_load_registry_with_real_test_registry(dummy_registry_url: str, tmp_path
     reg = load_registry(db_root, dummy_registry_url)
     assert reg.find("KS_dummy_test_v1") is not None
     assert reg.default_database().id == "KS_dummy_test_v1"
+
+
+# --- size accounting --------------------------------------------------
+
+
+def test_size_gb_is_the_installed_size_and_download_falls_back_to_it() -> None:
+    """An entry without ``download_size_gb`` still yields usable numbers.
+
+    Older registry entries (and any cached copy fetched before the field
+    existed) only carry ``size_gb``. Rather than fail, both accessors
+    collapse onto it -- and say so, so callers can flag the peak figure as
+    a guess rather than a measurement.
+    """
+    entry = parse_registry(_MINIMAL_REGISTRY).find("KS_test_v1")
+    assert entry.installed_size_bytes == 17_000_000_000
+    assert entry.download_size_bytes == 17_000_000_000
+    assert entry.download_size_is_declared is False
+
+
+def test_explicit_download_size_is_used_when_declared() -> None:
+    """The real HKS entry: a 13.3 GB archive that unpacks to 22.7 GB.
+
+    Reporting only the download size is what let a user with 12 GB free
+    start a 25-minute install that could never have finished.
+    """
+    text = _MINIMAL_REGISTRY.replace(
+        "    size_gb: 17.0\n", "    size_gb: 22.7\n    download_size_gb: 13.3\n"
+    )
+    entry = parse_registry(text).find("KS_test_v1")
+    assert entry.download_size_is_declared is True
+    assert entry.download_size_bytes == 13_300_000_000
+    assert entry.installed_size_bytes == 22_700_000_000
+    # Both coexist on disk until extraction succeeds.
+    assert entry.peak_install_bytes == 36_000_000_000
+
+
+def test_download_size_gb_must_be_a_non_negative_number() -> None:
+    for bad in ('"lots"', "-1"):
+        text = _MINIMAL_REGISTRY.replace(
+            "    size_gb: 17.0\n", f"    size_gb: 17.0\n    download_size_gb: {bad}\n"
+        )
+        with pytest.raises(RegistryError, match="download_size_gb"):
+            parse_registry(text)

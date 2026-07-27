@@ -18,6 +18,7 @@ import logging
 import tarfile
 from pathlib import Path
 
+from karyoscope import diskspace
 from karyoscope._fetch import fetch
 from karyoscope._version import __version__
 from karyoscope.exceptions import (
@@ -208,6 +209,55 @@ def _safe_extract_tar(archive: Path, dest_dir: Path, expected_top_level: str) ->
     return extracted
 
 
+def _check_install_space(entry: DatabaseEntry, db_root: Path, *, skip: bool) -> None:
+    """Verify ``db_root`` can hold the archive *and* its extracted form.
+
+    Installing peaks at ``download + installed`` bytes: :func:`fetch` writes
+    the whole ``.tar.gz`` into ``db_root`` first, and it is only unlinked
+    after :func:`_safe_extract_tar` returns. For the human databases that is
+    ~33 GB (KMC) or ~36 GB (HKS) — well above what the archive size alone
+    suggests, which is exactly the trap this check exists to close.
+
+    Two adjustments make the number honest rather than merely conservative:
+
+    * a partially-downloaded archive from an interrupted run is credited
+      back, since :func:`fetch` resumes into it rather than re-fetching;
+    * an existing install being replaced is credited back, since it is
+      removed before the download starts.
+    """
+    archive_path = db_root / f".{entry.id}.tar.gz"
+    partial_path = Path(str(archive_path) + ".part")
+    credit = 0
+    for staged in (archive_path, partial_path):
+        if staged.is_file():
+            credit += staged.stat().st_size
+    target_dir = db_root / entry.id
+    credit += diskspace.directory_size(target_dir)
+
+    hint_lines = [
+        "Free up space, or install elsewhere with:",
+        "    karyoscope download --db-root /path/on/a/larger/disk " + entry.id,
+        "  (set $KARYOSCOPE_DB to that path to make it the default).",
+    ]
+    if not entry.download_size_is_declared:
+        hint_lines.append(
+            "  This registry entry does not declare a download_size_gb, so the "
+            "archive was assumed to be the same size as the extracted database. "
+            "Refresh the registry with --refresh-registry."
+        )
+    hint_lines.append("  Pass --no-space-check to attempt the install anyway.")
+
+    diskspace.require_free_space(
+        db_root,
+        entry.peak_install_bytes,
+        what=f"installing {entry.id}",
+        credit_bytes=credit,
+        estimated=not entry.download_size_is_declared,
+        hint="\n".join(hint_lines),
+        skip=skip,
+    )
+
+
 def install_database(
     entry: DatabaseEntry,
     db_root: Path,
@@ -215,6 +265,7 @@ def install_database(
     verify_checksum: bool = True,
     show_progress: bool = True,
     force: bool = False,
+    check_space: bool = True,
 ) -> Path:
     """Download, verify, extract, and register a single database.
 
@@ -233,6 +284,10 @@ def install_database(
     force
         If True, re-download and re-extract even if the database appears to
         be already installed.
+    check_space
+        If True (the default), refuse to start when ``db_root``'s filesystem
+        cannot hold the archive and its extracted form at once. Set to False
+        to attempt the install regardless.
 
     Returns
     -------
@@ -243,6 +298,9 @@ def install_database(
     ------
     IncompatibleVersionError
         If the database requires a newer KaryoScope than this one.
+    InsufficientDiskSpaceError
+        If ``check_space`` is True and there isn't room for the install, or
+        if the filesystem fills up part-way through it anyway.
     ChecksumError
         If verification fails (only raised when ``verify_checksum=True``).
     DatabaseLayoutError
@@ -260,6 +318,11 @@ def install_database(
     if not force and target_dir.is_dir() and is_installed(db_root, entry.id):
         logger.debug("%s already installed at %s; skipping", entry.id, target_dir)
         return target_dir
+
+    # Space check goes here: after the "already installed" short-circuit (no
+    # point checking for work we won't do) but before the rmtree below, so a
+    # doomed install can never destroy a working one.
+    _check_install_space(entry, db_root, skip=not check_space)
 
     # If the directory exists but isn't recorded (or force=True), clean it up
     # so we don't merge old and new file sets.
@@ -293,6 +356,12 @@ def install_database(
 
         logger.debug("extracting %s into %s", archive_path.name, db_root)
         _safe_extract_tar(archive_path, db_root, expected_top_level=entry.id)
+    except OSError as exc:
+        # The up-front check uses registry-declared sizes; a filesystem that
+        # was already close to full, or shared with another job, can still
+        # fill up here. Report that as a disk-space problem rather than a
+        # bare "[Errno 28]" traceback out of tarfile.
+        raise diskspace.reframe_enospc(exc, what=f"installing {entry.id}", path=db_root) from exc
     finally:
         archive_path.unlink(missing_ok=True)
 

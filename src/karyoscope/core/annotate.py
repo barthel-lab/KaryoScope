@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from karyoscope import diskspace, preflight
 from karyoscope import installed as _installed
 from karyoscope.core.external import require_tool, run_tool
 from karyoscope.core.io.features import Features, parse_features, render_feature
@@ -201,6 +202,146 @@ def _is_reads_input(input_path: Path) -> bool:
     """
     name_lower = input_path.name.lower()
     return any(name_lower.endswith(ext) for ext in _READS_INPUT_EXTENSIONS)
+
+
+# --- output-size estimation ------------------------------------------
+#
+# Annotate is the command most likely to fill a disk: a six-feature-set
+# run on a diploid human assembly writes ~29 GB of uncompressed BED, and
+# bgzip does not reduce the peak because it runs after every BED has been
+# written. The constants below let us say so before the run starts,
+# instead of after twenty minutes of work.
+#
+# Calibration (2026-07, HKS_human_CHM13_v2, HG002 v1.1, 6.00 Gbp diploid,
+# 6 feature sets, --no-bgzip):
+#
+#     presmoothed  21.70 GB  ->  0.603 bytes per base per feature set
+#     smoothed      7.26 GB  ->  0.202 bytes per base per feature set
+#
+# These describe BED content, so they hold for both backends — the
+# smoothed/presmoothed output of a KMC database is the same text as an
+# HKS one.
+
+#: Bytes of presmoothed BED per input base, per feature set.
+PRESMOOTHED_BYTES_PER_BASE = 0.60
+
+#: Bytes of smoothed BED per input base, per feature set.
+SMOOTHED_BYTES_PER_BASE = 0.20
+
+#: Transient intermediate allowance, as a multiple of one feature set's
+#: presmoothed estimate. Covers the HKS raw lookup TSV (one at a time,
+#: deleted after each set) and the KMC combined BED. Both are "one row per
+#: k-mer run" files dominated by the sequence name and coordinates that a
+#: presmoothed BED also carries, so one feature set's worth is the right
+#: scale; the 1.5 absorbs the spread between feature sets (the largest set
+#: measured 1.48x the six-set average).
+TRANSIENT_INTERMEDIATE_FACTOR = 1.5
+
+#: Uncompressed-to-compressed ratio assumed for a gzipped nucleotide
+#: FASTA/FASTQ when no ``.fai`` is available. Measured 3.45x on HG002 v1.1
+#: (1.77 GB gz -> 6.10 GB plain); rounded down so the estimate errs low
+#: rather than blocking runs that would have fit.
+GZIP_EXPANSION_FACTOR = 3.4
+
+#: Fraction of an uncompressed file's bytes that are sequence, by format.
+#: FASTA loses ~1.7% to headers and line breaks; FASTQ carries a quality
+#: string per base plus two header lines, so barely half its bytes are
+#: sequence. BAM stores bases 4-bit-packed alongside compressed qualities,
+#: which nets out near 1 base per byte of file.
+_SEQUENCE_FRACTION_FASTA = 0.98
+_SEQUENCE_FRACTION_FASTQ = 0.49
+_BASES_PER_BAM_BYTE = 1.0
+
+
+def _bases_from_fai(input_path: Path) -> int | None:
+    """Total sequence length from a samtools ``.fai`` index, if one exists.
+
+    Exact, and free — assemblies distributed as bgzipped FASTA usually
+    ship the index alongside. Returns None when there is no usable index,
+    leaving the caller to fall back on file-size heuristics.
+    """
+    fai = Path(str(input_path) + ".fai")
+    if not fai.is_file():
+        return None
+    total = 0
+    try:
+        with fai.open() as handle:
+            for line in handle:
+                fields = line.split("\t")
+                if len(fields) < 2:
+                    return None
+                total += int(fields[1])
+    except (OSError, ValueError) as exc:
+        logger.debug("could not read %s: %s", fai, exc)
+        return None
+    return total or None
+
+
+def estimate_input_bases(input_path: Path) -> int:
+    """Estimate the number of sequence bases in ``input_path``.
+
+    Prefers an exact count from a sibling ``.fai``; otherwise scales the
+    file size by the format's sequence fraction, expanding first if the
+    file is gzipped. The result feeds a disk-space estimate, so being
+    within a factor of ~1.2 is entirely adequate.
+    """
+    exact = _bases_from_fai(input_path)
+    if exact is not None:
+        logger.debug("input size from %s.fai: %d bases", input_path.name, exact)
+        return exact
+
+    try:
+        file_size = input_path.stat().st_size
+    except OSError:
+        return 0
+
+    name = input_path.name.lower()
+    if name.endswith(".bam"):
+        return int(file_size * _BASES_PER_BAM_BYTE)
+
+    uncompressed = file_size * GZIP_EXPANSION_FACTOR if name.endswith(".gz") else file_size
+    is_fastq = any(name.endswith(ext) for ext in (".fastq", ".fq", ".fastq.gz", ".fq.gz"))
+    fraction = _SEQUENCE_FRACTION_FASTQ if is_fastq else _SEQUENCE_FRACTION_FASTA
+    return int(uncompressed * fraction)
+
+
+def estimate_output_bytes(
+    *,
+    input_bases: int,
+    n_feature_sets: int,
+    keep_presmoothed: bool,
+    smooth: bool,
+) -> int:
+    """Estimate peak bytes written to the output directory by one annotate run.
+
+    "Peak", not "final": ``--bgzip`` compresses each BED only after all of
+    them have been written, so it shrinks the result but not the high-water
+    mark. ``--no-keep-presmoothed`` and ``--no-smooth`` do reduce it, and
+    are reflected here.
+    """
+    per_set = 0.0
+    if keep_presmoothed:
+        per_set += PRESMOOTHED_BYTES_PER_BASE
+    if smooth:
+        per_set += SMOOTHED_BYTES_PER_BASE
+    outputs = input_bases * per_set * n_feature_sets
+    transient = input_bases * PRESMOOTHED_BYTES_PER_BASE * TRANSIENT_INTERMEDIATE_FACTOR
+    return int(outputs + transient)
+
+
+def _annotate_dependencies(*, index_type: str, input_path: Path, bgzip: bool) -> list[str]:
+    """External tools this particular annotate run will need.
+
+    Resolved from the database's backend, the input format, and the output
+    flags rather than assumed, so a user is never told to install ``kmc``
+    for an HKS run or ``samtools`` for a FASTA one.
+    """
+    needed = ["hks"] if index_type == "hks" else ["get_featureIDs"]
+    if input_path.suffix.lower() == ".bam":
+        needed.append("samtools")
+    if bgzip:
+        needed.append("bgzip")
+    return needed
 
 
 def resolve_database(
@@ -969,6 +1110,7 @@ def annotate(
     preserve_input_order: bool = True,
     force: bool = False,
     k: int | None = None,
+    check_space: bool = True,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
 
@@ -1007,9 +1149,18 @@ def annotate(
         BED is present and its ``.done`` completion marker matches its
         size/mtime; a partial file left by a killed run has no matching
         marker and is regenerated regardless of this flag.
+    check_space
+        Estimate the output footprint and refuse to start if ``output_dir``
+        can't hold it. Default: ``True``. The estimate is derived from the
+        input size, so pass ``False`` if it misjudges an unusual input.
 
     Raises
     ------
+    InsufficientDiskSpaceError
+        If ``check_space`` is True and ``output_dir`` looks too small, or if
+        the filesystem fills up during the run regardless.
+    MissingDependencyError
+        If an external tool this run needs isn't installed.
     KaryoscopeError
         If ``smooth=False`` and ``keep_presmoothed=False`` (no output
         would be produced), if the input file doesn't exist, if the
@@ -1054,6 +1205,45 @@ def annotate(
             )
         requested = list(feature_sets)
     logger.info("annotating %s against %s, sets=%s", input_path, db_id_resolved, requested)
+
+    # Preflight. Both checks are cheap and both catch failures that would
+    # otherwise land many minutes in, after the k-mer query has run: a
+    # missing bgzip only bites at the very last step, and a full disk only
+    # once gigabytes have been written.
+    preflight.require(
+        _annotate_dependencies(index_type=manifest.index.type, input_path=input_path, bgzip=bgzip),
+        context=f"annotate against {db_id_resolved}",
+    )
+    input_bases = estimate_input_bases(input_path)
+    needed_bytes = estimate_output_bytes(
+        input_bases=input_bases,
+        n_feature_sets=len(requested),
+        keep_presmoothed=keep_presmoothed,
+        smooth=smooth,
+    )
+    logger.info(
+        "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp of input",
+        _human_bytes(needed_bytes),
+        len(requested),
+        input_bases / 1e9,
+    )
+    diskspace.require_free_space(
+        output_dir,
+        needed_bytes,
+        what=f"annotating {input_path.name} ({len(requested)} feature set(s))",
+        estimated=True,
+        hint=(
+            "Note that --bgzip shrinks the final output but not the peak: every "
+            "BED is written in full before the compression pass starts.\n"
+            "Options:\n"
+            "  - write to a larger filesystem with --outdir\n"
+            "  - annotate fewer feature sets at a time with --feature-set\n"
+            "  - drop one of the two outputs with --no-keep-presmoothed or --no-smooth\n"
+            "  - pass --no-space-check if this estimate looks wrong for your input"
+        ),
+        skip=not check_space,
+    )
+
     t_annotate_start = time.perf_counter()
 
     # Parse features.tsv up front so we fail fast if it's malformed. It maps

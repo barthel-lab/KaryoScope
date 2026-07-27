@@ -26,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from karyoscope._fetch import fetch
+from karyoscope.diskspace import GB as _GB
 from karyoscope.exceptions import RegistryError
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class DatabaseEntry:
     karyoscope_min_version: str
     taxonomy: list[TaxonomyEntry]
     feature_sets: list[str]
+    #: Size of the *extracted* database directory, in decimal GB.
     size_gb: float
     source: str
     url: str
@@ -72,6 +74,10 @@ class DatabaseEntry:
     kmer_size: int
     kmer_type: str
     kmer_max_size: int
+    #: Size of the downloadable ``.tar.gz``, in decimal GB. Optional in the
+    #: registry schema; falls back to ``size_gb`` when absent (see
+    #: :attr:`download_size_bytes`).
+    download_size_gb: float | None = None
     is_default: bool = False
     description: str | None = None
     release_date: str | None = None
@@ -83,6 +89,45 @@ class DatabaseEntry:
     recommended_smoothing_window_bp: int | None = None
     # 'official' if from the top-level 'databases' list, 'community' otherwise.
     source_category: str = "official"
+
+    # -- Size accessors -----------------------------------------------
+    #
+    # A database has two sizes that matter and they can differ by a lot:
+    # HKS_human_CHM13_v2 is a 13.3 GB download that occupies 22.7 GB once
+    # extracted. ``size_gb`` is the extracted size — the one a user has to
+    # keep free permanently — and ``download_size_gb`` is the transfer.
+    # Entries predating the split omit the latter, so these accessors
+    # collapse to ``size_gb`` for both rather than failing.
+
+    @property
+    def installed_size_bytes(self) -> int:
+        """Bytes the extracted database occupies on disk."""
+        return int(self.size_gb * _GB)
+
+    @property
+    def download_size_bytes(self) -> int:
+        """Bytes to transfer for this database."""
+        gb = self.download_size_gb if self.download_size_gb is not None else self.size_gb
+        return int(gb * _GB)
+
+    @property
+    def download_size_is_declared(self) -> bool:
+        """Whether the archive size came from the registry, not the fallback.
+
+        When False, ``download_size_bytes`` reuses the extracted size, so
+        the peak-install figure is a guess. Callers say so rather than
+        presenting it as measured.
+        """
+        return self.download_size_gb is not None
+
+    @property
+    def peak_install_bytes(self) -> int:
+        """Peak bytes needed on the database filesystem during install.
+
+        The archive is downloaded in full and only deleted *after*
+        extraction succeeds, so both exist simultaneously.
+        """
+        return self.download_size_bytes + self.installed_size_bytes
 
 
 @dataclass
@@ -169,6 +214,18 @@ def _parse_database_entry(raw: dict, source_category: str) -> DatabaseEntry:
         raise RegistryError(f"'size_gb' in {where} must be a number")
     size_gb = float(size_gb_raw)
 
+    def _optional_size(key: str) -> float | None:
+        v = raw.get(key)
+        if v is None:
+            return None
+        if not isinstance(v, int | float):
+            raise RegistryError(f"'{key}' in {where} must be a number")
+        if v < 0:
+            raise RegistryError(f"'{key}' in {where} must not be negative")
+        return float(v)
+
+    download_size_gb = _optional_size("download_size_gb")
+
     taxonomy = _parse_taxonomy(_require(raw, "taxonomy", where), where)
 
     fs_raw = _require(raw, "feature_sets", where)
@@ -220,6 +277,7 @@ def _parse_database_entry(raw: dict, source_category: str) -> DatabaseEntry:
         taxonomy=taxonomy,
         feature_sets=list(fs_raw),
         size_gb=size_gb,
+        download_size_gb=download_size_gb,
         source=source or "",
         url=url or "",
         sha256=sha256 or "",
