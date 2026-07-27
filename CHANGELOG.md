@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Free-space preflight.** `download` and `annotate` now verify the target
+  filesystem can hold what they are about to write, and fail immediately with
+  the required / available / shortfall figures instead of dying on
+  `OSError: [Errno 28]` after the work is done. Previously a user with 12 GB
+  free could spend 25 minutes downloading `HKS_human_CHM13_v2` before extraction
+  ran out of room, and a six-feature-set `annotate` of a diploid assembly could
+  fill a disk 20 minutes in. Both checks are overridable with `--no-space-check`.
+  A new `karyoscope.diskspace` module also translates any `ENOSPC` that escapes
+  mid-run — from any command — into a message naming the filesystem that filled
+  up, rather than a traceback.
+- **Dependency preflight.** Commands now resolve the external tools they will
+  need before starting, and report *every* missing one at once with an install
+  hint, instead of failing at the point of use. `annotate` checks its k-mer
+  backend binary (plus `samtools` for BAM input and `bgzip` unless `--no-bgzip`);
+  `karyotype` additionally checks `cairosvg` when `--format pdf/png` is requested
+  and `seqtk` when telomere detection will be auto-run — both of which used to
+  surface only after the entire cascade had already run. Resolution goes through
+  each backend's own lookup order, so `$KARYOSCOPE_HKS`,
+  `$KARYOSCOPE_GET_FEATUREIDS`, and the source-tree `get_featureIDs` of an
+  editable install are all honoured.
+- Registry entries may declare `download_size_gb` (the `.tar.gz`) alongside
+  `size_gb`, which is now defined as the size of the *extracted* database.
+  Installing needs the sum of the two, since the archive is not deleted until
+  extraction succeeds — ~34 GB for `KS_human_CHM13_v2` and ~36 GB for
+  `HKS_human_CHM13_v2`. Entries without `download_size_gb` fall back to
+  `size_gb` for both and are labelled as estimates.
+
+### Changed
+- `download --list` and `--info` report the download size and the on-disk size
+  separately, and `--info` also reports the free space needed to install. The
+  single unlabelled size they used to print was the archive size for
+  `HKS_human_CHM13_v2` and the extracted size for `KS_human_CHM13_v2`, so it
+  understated the requirement by ~9 GB for the former.
+- `karyoscope version` reports `get_featureIDs` (previously omitted entirely)
+  and resolves it and `hks` the same way the commands do, so an editable install
+  or an environment override is no longer reported as "not found on PATH".
+
+### Documentation
+- README and the `download` / `annotate` command pages gained Disk space
+  sections covering archive vs extracted database size, the peak during install,
+  and annotation output footprint (~0.8 GB per feature set per Gbp of input).
+  Documents that `--bgzip` shrinks the result but not the peak, because
+  compression runs only after every BED has been written.
+
 ## [2.0.0] - 2026-07-23
 
 ### Added
