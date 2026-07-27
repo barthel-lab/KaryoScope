@@ -95,6 +95,19 @@ Wrote:
   ...
 ```
 
+When you restrict `--feature-set` to sets that don't cover the layout roles, an extra line names what the cascade pulls in — so a request for two feature sets that makes `annotate` report three is self-explanatory:
+
+```
+Rendering karyotypes for hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+  1 mode(s) x 2 feature set(s) = 2 render(s)
+  scaffolding also needs region (annotated if missing; not rendered)
+  Annotating hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+    3 feature set(s), 16 thread(s), ~17 GB estimated output
+    ...
+```
+
+That line appears when the cascade requires a feature set you didn't ask to render. Laying out a karyotype needs the chromosome-assignment set (which chromosome each contig belongs to) and the region-assignment set (which way round it goes, and where the centromere is) whatever is being plotted, so `annotate` may report more feature sets than `--feature-set` requested. The line is omitted when your `--feature-set` choices already cover those roles.
+
 Each render's time is measured from the top of its loop, so the first view of a mode carries its binning pass (and any cascade work its feature set needed) rather than reporting a misleadingly fast render.
 
 Pass `-q` (before the subcommand: `karyoscope -q karyotype ...`) to suppress the narration; the closing `Wrote:` block still prints. Use `-v` for the full per-step logging on stderr.

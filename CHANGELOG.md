@@ -32,7 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set(s)`) because it smooths every set in a single streaming pass. `karyotype`
   reports per `mode/feature_set` render and indents the cascade's nested
   `annotate` one level, so its headline reads as a step of the run rather than
-  a separate command. Detailed per-step timings stay at INFO, so `-v` is
+  a separate command. It also names any feature set the cascade pulls in
+  beyond `--feature-set` — scaffolding needs the chromosome- and
+  region-assignment sets to place and orient contigs regardless of what is
+  being plotted, so asking for two sets and watching `annotate` report three
+  was otherwise baffling. Detailed per-step timings stay at INFO, so `-v` is
   unchanged and nothing is printed twice.
 - `-q/--quiet` now suppresses this narration as well as logging. It previously
   only lowered the log level, which would have left no way to silence a run.

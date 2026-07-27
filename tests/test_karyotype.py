@@ -1200,3 +1200,86 @@ class TestColorsFilenameTag:
         assert _colors_filename_tag(Path("/x/colors_chromosome.tsv")) == ".colors_chromosome"
         # A custom file and the default produce different tags -> different filenames.
         assert _colors_filename_tag(Path("/x/my_palette.tsv")) != _colors_filename_tag(None)
+
+
+# --- scaffolding prerequisite note --------------------------------------
+
+
+def test_prereq_note_names_the_role_set_pulled_in_by_scaffolding() -> None:
+    """Asking for 2 feature sets and seeing annotate report 3 is baffling.
+
+    Scaffolding needs the chromosome- and region-assignment sets to place
+    and orient contigs regardless of what is being plotted, so the count
+    in the progress output exceeds --feature-set. The note explains which
+    extra set appeared and why.
+    """
+    from karyoscope.core.karyotype_run import _scaffolding_prereq_note
+
+    note = _scaffolding_prereq_note(
+        requested=["chromosome", "repeat"],
+        scaffold_manifest_roles={
+            "chromosome_assignment": "chromosome",
+            "region_assignment": "region",
+        },
+        scaffold_available=["chromosome", "region", "repeat"],
+        centromere_fs=None,
+        scaffold_db_id=None,
+    )
+    assert "region" in note
+    assert "not rendered" in note
+    # The already-requested role set must not be listed as an extra.
+    assert "chromosome" not in note
+
+
+def test_prereq_note_is_empty_when_the_roles_were_requested() -> None:
+    """No note when nothing extra is pulled in -- keep the common case clean."""
+    from karyoscope.core.karyotype_run import _scaffolding_prereq_note
+
+    assert (
+        _scaffolding_prereq_note(
+            requested=["chromosome", "region"],
+            scaffold_manifest_roles={
+                "chromosome_assignment": "chromosome",
+                "region_assignment": "region",
+            },
+            scaffold_available=["chromosome", "region"],
+            centromere_fs=None,
+            scaffold_db_id=None,
+        )
+        == ""
+    )
+
+
+def test_prereq_note_includes_the_centromere_set_and_names_a_layout_db() -> None:
+    from karyoscope.core.karyotype_run import _scaffolding_prereq_note
+
+    note = _scaffolding_prereq_note(
+        requested=["cytoband"],
+        scaffold_manifest_roles={
+            "chromosome_assignment": "chromosome",
+            "region_assignment": "region",
+        },
+        scaffold_available=["chromosome", "region"],
+        centromere_fs="region",
+        scaffold_db_id="KS_human_CHM13_v2",
+    )
+    assert "chromosome, region" in note
+    assert "KS_human_CHM13_v2" in note
+    # centromere_fs duplicates region_assignment here; it must not repeat.
+    assert note.count("region") == 1
+
+
+def test_prereq_note_stays_silent_when_roles_cannot_be_resolved() -> None:
+    """A plot-only database has no roles; that is the cascade's error to report."""
+    from karyoscope.core.karyotype_run import _scaffolding_prereq_note
+
+    assert (
+        _scaffolding_prereq_note(
+            requested=["cytoband"],
+            scaffold_manifest_roles={},
+            scaffold_available=["cytoband"],
+            centromere_fs=None,
+            scaffold_db_id=None,
+        )
+        == ""
+    )
