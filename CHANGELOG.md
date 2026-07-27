@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-27
+
 ### Added
 - **Free-space preflight.** `download` and `annotate` now verify the target
   filesystem can hold what they are about to write, and fail immediately with
@@ -1378,7 +1380,8 @@ For releases, copy the [Unreleased] section to a new heading like:
 ## [1.1.0] - YYYY-MM-DD
 -->
 
-[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.1.0
 [2.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.0.0
 [1.1.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.1.0
 [1.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.0.0
