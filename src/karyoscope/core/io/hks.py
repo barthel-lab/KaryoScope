@@ -100,22 +100,78 @@ def _infer_prefix(input_path: Path, db_basename: str) -> str:
     return f"{input_basename}.{db_basename}"
 
 
-def convert_hks_tsv_to_bed(tsv_path: Path, bed_path: Path) -> None:
+#: Bytes read per block by :func:`convert_hks_tsv_to_bed`. Large enough
+#: that per-block Python overhead vanishes against the memchr-speed scan
+#: inside ``bytes.replace``, small enough that the buffer is irrelevant
+#: beside the k-mer index this runs alongside. Exposed as a parameter only
+#: so tests can shrink it and hammer the block-boundary logic.
+_CONVERT_BLOCK_BYTES = 8 << 20  # 8 MiB
+
+
+def convert_hks_tsv_to_bed(
+    tsv_path: Path, bed_path: Path, *, block_bytes: int = _CONVERT_BLOCK_BYTES
+) -> None:
     """Convert HKS TSV output (with header) to a headerless BED file.
 
     Strips the header line and replaces the HKS miss label ``none`` with
     KaryoScope's ``novel`` sentinel.
 
-    Streams line by line: a reads TSV can be tens of GB (one row per k-mer
-    run over hundreds of millions of reads), so the whole file must never be
-    held in memory.
+    Runs twice per feature set — once on the raw lookup TSV to make the
+    presmoothed BED, once inside :func:`run_hks_smooth` on the smoothed
+    TSV — and on human-scale input those two passes were ~10% of
+    ``annotate``'s wall time (129 s of a 21-minute HG002 run), single
+    threaded, while the rest of the machine idled. The previous version
+    looped in Python over every line of a multi-GB file and paid a decode
+    plus an encode per line; this one reads binary blocks and lets
+    ``bytes.replace`` do the scan in C.
+
+    Still streams: memory is one block plus at most one partial line, so a
+    reads TSV of tens of GB is fine.
+
+    Correctness at block boundaries
+    ------------------------------
+    Only whole lines are ever handed to ``replace``: each block is cut at
+    its **last newline** and the remainder carried into the next block.
+    That makes a straddling match impossible, because ``miss`` ends in a
+    newline — an occurrence extending past the cut would have to end at a
+    newline beyond the last one, which by definition does not exist.
+    ``miss`` also contains no interior newline, so it can never match
+    across two lines. The carried remainder is a partial final line and
+    cannot contain a complete match.
+
+    Byte-for-byte identical output to the line-by-line version on any
+    input, including a final line with no trailing newline (whose label,
+    lacking the terminating newline, is left alone by both).
     """
-    miss = f"\t{_HKS_MISS_LABEL}\n"
-    novel = f"\t{NOVEL_NAME}\n"
-    with tsv_path.open() as inp, bed_path.open("w") as out:
-        next(inp, None)  # skip header
-        for line in inp:
-            out.write(line.replace(miss, novel))
+    miss = f"\t{_HKS_MISS_LABEL}\n".encode()
+    novel = f"\t{NOVEL_NAME}\n".encode()
+
+    with tsv_path.open("rb") as inp, bed_path.open("wb") as out:
+        # Drop the header, which may in principle span more than one read.
+        pending = b""
+        while True:
+            block = inp.read(block_bytes)
+            if not block:
+                return  # empty or header-only: no records to write
+            pending += block
+            newline = pending.find(b"\n")
+            if newline != -1:
+                pending = pending[newline + 1 :]
+                break
+
+        while True:
+            block = inp.read(block_bytes)
+            if not block:
+                break
+            pending += block
+            cut = pending.rfind(b"\n")
+            if cut == -1:
+                continue  # a line longer than one block; keep accumulating
+            out.write(pending[: cut + 1].replace(miss, novel))
+            pending = pending[cut + 1 :]
+
+        if pending:
+            out.write(pending.replace(miss, novel))
 
 
 def run_hks_lookup(
