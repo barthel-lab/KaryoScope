@@ -58,6 +58,25 @@ Smoothing promotes short noisy intervals (especially short `novel` runs flanked 
 
 For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, a single haplotype peaks at ~10 GB (request ≥ 16 GB) and a combined diploid assembly such as HG002 v1.1 peaks at ~17 GB (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. The **KMC backend** peaks at ~30–35 GB (request ≥ 50 GB). HG002 runs in ~20–30 min at `-t 16`.
 
+## Progress output
+
+`annotate` reports what it is doing as it goes, so a long run is distinguishable from a hung one:
+
+```
+Annotating hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+  6 feature set(s), 16 thread(s), ~34 GB estimated output
+  [1/6] chromosome    4m05s
+  [2/6] region        3m45s
+  ...
+  bgzip (12 file(s))  1m31s
+Wrote:
+  ...
+```
+
+The milestone shape follows the backend. HKS queries each feature set in sequence, so it reports `[i/N]` per set. KMC runs one combined query and then smooths every set in a single streaming pass, so it reports named phases instead (`k-mer query`, `smoothing 6 feature set(s)`).
+
+Pass `-q` (before the subcommand: `karyoscope -q annotate ...`) to suppress the narration; the closing `Wrote:` block still prints, since that is the command's result. Detailed per-step timings remain on the logging channel — `karyoscope -v annotate ...` for those.
+
 ## Disk space
 
 Output is large. Budget roughly **0.8 GB per feature set per Gbp of input**, plus one intermediate the size of the largest single feature set's presmoothed BED:

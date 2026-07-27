@@ -73,6 +73,7 @@ from karyoscope.exceptions import (
     KaryoscopeError,
 )
 from karyoscope.manifest import validate_database_layout
+from karyoscope.progress import SILENT, Progress
 
 logger = logging.getLogger(__name__)
 
@@ -1015,6 +1016,7 @@ def _run_hks_backend(
     smoothed_paths: dict[str, Path],
     threads: int,
     k: int,
+    progress: Progress = SILENT,
 ) -> None:
     """Run the HKS lookup and optional smoothing for every requested feature set.
 
@@ -1040,7 +1042,9 @@ def _run_hks_backend(
     is_reads = _is_reads_input(input_path)
 
     t_hks_start = time.perf_counter()
+    tracker = progress.track(requested)
     for fs in requested:
+        t_fs = time.perf_counter()
         fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
         hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
         raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
@@ -1084,6 +1088,10 @@ def _run_hks_backend(
                 raw_tsv.unlink()
             except OSError as exc:
                 logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
+        # Reported here rather than per sub-step: one line per feature set
+        # is the granularity a user waiting on the run actually needs, and
+        # HKS processes them strictly in sequence so the counter is honest.
+        tracker.step(fs, time.perf_counter() - t_fs)
 
     logger.info(
         "hks backend complete in %.1fs (%d feature set(s))",
@@ -1111,6 +1119,7 @@ def annotate(
     force: bool = False,
     k: int | None = None,
     check_space: bool = True,
+    progress: Progress = SILENT,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
 
@@ -1153,6 +1162,9 @@ def annotate(
         Estimate the output footprint and refuse to start if ``output_dir``
         can't hold it. Default: ``True``. The estimate is derived from the
         input size, so pass ``False`` if it misjudges an unusual input.
+    progress
+        Milestone reporter for stdout. Defaults to silence, so importing
+        KaryoScope as a library never prints; the CLI passes an enabled one.
 
     Raises
     ------
@@ -1244,6 +1256,16 @@ def annotate(
         skip=not check_space,
     )
 
+    # Announce the run before the first expensive step. Everything below
+    # this point can take twenty minutes, and until now the terminal stayed
+    # blank for all of it.
+    n_threads = threads if threads > 0 else (os.cpu_count() or 1)
+    progress.start(
+        f"Annotating {input_path.name} against {db_id_resolved}",
+        f"{len(requested)} feature set(s), {n_threads} thread(s), "
+        f"~{_human_bytes(needed_bytes)} estimated output",
+    )
+
     t_annotate_start = time.perf_counter()
 
     # Parse features.tsv up front so we fail fast if it's malformed. It maps
@@ -1327,6 +1349,7 @@ def annotate(
             smoothed_paths=smoothed_paths,
             threads=threads,
             k=query_k,
+            progress=progress,
         )
     else:  # "kmc" -- the only other supported type (guaranteed by parse_manifest)
         # Run the C++ helper -- unless a complete combined BED from a prior
@@ -1346,6 +1369,10 @@ def annotate(
                 "-- skipping get_featureIDs. Pass --force to regenerate.",
                 _human_bytes(combined_bed.stat().st_size),
                 combined_bed,
+            )
+            progress.note(
+                f"reusing the combined BED from a previous run "
+                f"({_human_bytes(combined_bed.stat().st_size)}); skipping the k-mer query"
             )
         else:
             logger.info(
@@ -1371,6 +1398,11 @@ def annotate(
                 time.perf_counter() - t_kmc_start,
                 _human_bytes(combined_bed.stat().st_size),
             )
+            # Named stages rather than [i/N]: the KMC backend runs one
+            # combined query and then one streaming smoothing pass over
+            # every feature set at once, so there is no per-feature-set
+            # completion moment to count.
+            progress.stage("k-mer query", time.perf_counter() - t_kmc_start)
         logger.debug("combined BED at %s", combined_bed)
 
         # Run the smoothing pass. One pool initialised with every
@@ -1411,12 +1443,20 @@ def annotate(
                     is_reads_input=is_reads,
                 )
             logger.info("smoothing pass complete in %.1fs", time.perf_counter() - t_smooth_start)
+            progress.stage(
+                f"smoothing {len(requested)} feature set(s)",
+                time.perf_counter() - t_smooth_start,
+            )
         else:
             # Only presmoothed output, no smoothing.
             logger.info("splitting combined BED into %d per-feature-set BED(s)", len(requested))
             t_split_start = time.perf_counter()
             _split_combined_bed(combined_bed, requested, features, presmoothed_paths)
             logger.info("split complete in %.1fs", time.perf_counter() - t_split_start)
+            progress.stage(
+                f"splitting into {len(requested)} feature set(s)",
+                time.perf_counter() - t_split_start,
+            )
 
         # Tidy up the combined intermediate unless asked to keep it. Remove
         # its completion marker alongside it so no dangling marker is left
@@ -1445,6 +1485,10 @@ def annotate(
             if fs in smoothed_paths:
                 smoothed_paths[fs] = _bgzip_file(smoothed_paths[fs], threads=threads)
         logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
+        # Worth its own line: compressing 12 BEDs of a human diploid run
+        # takes minutes, and it happens after the last feature-set line, so
+        # without this the run looks finished-but-hung right at the end.
+        progress.stage(f"bgzip ({n_to_bgzip} file(s))", time.perf_counter() - t_bgzip_start)
 
     n_outputs = len(presmoothed_paths) + len(smoothed_paths)
     logger.info(

@@ -71,6 +71,7 @@ from karyoscope.core.scaffold import (
 )
 from karyoscope.exceptions import ScaffoldError
 from karyoscope.manifest import validate_database_layout
+from karyoscope.progress import SILENT, Progress
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,7 @@ def _ensure_annotated(
     threads: int,
     auto: bool,
     bgzip: bool,
+    progress: Progress = SILENT,
 ) -> None:
     """Run annotate if any required smoothed BED is missing.
 
@@ -287,6 +289,10 @@ def _ensure_annotated(
         keep_presmoothed=True,
         keep_intermediates=False,
         bgzip=bgzip,
+        # The cascade's annotate step is the bulk of a karyotype run's
+        # wall time, so it narrates through the parent's reporter rather
+        # than going silent just because it was invoked indirectly.
+        progress=progress,
     )
 
 
@@ -492,6 +498,7 @@ def scaffold_run(
     output_dir: Path | None = None,
     write_scaffolded_beds: bool = True,
     annotation_variant: str = "smoothed",
+    progress: Progress = SILENT,
 ) -> dict[str, ScaffoldResult]:
     """Run the full ``karyoscope scaffold`` pipeline.
 
@@ -638,6 +645,7 @@ def scaffold_run(
             threads=threads,
             auto=auto,
             bgzip=bgzip,
+            progress=progress,
         )
         _ensure_telo(r, auto=auto, telo_motif=telo_motif)
         _ensure_binned(

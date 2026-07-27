@@ -141,7 +141,8 @@ def _configure_logging(verbosity: int) -> None:
     is_flag=True,
     help="Decrease logging verbosity to errors only. Conflicts with -v.",
 )
-def main(verbose: int, quiet: bool) -> None:
+@click.pass_context
+def main(ctx: click.Context, verbose: int, quiet: bool) -> None:
     """KaryoScope: rapid, alignment-free sequence annotation for the pangenome era.
 
     Run a subcommand with ``--help`` to see its options, e.g.:
@@ -155,6 +156,12 @@ def main(verbose: int, quiet: bool) -> None:
         raise click.UsageError("--quiet and --verbose cannot be combined.")
     verbosity = -1 if quiet else verbose
     _configure_logging(verbosity)
+    # --quiet has to reach the *program output* channel too, not just
+    # logging: the milestone lines the long-running commands print (see
+    # karyoscope.progress) go to stdout, so lowering the log level alone
+    # would leave no way to get a silent run. Stashed on the context
+    # rather than threaded through every command signature.
+    ctx.ensure_object(dict)["quiet"] = quiet
 
 
 # Register subcommands. The order here determines the order in `--help`.

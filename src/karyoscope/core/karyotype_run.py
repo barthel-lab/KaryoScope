@@ -67,6 +67,7 @@ from karyoscope.core.scaffold import (
 from karyoscope.core.scaffold_run import InputSpec, _resolve_roles, scaffold_run
 from karyoscope.exceptions import KaryotypeError
 from karyoscope.manifest import validate_database_layout
+from karyoscope.progress import SILENT, Progress
 
 logger = logging.getLogger(__name__)
 
@@ -611,6 +612,7 @@ def karyotype_run(
     output_path: Path | None = None,
     seed_human_chromosomes: bool = True,
     formats: list[str] | None = None,
+    progress: Progress = SILENT,
     sample_label: str | None = None,
     show_title: bool = True,
     show_legend: bool = True,
@@ -709,6 +711,22 @@ def karyotype_run(
         if bin_size < 1:
             raise KaryotypeError(f"--bin-size must be a positive integer, got {bin_size}")
 
+    # Announce the run before the cascade starts. Everything from here --
+    # annotate, scaffold, bin, render -- can take tens of minutes, and the
+    # nested annotate reports through this same reporter, so the user sees
+    # the expensive middle of the pipeline rather than a blank terminal.
+    sample_names = ", ".join(spec.path.name for spec in inputs)
+    progress.start(
+        f"Rendering karyotypes for {sample_names} against {db_id_resolved}",
+        f"{len(requested_modes)} mode(s) x {len(requested)} feature set(s) "
+        f"= {len(requested_modes) * len(requested)} render(s)",
+    )
+    tracker = progress.track([f"{mode}/{fs}" for mode in requested_modes for fs in requested])
+    # The cascade's own reporters nest one level in, so their headlines read
+    # as steps of this run rather than as separate commands that started on
+    # their own.
+    cascade_progress = progress.child()
+
     # Colours: a user-supplied --colors file overrides the database default.
     # Its stem tags the output filename so a custom-colour render never clobbers
     # the default-colour one (e.g. '...smoothed.colors_chromosome.karyotype.svg').
@@ -777,6 +795,7 @@ def karyotype_run(
             scaffold_feature_sets.append(centromere_fs)
         scaffold_run(
             inputs,
+            progress=cascade_progress,
             db_root=db_root,
             db_id=db_id_resolved,
             feature_sets=scaffold_feature_sets,
@@ -807,6 +826,7 @@ def karyotype_run(
         # scaffolded BEDs are produced.
         scaffold_run(
             inputs,
+            progress=cascade_progress,
             db_root=scaffold_db_root_eff,
             db_id=scaffold_db_id_resolved,
             feature_sets=[],
@@ -854,10 +874,12 @@ def karyotype_run(
                 threads=threads,
                 smooth=(annotation_variant == "smoothed"),
                 bgzip=bgzip,
+                progress=cascade_progress,
             )
     else:
         scaffold_run(
             inputs,
+            progress=cascade_progress,
             db_root=db_root,
             db_id=db_id_resolved,
             feature_sets=requested,
@@ -984,6 +1006,7 @@ def karyotype_run(
         )
 
         for fs in requested:
+            t_view = time.perf_counter()
             leaves = leaves_for(hierarchy, fs)
             # Legend sort: hand the renderer the list of child names
             # in hierarchy.tsv file order. Internal nodes appear first
@@ -1102,6 +1125,11 @@ def karyotype_run(
                     output_paths=output_paths,
                 )
             )
+            # Timed from the top of the inner loop, so the first view of a
+            # mode carries its bin pass (and, on a cold run, the cascade
+            # work its feature set needed) rather than reporting a
+            # misleadingly fast render.
+            tracker.step(f"{current_mode}/{fs}", time.perf_counter() - t_view)
 
     logger.info(
         "karyotype complete in %.1fs (%d render(s) -> %d file(s))",

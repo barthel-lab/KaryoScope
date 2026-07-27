@@ -28,6 +28,7 @@ from pathlib import Path
 import click
 
 from karyoscope import paths, preflight
+from karyoscope import progress as _progress
 from karyoscope.commands.scaffold import _parse_named_path, _split_comma
 from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.karyotype_run import karyotype_run
@@ -481,6 +482,7 @@ def cmd(
         preflight.require(needed, context="the karyotype cascade")
         results = karyotype_run(
             inputs,
+            progress=_progress.from_context(),
             db_root=db_root,
             db_id=db_id,
             scaffold_db_id=scaffold_db_id,

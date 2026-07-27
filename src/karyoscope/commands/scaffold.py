@@ -33,6 +33,7 @@ from pathlib import Path
 import click
 
 from karyoscope import paths
+from karyoscope import progress as _progress
 from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.scaffold import DEFAULT_HUMAN_ACROCENTRICS
 from karyoscope.core.scaffold_run import InputSpec, scaffold_run
@@ -335,6 +336,7 @@ def cmd(
     try:
         results = scaffold_run(
             inputs,
+            progress=_progress.from_context(),
             db_root=db_root,
             db_id=db_id,
             feature_sets=feature_sets,

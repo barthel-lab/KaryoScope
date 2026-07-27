@@ -36,6 +36,7 @@ from pathlib import Path
 import click
 
 from karyoscope import paths
+from karyoscope import progress as _progress
 from karyoscope.core.annotate import annotate
 from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.exceptions import (
@@ -228,6 +229,7 @@ def cmd(
             preserve_input_order=preserve_input_order,
             force=force,
             check_space=not no_space_check,
+            progress=_progress.from_context(),
         )
     except (
         DatabaseNotFoundError,

@@ -985,3 +985,79 @@ def test_scaffold_rejects_fastq_input(
     output_lower = result.output.lower()
     assert "fasta" in output_lower
     assert "annotate" in output_lower
+
+
+# --- progress output ----------------------------------------------------
+
+
+def test_annotate_announces_the_run_before_working(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """A long run must not present as a blank terminal.
+
+    annotate used to print nothing at all until its closing Wrote: block,
+    which on human-scale input meant ~20 minutes of silence.
+    """
+    runner, db_root, query = cli_with_populated_db
+    outdir = tmp_path / "out"
+    result = runner.invoke(
+        main,
+        [
+            "annotate",
+            "-i",
+            str(query),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Annotating" in result.output
+    assert query.name in result.output
+    # At least one timed milestone lands before the results. The shape
+    # differs by backend on purpose: HKS reports "[1/6] chromosome" per
+    # feature set, KMC named phases ("k-mer query"), because KMC smooths
+    # every set in one pass and has no per-set moment to count.
+    head = result.output.split("Wrote:")[0]
+    assert result.output.index("Annotating") < result.output.index("Wrote:")
+    assert any(line.startswith("  ") and line.rstrip().endswith("s") for line in head.splitlines())
+
+
+def test_quiet_silences_narration_but_keeps_the_result(
+    cli_with_populated_db: tuple[CliRunner, Path, Path],
+    tmp_path: Path,
+) -> None:
+    """-q suppresses progress, not the list of files produced.
+
+    The Wrote: block is the command's actual output and scripts read it;
+    the narration is the part a quiet run wants gone.
+    """
+    runner, db_root, query = cli_with_populated_db
+    outdir = tmp_path / "out"
+    result = runner.invoke(
+        main,
+        [
+            "-q",
+            "annotate",
+            "-i",
+            str(query),
+            "-o",
+            str(outdir),
+            "--db-root",
+            str(db_root),
+            "-t",
+            "1",
+            "--no-bgzip",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert "Annotating" not in result.output
+    assert "[1/" not in result.output
+    assert "Wrote:" in result.output

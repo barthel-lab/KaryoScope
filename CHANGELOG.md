@@ -10,6 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.0] - 2026-07-27
 
 ### Added
+- **Progress output for the long-running commands.** `download` and `build`
+  already announced themselves and their results, but `annotate` (7-22 min)
+  and `karyotype` (tens of minutes) printed nothing at all until their closing
+  `Wrote:` block — so the two slowest commands were the two silent ones, and a
+  user could not tell a working run from a hung one. Both now print an opening
+  summary and a milestone line as each unit of work completes:
+
+  ```
+  Annotating hg002v1.1.fasta.gz against HKS_human_CHM13_v2
+    6 feature set(s), 16 thread(s), ~34 GB estimated output
+    [1/6] chromosome    4m05s
+    ...
+    bgzip (12 file(s))  1m31s
+  Wrote:
+    ...
+  ```
+
+  The shape follows what each backend actually knows: HKS reports per feature
+  set, while KMC reports named phases (`k-mer query`, `smoothing 6 feature
+  set(s)`) because it smooths every set in a single streaming pass. `karyotype`
+  reports per `mode/feature_set` render and indents the cascade's nested
+  `annotate` one level, so its headline reads as a step of the run rather than
+  a separate command. Detailed per-step timings stay at INFO, so `-v` is
+  unchanged and nothing is printed twice.
+- `-q/--quiet` now suppresses this narration as well as logging. It previously
+  only lowered the log level, which would have left no way to silence a run.
+  The `Wrote:` block still prints — it is the command's result, not narration.
 - **Free-space preflight.** `download` and `annotate` now verify the target
   filesystem can hold what they are about to write, and fail immediately with
   the required / available / shortfall figures instead of dying on
