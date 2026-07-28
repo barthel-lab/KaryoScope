@@ -388,7 +388,7 @@ def _require_hks_memory(
             "Options:\n"
             "  - request more memory (on SLURM, e.g. --mem=16G)\n"
             "  - move from a login node to a compute node\n"
-            "  - pass --no-space-check to attempt the run anyway"
+            "  - pass --no-resource-check to attempt the run anyway"
         ),
         skip=not check,
     )
@@ -1378,7 +1378,7 @@ def annotate(
             "  - write to a larger filesystem with --outdir\n"
             "  - annotate fewer feature sets at a time with --feature-set\n"
             "  - drop one of the two outputs with --no-keep-presmoothed or --no-smooth\n"
-            "  - pass --no-space-check if this estimate looks wrong for your input"
+            "  - pass --no-resource-check if this estimate looks wrong for your input"
         ),
         skip=not check_space,
     )
@@ -1824,7 +1824,7 @@ def annotate_batch(
             "  - write to a larger filesystem with --outdir\n"
             "  - annotate fewer inputs or feature sets at a time\n"
             "  - drop one of the two outputs with --no-keep-presmoothed or --no-smooth\n"
-            "  - pass --no-space-check if this estimate looks wrong for your input"
+            "  - pass --no-resource-check if this estimate looks wrong for your input"
         ),
         skip=not check_space,
     )

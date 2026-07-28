@@ -205,6 +205,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.2.0] - 2026-08-04
 
+### Changed
+- **`--no-space-check` is now `--no-resource-check`** on `annotate` and
+  `download`. The flag governs the memory check as well as the disk one, so
+  "space" had become the wrong word. `--no-space-check` still works as a
+  hidden alias and warns; it will be removed in a future release. Supplying
+  both is a usage error.
+
 ### Added
 
 - **`docs/recipes/` — reproducible recipes for the shipped databases.** One page

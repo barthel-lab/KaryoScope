@@ -37,6 +37,7 @@ import click
 
 from karyoscope import paths
 from karyoscope import progress as _progress
+from karyoscope.commands._options import resolve_resource_check_flag
 from karyoscope.core.annotate import annotate_batch
 from karyoscope.exceptions import (
     KaryoscopeError,
@@ -152,13 +153,23 @@ logger = logging.getLogger(__name__)
     "after every BED has been written in full.",
 )
 @click.option(
+    "--no-resource-check",
+    is_flag=True,
+    default=False,
+    help="Skip the up-front disk and memory checks. Disk: the output footprint "
+    "is estimated from the input size (roughly 0.8 GB per feature set per Gbp), "
+    "so pass this if that estimate is wrong for your input -- it is calibrated "
+    "on human data and can be well off for other organisms. Memory: HKS "
+    "databases need the index resident (~10 GB for a human database), read from "
+    "the index files themselves; skipping that check risks the run being killed "
+    "by the OS instead.",
+)
+@click.option(
     "--no-space-check",
     is_flag=True,
     default=False,
-    help="Skip the up-front free-space check on --outdir. The check estimates the "
-    "output footprint from the input size (roughly 0.8 GB per feature set per Gbp "
-    "of input, plus one intermediate); pass this if that estimate is wrong for "
-    "your input.",
+    hidden=True,
+    help="Deprecated alias for --no-resource-check.",
 )
 @click.option(
     "--preserve-order/--no-preserve-order",
@@ -187,6 +198,7 @@ def cmd(
     keep_presmoothed: bool,
     keep_intermediates: bool,
     bgzip: bool,
+    no_resource_check: bool,
     no_space_check: bool,
     preserve_input_order: bool,
     force: bool,
@@ -211,6 +223,7 @@ def cmd(
         karyoscope annotate -i reads.fa.gz --db KS_human_CHM13_v2 \\
                             --feature-set chromosome
     """
+    skip_checks = resolve_resource_check_flag(no_resource_check, no_space_check, command="annotate")
     db_root = paths.ensure_db_root(db_root_arg)
     inputs = list(input_paths)
     if output_dir is None:
@@ -235,7 +248,7 @@ def cmd(
         bgzip=bgzip,
         preserve_input_order=preserve_input_order,
         force=force,
-        check_space=not no_space_check,
+        check_space=not skip_checks,
         progress=_progress.from_context(),
     )
 

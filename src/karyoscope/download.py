@@ -284,7 +284,7 @@ def _check_install_space(entry: DatabaseEntry, db_root: Path, *, skip: bool) -> 
             "archive was assumed to be the same size as the extracted database. "
             "Refresh the registry with --refresh-registry."
         )
-    hint_lines.append("  Pass --no-space-check to attempt the install anyway.")
+    hint_lines.append("  Pass --no-resource-check to attempt the install anyway.")
 
     diskspace.require_free_space(
         db_root,

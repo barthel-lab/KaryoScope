@@ -24,7 +24,7 @@ A database has two sizes, and for the HKS databases they differ substantially:
 | `HKS_human_CHM13_v2` | 13.3 GB | 22.7 GB | **~36 GB** |
 | `HKS_arabidopsis_ColCEN` | 0.46 GB | 0.68 GB | **~1.1 GB** |
 
-Installing needs the sum of the two columns, because the archive is only deleted once extraction succeeds. `download` verifies that up front and refuses with the exact shortfall rather than filling the disk part-way through extraction; `--no-space-check` overrides it. Reinstalling over an existing copy credits the space that copy will free, and a staged or partially-downloaded archive is credited too, so a retry doesn't require room for the archive twice.
+Installing needs the sum of the two columns, because the archive is only deleted once extraction succeeds. `download` verifies that up front and refuses with the exact shortfall rather than filling the disk part-way through extraction; `--no-resource-check` overrides it. Reinstalling over an existing copy credits the space that copy will free, and a staged or partially-downloaded archive is credited too, so a retry doesn't require room for the archive twice.
 
 Sizes come from the registry's `size_gb` (extracted) and `download_size_gb` (archive) fields, in decimal GB. `df -h` reports binary GiB, so 36 GB appears there as 34 GiB. An entry that predates `download_size_gb` falls back to `size_gb` for both, and the resulting figure is labelled as an estimate.
 
@@ -44,7 +44,7 @@ Sizes come from the registry's `size_gb` (extracted) and `download_size_gb` (arc
 | `--refresh-registry` | Force a fresh fetch of the registry, ignoring any cached copy. |
 | `--force` | Re-download and re-install even if the database is already present. |
 | `--no-checksum` | Skip SHA-256 verification (not recommended; useful for debugging). |
-| `--no-space-check` | Install even if the database root looks too small to hold the archive and its extracted contents. Only useful when the registry's declared sizes are wrong for your copy of the database. |
+| `--no-resource-check` | Install even if the database root looks too small to hold the archive and its extracted contents. Only useful when the registry's declared sizes are wrong for your copy of the database. |
 | `-y, --yes` | Assume 'yes' to interactive prompts (e.g. `--remove`). |
 | `-q, --quiet` | Suppress progress bars. |
 | `-h, --help` | Show this message and exit. |

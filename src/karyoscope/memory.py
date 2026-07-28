@@ -160,7 +160,7 @@ def require_memory(
         Extra advice appended to the failure message.
     skip
         If True, log and return without raising. Wired to the same
-        ``--no-space-check`` escape as the disk check.
+        ``--no-resource-check`` escape as the disk check.
 
     Raises
     ------

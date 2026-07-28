@@ -146,7 +146,7 @@ def require_free_space(
         Extra command-specific advice appended to the error.
     skip
         If True, log the numbers at INFO and return without raising. Wired
-        to the ``--no-space-check`` flags.
+        to the ``--no-resource-check`` flags.
 
     Raises
     ------
