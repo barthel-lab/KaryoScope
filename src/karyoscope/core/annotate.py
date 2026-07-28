@@ -52,7 +52,6 @@ from karyoscope.core.io.hierarchy import (
 )
 from karyoscope.core.io.hks import (
     convert_bam_to_fasta,
-    convert_hks_tsv_to_bed,
     run_hks_lookup,
     run_hks_smooth,
 )
@@ -995,14 +994,19 @@ def _run_hks_backend(
     ids), HKS queries one ``.hksf`` per feature set and reads label names
     directly. Each feature set is processed independently:
 
-    1. ``hks lookup`` against ``<basename>.<fs>.hksf`` -> a raw TSV.
-    2. If ``keep_presmoothed``: convert the raw TSV to the presmoothed BED.
-    3. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
-       -> the smoothed BED.
+    1. ``hks lookup`` against ``<basename>.<fs>.hksf`` -> the presmoothed BED.
+    2. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
+       reads that same file -> the smoothed BED.
 
-    The raw TSV is a per-feature-set temp file, deleted after each set. ``k`` is
-    the query k-mer length (``manifest.kmer.size`` unless overridden for a
-    variable-k index).
+    There is no conversion step between them. ``hks`` is told the output shape
+    KaryoScope wants -- headerless, ``novel`` for misses -- so the lookup output
+    *is* the presmoothed BED, and smooth reads it in place. When the caller does
+    not want the presmoothed BED kept, the lookup still has to write somewhere
+    for smooth to read, so it goes to a per-feature-set temp file deleted after
+    each set.
+
+    ``k`` is the query k-mer length (``manifest.kmer.size`` unless overridden
+    for a variable-k index).
     """
     base_path = db_dir / (manifest.index.basename + ".hksb")
 
@@ -1032,7 +1036,15 @@ def _run_hks_backend(
             t_fs = time.perf_counter()
             fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
             hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
-            raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
+            # The lookup output is already the presmoothed BED, so when it is being
+            # kept it is written straight to its final home rather than copied
+            # there. Otherwise smooth still needs it on disk to read, and it is a
+            # temp file we drop afterwards.
+            lookup_out = (
+                presmoothed_paths[fs]
+                if keep_presmoothed
+                else output_dir / f"{prefix}.{fs}.lookup_raw.tmp.bed"
+            )
 
             logger.info(
                 "running hks lookup for feature set %r on %s (threads=%d)",
@@ -1045,34 +1057,32 @@ def _run_hks_backend(
                 feature_set_file=fs_file,
                 k=k,
                 input_path=query_path,
-                output_path=raw_tsv,
+                output_path=lookup_out,
                 threads=threads,
                 report_query_names=not is_reads,
                 capture=True,
             )
-            if not raw_tsv.is_file():
-                raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
+            if not lookup_out.is_file():
+                raise KaryoscopeError(f"hks lookup did not produce expected output at {lookup_out}")
 
             try:
-                if keep_presmoothed:
-                    convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
-
                 if smooth:
                     t_smo = time.perf_counter()
                     logger.info("running hks smooth for feature set %r", fs)
                     run_hks_smooth(
                         hierarchy_file=hierarchy_file,
-                        input_path=raw_tsv,
+                        input_path=lookup_out,
                         output_path=smoothed_paths[fs],
                         threads=threads,
                         capture=True,
                     )
                     logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
             finally:
-                try:
-                    raw_tsv.unlink()
-                except OSError as exc:
-                    logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
+                if not keep_presmoothed:
+                    try:
+                        lookup_out.unlink()
+                    except OSError as exc:
+                        logger.warning("could not remove temp lookup output %s: %s", lookup_out, exc)
             # Reported here rather than per sub-step: one line per feature set
             # is the granularity a user waiting on the run actually needs, and
             # HKS processes them strictly in sequence so the counter is honest.
