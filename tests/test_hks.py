@@ -15,6 +15,7 @@ from karyoscope.core.io.hks import (
     convert_hks_tsv_to_bed,
     get_hks_binary,
     run_hks_lookup,
+    run_hks_smooth,
 )
 
 
@@ -88,6 +89,63 @@ def test_run_hks_lookup_omits_names_for_reads(
     cmd = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=False)
     assert "--report-query-names" not in cmd
     assert "--report-misses" in cmd
+
+
+def _capture_smooth_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, out: Path | None = None
+) -> list[str]:
+    """Run ``run_hks_smooth`` with the binary + subprocess stubbed, return the cmd."""
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr(
+        "karyoscope.core.io.hks.run_tool",
+        lambda cmd, capture=False: captured.__setitem__("cmd", cmd),
+    )
+    run_hks_smooth(
+        hierarchy_file=tmp_path / "features.chromosome.hierarchy.txt",
+        input_path=tmp_path / "raw.tsv",
+        output_path=out if out is not None else tmp_path / "smoothed.bed",
+    )
+    return captured["cmd"]
+
+
+def _flag_value(cmd: list[str], flag: str) -> str:
+    return cmd[cmd.index(flag) + 1]
+
+
+def test_run_hks_smooth_writes_the_bed_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """smooth is pointed at the final BED, not a temp TSV needing a rewrite."""
+    out = tmp_path / "smoothed.bed"
+    cmd = _capture_smooth_cmd(tmp_path, monkeypatch, out=out)
+    assert _flag_value(cmd, "-o") == str(out)
+    assert "--no-header" in cmd
+    assert _flag_value(cmd, "--miss-label") == NOVEL_NAME
+
+
+def test_lookup_and_smooth_agree_on_the_miss_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant the whole scheme rests on.
+
+    ``hks smooth`` parses the miss token out of its input as well as writing
+    it, so if lookup wrote a different one every miss run would be read as an
+    unknown feature name. Neither may quietly fall back to HKS's ``none``.
+    """
+    lookup = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    smooth = _capture_smooth_cmd(tmp_path, monkeypatch)
+    assert _flag_value(lookup, "--miss-label") == _flag_value(smooth, "--miss-label")
+    assert _flag_value(lookup, "--miss-label") == NOVEL_NAME
+    assert _flag_value(lookup, "--miss-label") != _HKS_MISS_LABEL
+
+
+def test_run_hks_lookup_emits_the_karyoscope_miss_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Misses come out of lookup already labelled ``novel``, not ``none``."""
+    cmd = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    assert _flag_value(cmd, "--miss-label") == NOVEL_NAME
 
 
 def test_convert_hks_tsv_header_only_yields_empty_bed(tmp_path: Path) -> None:

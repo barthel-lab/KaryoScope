@@ -38,7 +38,10 @@ logger = logging.getLogger(__name__)
 BINARY_NAME = "hks"
 ENV_OVERRIDE = "KARYOSCOPE_HKS"
 
-#: Label HKS emits for k-mers not found in the index.
+#: Label HKS emits for k-mers not found in the index, unless told otherwise.
+#: KaryoScope overrides it with ``--miss-label`` so that HKS writes its own
+#: :data:`~karyoscope.core.io.features.NOVEL_NAME` sentinel and no pass over
+#: the output is needed to rewrite it.
 _HKS_MISS_LABEL = "none"
 
 #: Default max-gap (bases) passed to ``hks smooth``, matching karyoscope's Python default.
@@ -199,7 +202,7 @@ def run_hks_lookup(
         FASTA or FASTQ input (plain or gzipped). For BAM inputs, pass the
         ``.bam`` path — it will be converted via ``samtools fasta`` internally.
     output_path
-        Where to write the raw HKS lookup TSV (header + ``none`` for misses).
+        Where to write the raw HKS lookup TSV (header + ``novel`` for misses).
     threads
         Number of worker threads (0 = let HKS decide, effectively ``4`` by default).
     report_query_names
@@ -257,6 +260,12 @@ def run_hks_lookup(
         cmd.append("--report-query-names")
     cmd += [
         "--report-misses",
+        # Emit KaryoScope's sentinel for misses rather than HKS's default
+        # ``none``. Must match what run_hks_smooth passes: ``hks smooth``
+        # parses this token out of its input as well as writing it, so a
+        # mismatch turns every miss run into an unknown feature name.
+        "--miss-label",
+        NOVEL_NAME,
         "-t",
         str(n_threads),
         "-o",
@@ -354,14 +363,26 @@ def run_hks_smooth(
     threads: int = 0,
     capture: bool = False,
 ) -> Path:
-    """Invoke ``hks smooth`` on a lookup TSV and write the result as a BED file.
+    """Invoke ``hks smooth`` on a lookup TSV, writing KaryoScope's BED directly.
+
+    ``hks smooth`` is told the output shape we want -- headerless, ``novel``
+    for misses -- so its output *is* the smoothed BED. Previously it wrote a
+    TSV to a temp file that a second pass then rewrote into place, which cost
+    a full read plus a full write of a multi-gigabyte file per feature set,
+    single threaded, for what amounts to one substitution and a dropped line.
+
+    The miss label is not just cosmetic to smooth: it parses that same token
+    out of its input to recognise a miss run. It therefore has to match what
+    :func:`run_hks_lookup` wrote, which is why both pass ``NOVEL_NAME`` and
+    neither hardcodes HKS's ``none`` default.
 
     Parameters
     ----------
     hierarchy_file
         Path to the HKS hierarchy file (``*.hierarchy.txt``) for this feature set.
     input_path
-        Raw TSV produced by ``hks lookup`` (with header, ``none`` for misses).
+        Raw TSV produced by :func:`run_hks_lookup` (with header, ``novel``
+        for misses).
     output_path
         Where to write the smoothed BED (headerless, ``novel`` for misses).
     max_gap
@@ -390,32 +411,25 @@ def run_hks_smooth(
 
     n_threads = threads if threads > 0 else 4
 
-    # Next to the output, not the system tempdir: the smoothed TSV is the
-    # size of the lookup TSV (GBs for an assembly, tens of GBs for reads),
-    # and /tmp on cluster nodes is often small or RAM-backed.
-    with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False, dir=output_path.parent) as tmp:
-        smooth_tsv = Path(tmp.name)
-
-    try:
-        cmd: list[str] = [
-            binary,
-            "smooth",
-            "--feature-hierarchy",
-            str(hierarchy_file),
-            "-i",
-            str(input_path),
-            "-o",
-            str(smooth_tsv),
-            "--max-gap",
-            str(max_gap),
-            "-t",
-            str(n_threads),
-        ]
-        logger.debug("running: %s", " ".join(cmd))
-        run_tool(cmd, capture=capture)
-        convert_hks_tsv_to_bed(smooth_tsv, output_path)
-    finally:
-        smooth_tsv.unlink(missing_ok=True)
+    cmd: list[str] = [
+        binary,
+        "smooth",
+        "--feature-hierarchy",
+        str(hierarchy_file),
+        "-i",
+        str(input_path),
+        "-o",
+        str(output_path),
+        "--max-gap",
+        str(max_gap),
+        "-t",
+        str(n_threads),
+        "--miss-label",
+        NOVEL_NAME,
+        "--no-header",
+    ]
+    logger.debug("running: %s", " ".join(cmd))
+    run_tool(cmd, capture=capture)
 
     return output_path
 
