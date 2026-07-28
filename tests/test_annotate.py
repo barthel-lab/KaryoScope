@@ -13,10 +13,14 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from karyoscope.core.annotate import (
     _derive_input_basename,
     _detect_worker_death,
+    _peak_child_rss_bytes,
     _quiet_worker_pipe_errors,
+    _rate,
     _split_combined_bed,
 )
 from karyoscope.core.io.features import parse_features
@@ -221,7 +225,6 @@ def test_quiet_worker_pipe_errors_suppresses_and_restores() -> None:
 
 # --- query-k resolution (variable-k support) -------------------------
 
-import pytest  # noqa: E402
 
 from karyoscope.core.annotate import _resolve_query_k  # noqa: E402
 from karyoscope.exceptions import KaryoscopeError  # noqa: E402
@@ -452,3 +455,30 @@ def test_run_hks_backend_removes_bam_fasta_on_lookup_failure(tmp_path, monkeypat
             k=31,
         )
     assert not (out_dir / "converted.tmp.fasta").exists()
+
+# --- run-resource reporting -------------------------------------------
+
+
+def test_rate_reports_gb_per_second() -> None:
+    assert _rate(2 * 1024**3, 2.0) == "1.00 GB/s"
+
+
+def test_rate_declines_to_divide_by_zero() -> None:
+    """A phase that measured as instantaneous has no meaningful throughput."""
+    assert _rate(1024, 0.0) == "-"
+    assert _rate(1024, -1.0) == "-"
+
+
+def test_peak_child_rss_is_reported_in_bytes() -> None:
+    """The units differ by platform; the caller must not have to know that.
+
+    Linux's ru_maxrss is kilobytes and macOS's is bytes, so a helper that
+    passed the raw value through would be wrong by 1024x on one of them.
+    """
+    peak = _peak_child_rss_bytes()
+    if peak is None:  # pragma: no cover — platform without `resource`
+        pytest.skip("resource module unavailable")
+    assert peak >= 0
+    # pytest has already reaped children, so this is a plausible RSS in
+    # bytes and an implausible one in kilobytes.
+    assert peak < 1024**4

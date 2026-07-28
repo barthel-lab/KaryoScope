@@ -969,6 +969,75 @@ def _human_bytes(n: int) -> str:
     return f"{n / 1024**2:.1f} MB"
 
 
+def _peak_child_rss_bytes() -> int | None:
+    """Peak resident set size across every child process reaped so far.
+
+    This is the number that decides how much machine an ``annotate`` run
+    needs. KaryoScope's own footprint is small next to the ``hks``
+    invocations it waits on, and those are not visible in this process's
+    own ``ru_maxrss``.
+
+    It is a high-water mark over all reaped children, so it only ever rises
+    — report it as a running peak, never as one step's cost. Returns None
+    where ``resource`` is unavailable.
+    """
+    try:
+        import resource
+    except ImportError:  # pragma: no cover — not a platform we ship for
+        return None
+    raw = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    # ru_maxrss is kilobytes on Linux and bytes on macOS.
+    return raw if sys.platform == "darwin" else raw * 1024
+
+
+def _rate(nbytes: int, seconds: float) -> str:
+    """Render a throughput, or ``"-"`` when the elapsed time is unusable."""
+    if seconds <= 0:
+        return "-"
+    return f"{nbytes / 1024**3 / seconds:.2f} GB/s"
+
+
+def _bgzip_file(path: Path, threads: int = 1) -> Path:
+    """Compress ``path`` in-place with ``bgzip``, returning the new path.
+
+    ``bgzip`` removes the source file by default (matches gzip's behaviour).
+    Returns ``Path(str(path) + ".gz")``. Logs per-file start + completion
+    at INFO so a long bgzip pass (12 files for a 6-feature-set human
+    database) doesn't look like the pipeline has hung.
+
+    ``threads`` is forwarded as ``bgzip -@``; the htslib bgzip compresses
+    a single file in parallel when given more than one thread. We
+    process files sequentially within the bgzip pass, so passing the
+    user's full ``--threads`` here is the right call (no contention
+    with concurrent file compressions). ``threads=1`` (the default)
+    omits ``-@`` entirely for cleanest subprocess invocation.
+    """
+    bgzip = require_tool(
+        "bgzip",
+        install_hint="Install htslib (`conda install -c bioconda htslib`), "
+        "or rerun with --no-bgzip to skip compression.",
+    )
+    orig_size = path.stat().st_size
+    logger.info("bgzipping %s (%s, threads=%d)", path.name, _human_bytes(orig_size), threads)
+    t0 = time.perf_counter()
+    cmd = [bgzip, "-f"]
+    if threads > 1:
+        cmd.extend(["-@", str(threads)])
+    cmd.append(str(path))
+    run_tool(cmd)
+    out_path = Path(str(path) + ".gz")
+    out_size = out_path.stat().st_size if out_path.is_file() else 0
+    dt = time.perf_counter() - t0
+    logger.info(
+        "bgzipped %s (%s -> %s) in %.1fs",
+        out_path.name,
+        _human_bytes(orig_size),
+        _human_bytes(out_size),
+        dt,
+    )
+    return out_path
+
+
 # --- HKS backend ------------------------------------------------------
 
 
@@ -1052,6 +1121,7 @@ def _run_hks_backend(
                 input_path.name,
                 threads,
             )
+            t_lookup = time.perf_counter()
             run_hks_lookup(
                 base_path=base_path,
                 feature_set_file=fs_file,
@@ -1062,8 +1132,22 @@ def _run_hks_backend(
                 report_query_names=not is_reads,
                 capture=True,
             )
+            dt_lookup = time.perf_counter() - t_lookup
             if not lookup_out.is_file():
                 raise KaryoscopeError(f"hks lookup did not produce expected output at {lookup_out}")
+
+            # Timed and sized per phase rather than per feature set. The two do
+            # very different work -- the lookup is the parallel k-mer query, the
+            # smooth a largely serial pass over what it wrote -- so a single
+            # per-feature-set number cannot say which of them a change moved.
+            lookup_bytes = lookup_out.stat().st_size
+            logger.info(
+                "hks lookup for %r wrote %s in %.1fs (%s)",
+                fs,
+                _human_bytes(lookup_bytes),
+                dt_lookup,
+                _rate(lookup_bytes, dt_lookup),
+            )
 
             try:
                 if smooth:
@@ -1076,13 +1160,25 @@ def _run_hks_backend(
                         threads=threads,
                         capture=True,
                     )
-                    logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
+                    dt_smo = time.perf_counter() - t_smo
+                    smoothed_bytes = smoothed_paths[fs].stat().st_size
+                    logger.info(
+                        "hks smooth for %r wrote %s in %.1fs (read %s at %s)",
+                        fs,
+                        _human_bytes(smoothed_bytes),
+                        dt_smo,
+                        _human_bytes(lookup_bytes),
+                        _rate(lookup_bytes, dt_smo),
+                    )
             finally:
                 if not keep_presmoothed:
                     try:
                         lookup_out.unlink()
                     except OSError as exc:
                         logger.warning("could not remove temp lookup output %s: %s", lookup_out, exc)
+            peak = _peak_child_rss_bytes()
+            if peak is not None:
+                logger.info("peak hks memory so far: %s", _human_bytes(peak))
             # Reported here rather than per sub-step: one line per feature set
             # is the granularity a user waiting on the run actually needs, and
             # HKS processes them strictly in sequence so the counter is honest.
@@ -1091,10 +1187,12 @@ def _run_hks_backend(
         if tmp_fasta is not None:
             tmp_fasta.unlink(missing_ok=True)
 
+    peak = _peak_child_rss_bytes()
     logger.info(
-        "hks backend complete in %.1fs (%d feature set(s))",
+        "hks backend complete in %.1fs (%d feature set(s)%s)",
         time.perf_counter() - t_hks_start,
         len(requested),
+        f", peak hks memory {_human_bytes(peak)}" if peak is not None else "",
     )
 
 
