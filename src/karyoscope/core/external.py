@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import signal
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -36,12 +37,63 @@ class ToolNotFoundError(KaryoscopeError):
     """A required external tool was not found on ``$PATH``."""
 
 
+#: Exit codes that mean "killed by the OS or job scheduler" rather than a
+#: tool-internal failure. ``-9`` is SIGKILL as Python's ``subprocess``
+#: reports it (negative signal number); ``137`` is the shell-style
+#: ``128 + 9`` that SLURM, Docker and other wrappers report for the same
+#: signal. Nothing KaryoScope invokes raises SIGKILL on itself, so this is
+#: ~always the kernel OOM-killer or a scheduler memory limit.
+OOM_LIKE_EXIT_CODES: frozenset[int] = frozenset({-9, 137})
+
+
+def describe_returncode(returncode: int) -> str:
+    """Render a subprocess return code the way a user can act on it.
+
+    A negative code is not an exit status at all — it is a signal number,
+    which is exactly the confusion this exists to prevent. "exit code -9"
+    sends people searching for a code that does not exist, while "killed by
+    SIGKILL" finds the answer immediately.
+    """
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:  # pragma: no cover — signal not known to Python
+            return f"killed by signal {-returncode}"
+        return f"killed by {name} (signal {-returncode})"
+    if returncode > 128:
+        # 128 + N is how shells and schedulers report a signal death.
+        try:
+            name = signal.Signals(returncode - 128).name
+        except ValueError:
+            return f"exit code {returncode}"
+        return f"exit code {returncode} (killed by {name})"
+    return f"exit code {returncode}"
+
+
+#: Appended whenever a tool dies with an OOM-like code. The caller supplies
+#: the tool-specific part (how much memory that tool actually needs); this
+#: is the part that is true of every one of them.
+_OOM_PREAMBLE = (
+    "\n\n--- KaryoScope hint ---\n"
+    "{description} almost always means the process was killed for using too "
+    "much memory -- by the kernel OOM-killer or by the job scheduler (SLURM, "
+    "PBS, etc.). It is not an error the tool itself reported.\n"
+)
+
+
 class ExternalToolError(KaryoscopeError):
     """An external command exited with a non-zero status.
 
     The exception carries the original command, exit code, and captured
     stderr/stdout for inspection by callers that want to handle specific
     failure modes.
+
+    ``oom_hint`` is tool-specific advice appended only when the process was
+    killed by a signal that means "out of memory" — the memory figures
+    differ by an order of magnitude between backends, so the generic layer
+    cannot supply them. Ordinary failures never see it: pointing at memory
+    when the real cause is a malformed input would be worse than saying
+    nothing.
     """
 
     def __init__(
@@ -50,22 +102,34 @@ class ExternalToolError(KaryoscopeError):
         returncode: int,
         stderr: str = "",
         stdout: str = "",
+        oom_hint: str | None = None,
     ) -> None:
         self.cmd = list(cmd)
         self.returncode = returncode
         self.stderr = stderr
         self.stdout = stdout
+        self.oom_hint = oom_hint
         super().__init__(self._format_message())
+
+    @property
+    def killed_by_signal(self) -> bool:
+        """True if the process was killed rather than exiting on its own."""
+        return self.returncode in OOM_LIKE_EXIT_CODES or self.returncode < 0
 
     def _format_message(self) -> str:
         cmd_str = " ".join(str(c) for c in self.cmd)
-        msg = f"command failed with exit code {self.returncode}: {cmd_str}"
+        description = describe_returncode(self.returncode)
+        msg = f"command failed with {description}: {cmd_str}"
         if self.stderr:
             # Include the tail of stderr to help diagnose; full stderr is
             # available on the exception object for callers that want it.
             tail = "\n".join(self.stderr.strip().splitlines()[-10:])
             if tail:
                 msg += f"\n--- stderr (last 10 lines) ---\n{tail}"
+        if self.returncode in OOM_LIKE_EXIT_CODES:
+            msg += _OOM_PREAMBLE.format(description=description.capitalize())
+            if self.oom_hint:
+                msg += self.oom_hint
         return msg
 
 
@@ -109,6 +173,7 @@ def run_tool(
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
     timeout: float | None = None,
+    oom_hint: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its :class:`CompletedProcess`.
 
@@ -151,6 +216,9 @@ def run_tool(
     timeout
         Seconds before the subprocess is killed. On expiry,
         :class:`subprocess.TimeoutExpired` propagates to the caller.
+    oom_hint
+        Tool-specific advice appended to the error only when the process is
+        killed by an out-of-memory-like signal. See :class:`ExternalToolError`.
     """
     cmd_list = [str(c) for c in cmd]
     logger.debug("running: %s", " ".join(cmd_list))
@@ -177,6 +245,7 @@ def run_tool(
             result.returncode,
             stderr=result.stderr or "",
             stdout=result.stdout or "",
+            oom_hint=oom_hint,
         )
 
     if must_capture and not capture:

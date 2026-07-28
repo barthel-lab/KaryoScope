@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import TextIO
 
 from karyoscope import cpus as _cpus
-from karyoscope import diskspace, preflight
+from karyoscope import diskspace, memory, preflight
 from karyoscope import installed as _installed
 from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.features import NOVEL_NAME, Features, parse_features, render_feature
@@ -51,6 +51,7 @@ from karyoscope.core.io.hierarchy import (
     validate_hierarchy,
 )
 from karyoscope.core.io.hks import (
+    estimate_hks_memory_bytes,
     run_hks_lookup_batch,
     run_hks_smooth,
 )
@@ -347,6 +348,50 @@ def estimate_output_bytes(
         else 0.0
     )
     return int(outputs + transient)
+
+
+def _require_hks_memory(
+    *,
+    manifest,
+    db_dir: Path,
+    requested: list[str],
+    what: str,
+    check: bool,
+) -> None:
+    """Refuse to start an HKS run that cannot fit its index in memory.
+
+    Only meaningful for the HKS backend, whose requirement is the index
+    files themselves rather than a function of the input -- see
+    :func:`~karyoscope.core.io.hks.estimate_hks_memory_bytes`. The KMC
+    backend has no equivalent up-front figure; it relies on the OOM hint
+    attached to its failures instead.
+
+    Fails open twice over: once if the index cannot be sized, once if the
+    available memory cannot be determined. Between them, this can only ever
+    stop a run we are confident would be killed anyway.
+    """
+    if manifest.index.type != "hks":
+        return
+    required = estimate_hks_memory_bytes(
+        db_dir=db_dir, basename=manifest.index.basename, feature_sets=requested
+    )
+    if required is None:
+        logger.debug("could not size the HKS index; not enforcing a memory requirement")
+        return
+    memory.require_memory(
+        required,
+        what=what,
+        hint=(
+            "hks holds the shared base index plus one feature set's labeling at "
+            "a time, so this figure is set by the database and does not shrink "
+            "with fewer --threads, fewer --feature-set, or a smaller input.\n"
+            "Options:\n"
+            "  - request more memory (on SLURM, e.g. --mem=16G)\n"
+            "  - move from a login node to a compute node\n"
+            "  - pass --no-space-check to attempt the run anyway"
+        ),
+        skip=not check,
+    )
 
 
 def _annotate_dependencies(*, index_type: str, input_path: Path, bgzip: bool) -> list[str]:
@@ -1337,6 +1382,17 @@ def annotate(
         ),
         skip=not check_space,
     )
+    # Memory, after disk: an HKS run's peak is the index it must hold, which
+    # is knowable exactly from the database on disk. Without this the failure
+    # is a SIGKILL part-way through the first lookup, after the index load
+    # has already been paid for.
+    _require_hks_memory(
+        manifest=manifest,
+        db_dir=db_dir,
+        requested=requested,
+        what=f"annotating {input_path.name} against {db_id_resolved}",
+        check=check_space,
+    )
 
     # Announce the run before the first expensive step. Everything below
     # this point can take twenty minutes, and until now the terminal stayed
@@ -1771,6 +1827,17 @@ def annotate_batch(
             "  - pass --no-space-check if this estimate looks wrong for your input"
         ),
         skip=not check_space,
+    )
+    # Memory, after disk: an HKS run's peak is the index it must hold, which
+    # is knowable exactly from the database on disk. Without this the failure
+    # is a SIGKILL part-way through the first lookup, after the index load
+    # has already been paid for.
+    _require_hks_memory(
+        manifest=manifest,
+        db_dir=db_dir,
+        requested=requested,
+        what=f"annotating {len(input_paths)} input(s) against {db_id_resolved}",
+        check=check_space,
     )
 
     n_threads = _cpus.resolve_threads(threads)

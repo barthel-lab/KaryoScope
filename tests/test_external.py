@@ -11,6 +11,7 @@ import pytest
 from karyoscope.core.external import (
     ExternalToolError,
     ToolNotFoundError,
+    describe_returncode,
     require_tool,
     run_tool,
 )
@@ -144,3 +145,62 @@ def test_run_tool_message_truncates_long_stderr() -> None:
     # Earlier lines should not be in the message preview (but should be on .stderr)
     assert "line 0\n" not in msg
     assert "line 0" in exc_info.value.stderr
+
+
+# --- signal / OOM reporting -------------------------------------------
+
+
+def test_negative_returncode_is_reported_as_a_signal() -> None:
+    """-9 is not an exit code, and calling it one sends users nowhere.
+
+    This is the exact message a colleague hit: `exit code -9` is
+    unsearchable, while SIGKILL points straight at the cause.
+    """
+    assert describe_returncode(-9) == "killed by SIGKILL (signal 9)"
+    assert describe_returncode(-15) == "killed by SIGTERM (signal 15)"
+
+
+def test_shell_style_signal_codes_are_translated() -> None:
+    """SLURM and Docker report 128 + N for a signal death."""
+    assert "SIGKILL" in describe_returncode(137)
+    assert "137" in describe_returncode(137)
+
+
+def test_ordinary_exit_codes_are_left_alone() -> None:
+    assert describe_returncode(1) == "exit code 1"
+    assert describe_returncode(2) == "exit code 2"
+
+
+def test_oom_hint_is_shown_only_for_oom_like_codes() -> None:
+    hint = "Request at least 16 GB.\n"
+    for code in (-9, 137):
+        e = ExternalToolError(["hks", "lookup"], code, oom_hint=hint)
+        assert "Request at least 16 GB." in str(e), code
+        assert "KaryoScope hint" in str(e), code
+    for code in (1, 2, -15):
+        e = ExternalToolError(["hks", "lookup"], code, oom_hint=hint)
+        assert "Request at least 16 GB." not in str(e), code
+
+
+def test_the_hint_never_pollutes_captured_stderr() -> None:
+    """stderr must stay exactly what the tool wrote.
+
+    An earlier version spliced the hint into stderr, so a caller inspecting
+    it programmatically saw KaryoScope's words mixed into the tool's output.
+    """
+    e = ExternalToolError(["hks"], -9, stderr="real tool output\n", oom_hint="advice\n")
+    assert e.stderr == "real tool output\n"
+    assert "advice" in str(e)
+
+
+def test_a_tool_with_no_hint_still_explains_the_signal() -> None:
+    """Every tool benefits from the translation, even without advice."""
+    e = ExternalToolError(["bgzip", "-f", "x.bed"], -9)
+    assert "SIGKILL" in str(e)
+    assert "out of memory" in str(e) or "too much memory" in str(e)
+
+
+def test_killed_by_signal_predicate() -> None:
+    assert ExternalToolError(["x"], -9).killed_by_signal
+    assert ExternalToolError(["x"], 137).killed_by_signal
+    assert not ExternalToolError(["x"], 1).killed_by_signal
