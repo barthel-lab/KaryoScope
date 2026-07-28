@@ -455,6 +455,7 @@ def test_run_hks_backend_removes_bam_fasta_on_lookup_failure(tmp_path, monkeypat
         )
     assert not (out_dir / "converted.tmp.fasta").exists()
 
+
 # --- run-resource reporting -------------------------------------------
 
 

@@ -1016,47 +1016,6 @@ def _rate(nbytes: int, seconds: float) -> str:
     return f"{nbytes / 1024**3 / seconds:.2f} GB/s"
 
 
-def _bgzip_file(path: Path, threads: int = 1) -> Path:
-    """Compress ``path`` in-place with ``bgzip``, returning the new path.
-
-    ``bgzip`` removes the source file by default (matches gzip's behaviour).
-    Returns ``Path(str(path) + ".gz")``. Logs per-file start + completion
-    at INFO so a long bgzip pass (12 files for a 6-feature-set human
-    database) doesn't look like the pipeline has hung.
-
-    ``threads`` is forwarded as ``bgzip -@``; the htslib bgzip compresses
-    a single file in parallel when given more than one thread. We
-    process files sequentially within the bgzip pass, so passing the
-    user's full ``--threads`` here is the right call (no contention
-    with concurrent file compressions). ``threads=1`` (the default)
-    omits ``-@`` entirely for cleanest subprocess invocation.
-    """
-    bgzip = require_tool(
-        "bgzip",
-        install_hint="Install htslib (`conda install -c bioconda htslib`), "
-        "or rerun with --no-bgzip to skip compression.",
-    )
-    orig_size = path.stat().st_size
-    logger.info("bgzipping %s (%s, threads=%d)", path.name, _human_bytes(orig_size), threads)
-    t0 = time.perf_counter()
-    cmd = [bgzip, "-f"]
-    if threads > 1:
-        cmd.extend(["-@", str(threads)])
-    cmd.append(str(path))
-    run_tool(cmd)
-    out_path = Path(str(path) + ".gz")
-    out_size = out_path.stat().st_size if out_path.is_file() else 0
-    dt = time.perf_counter() - t0
-    logger.info(
-        "bgzipped %s (%s -> %s) in %.1fs",
-        out_path.name,
-        _human_bytes(orig_size),
-        _human_bytes(out_size),
-        dt,
-    )
-    return out_path
-
-
 # --- HKS backend ------------------------------------------------------
 
 
@@ -1160,12 +1119,17 @@ def _run_hks_backend(
             # smooth a largely serial pass over what it wrote -- so a single
             # per-feature-set number cannot say which of them a change moved.
             lookup_bytes = lookup_out.stat().st_size
+            # Deliberately no throughput here. A lookup's time is dominated by
+            # loading the index and querying the input, not by writing its
+            # output, so output-bytes-per-second would be a rate of nothing --
+            # it read 0.02 GB/s on a real run purely because the index load is
+            # large and the BED is small. `hks -vv` reports the phases that do
+            # have meaningful rates.
             logger.info(
-                "hks lookup for %r wrote %s in %.1fs (%s)",
+                "hks lookup for %r wrote %s in %.1fs",
                 fs,
                 _human_bytes(lookup_bytes),
                 dt_lookup,
-                _rate(lookup_bytes, dt_lookup),
             )
 
             try:
@@ -1194,7 +1158,9 @@ def _run_hks_backend(
                     try:
                         lookup_out.unlink()
                     except OSError as exc:
-                        logger.warning("could not remove temp lookup output %s: %s", lookup_out, exc)
+                        logger.warning(
+                            "could not remove temp lookup output %s: %s", lookup_out, exc
+                        )
             peak = _peak_child_rss_bytes()
             if peak is not None:
                 logger.info("peak hks memory so far: %s", _human_bytes(peak))

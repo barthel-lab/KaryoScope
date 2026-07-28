@@ -62,6 +62,26 @@ _INPUT_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+def _relay_hks_log(result, what: str) -> None:
+    """Forward a captured ``hks`` run's own log lines into ours, at DEBUG.
+
+    ``hks`` is invoked with ``capture=True`` so a normal run does not
+    interleave two tools' logs on stderr. That also means everything it
+    reports about itself — how long the base index and the labeling each
+    took to load, how long the query and the smoothing ran — is discarded on
+    success, and only ever surfaces in the error message of a run that
+    failed. Those are exactly the numbers needed to tell which phase a
+    change moved, so ``-vv`` gets them.
+    """
+    if result is None:
+        return
+    for stream in (result.stderr, result.stdout):
+        for line in (stream or "").splitlines():
+            line = line.strip()
+            if line:
+                logger.debug("hks[%s]: %s", what, line)
+
+
 def get_hks_binary() -> str:
     """Return the path to the ``hks`` binary.
 
@@ -206,7 +226,7 @@ def run_hks_lookup(
     ]
     logger.debug("running: %s", " ".join(cmd))
 
-    run_tool(cmd, capture=capture)
+    _relay_hks_log(run_tool(cmd, capture=capture), "lookup")
     return output_path
 
 
@@ -364,7 +384,7 @@ def run_hks_smooth(
         "--no-header",
     ]
     logger.debug("running: %s", " ".join(cmd))
-    run_tool(cmd, capture=capture)
+    _relay_hks_log(run_tool(cmd, capture=capture), "smooth")
 
     return output_path
 
