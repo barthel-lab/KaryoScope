@@ -261,14 +261,6 @@ def test_validate_sibling_priorities() -> None:
     assert len(issues) == 1 and "mixed priorities" in issues[0]
 
 
-def _reference_convert(tsv_text: str) -> str:
-    """The original line-by-line implementation, as an oracle."""
-    miss = f"\t{_HKS_MISS_LABEL}\n"
-    novel = f"\t{NOVEL_NAME}\n"
-    lines = tsv_text.splitlines(keepends=True)
-    return "".join(line.replace(miss, novel) for line in lines[1:])
-
-
 # --- batch lookup -----------------------------------------------------
 #
 # The batch path is a second copy of the same pipeline, so it can drift

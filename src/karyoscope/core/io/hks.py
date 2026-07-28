@@ -134,177 +134,28 @@ def run_hks_lookup(
     report_query_names: bool = True,
     capture: bool = False,
 ) -> Path:
-    """Invoke ``hks lookup`` for one feature set.
+    """Invoke ``hks lookup`` for one feature set against one input.
 
-    Parameters
-    ----------
-    base_path
-        Path to the HKS base index file (``*.hksb``).
-    feature_set_file
-        Path to the HKS feature-set file (``*.hksf``) for this feature set.
-    k
-        K-mer length to query.
-    input_path
-        FASTA or FASTQ input (plain or gzipped). For BAM inputs, pass the
-        ``.bam`` path — it will be converted via ``samtools fasta`` internally.
-    output_path
-        Where to write the lookup output. This is already KaryoScope's
-        presmoothed BED -- headerless, ``novel`` for misses -- not a TSV
-        awaiting conversion.
-    threads
-        Number of worker threads (0 = let HKS decide, effectively ``4`` by default).
-    report_query_names
-        If ``True`` (default), pass ``--report-query-names`` so column 1 of the
-        output holds each sequence's name -- correct for assemblies, whose
-        contig names map to karyotype chromosomes. Pass ``False`` for reads:
-        HKS then emits integer query ranks and skips its pre-pass that loads
-        every sequence name into memory (~10 GB at hundreds of millions of
-        reads). The caller decides based on input type, because a BAM input is
-        materialised to a temp ``.fasta`` and cannot be reclassified here.
-    capture
-        If ``True``, capture subprocess stdout/stderr instead of passing through.
+    A convenience wrapper over :func:`run_hks_lookup_batch` with a single
+    ``(input, output)`` pair — deliberately not a second implementation. The
+    two used to be separate, and drifted: the batch one kept asking ``hks``
+    for its default output format after the single one had moved to writing
+    KaryoScope's BED directly, which git merged without a conflict because
+    the edits were in different functions.
 
-    Returns
-    -------
-    Path
-        ``output_path``, after writing.
-
-    Raises
-    ------
-    ToolNotFoundError
-        If ``hks`` (or ``samtools`` for BAM inputs) is not found.
-    ExternalToolError
-        If the subprocess exits with a non-zero status.
+    See :func:`run_hks_lookup_batch` for the parameters and for what the
+    output actually is (the presmoothed BED, not a TSV awaiting conversion).
     """
-    binary = get_hks_binary()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if input_path.suffix.lower() == ".bam":
-        return _run_hks_lookup_from_bam(
-            base_path=base_path,
-            feature_set_file=feature_set_file,
-            k=k,
-            bam_path=input_path,
-            output_path=output_path,
-            threads=threads,
-            report_query_names=report_query_names,
-            capture=capture,
-        )
-
-    n_threads = threads if threads > 0 else 4
-    cmd: list[str] = [
-        binary,
-        "lookup",
-        "-i",
-        str(base_path),
-        "--feature-set-file",
-        str(feature_set_file),
-        "-k",
-        str(k),
-        "-q",
-        str(input_path),
-    ]
-    if report_query_names:
-        cmd.append("--report-query-names")
-    cmd += [
-        "--report-misses",
-        # Emit KaryoScope's sentinel for misses rather than HKS's default
-        # ``none``. Must match what run_hks_smooth passes: ``hks smooth``
-        # parses this token out of its input as well as writing it, so a
-        # mismatch turns every miss run into an unknown feature name.
-        "--miss-label",
-        NOVEL_NAME,
-        # With this, the output is a BED file rather than a TSV that has to
-        # be rewritten into one. Note the label column then holds names only
-        # because --report-label-ids is absent; smooth is given the same
-        # default, and with no header to disagree with, the two agree.
-        "--no-header",
-        "-t",
-        str(n_threads),
-        "-o",
-        str(output_path),
-    ]
-    logger.debug("running: %s", " ".join(cmd))
-
-    _relay_hks_log(run_tool(cmd, capture=capture), "lookup")
-    return output_path
-
-
-def convert_bam_to_fasta(bam_path: Path, dest_dir: Path, *, capture: bool = False) -> Path:
-    """Convert a BAM to a temporary FASTA via ``samtools fasta``.
-
-    HKS requires a seekable file path, so the samtools output is
-    materialised rather than streamed via a named pipe. The FASTA is
-    created in ``dest_dir`` — it is input-sized, so it belongs on the
-    output's filesystem, not the system tempdir. The caller owns the
-    returned file and must delete it.
-    """
-    samtools = require_tool(
-        "samtools",
-        install_hint=(
-            "Install samtools to use BAM inputs:\n"
-            "  conda install -c bioconda samtools\n"
-            "Or convert the BAM to FASTA first:\n"
-            "  samtools fasta input.bam | gzip > input.fasta.gz"
-        ),
+    run_hks_lookup_batch(
+        base_path=base_path,
+        feature_set_file=feature_set_file,
+        k=k,
+        io_pairs=[(input_path, output_path)],
+        threads=threads,
+        report_query_names=report_query_names,
+        capture=capture,
     )
-
-    with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False, dir=dest_dir) as tmp:
-        tmp_fasta = Path(tmp.name)
-
-    try:
-        logger.debug("converting BAM to FASTA: %s -> %s", bam_path, tmp_fasta)
-        with tmp_fasta.open("wb") as out:
-            samtools_result = subprocess.run(
-                [samtools, "fasta", str(bam_path)],
-                stdout=out,
-                stderr=subprocess.PIPE if capture else None,
-                check=False,
-            )
-        if samtools_result.returncode != 0:
-            stderr = samtools_result.stderr.decode() if samtools_result.stderr else ""
-            raise ExternalToolError(
-                cmd=[samtools, "fasta", str(bam_path)],
-                returncode=samtools_result.returncode,
-                stderr=stderr,
-            )
-    except BaseException:
-        tmp_fasta.unlink(missing_ok=True)
-        raise
-    return tmp_fasta
-
-
-def _run_hks_lookup_from_bam(
-    *,
-    base_path: Path,
-    feature_set_file: Path,
-    k: int,
-    bam_path: Path,
-    output_path: Path,
-    threads: int,
-    report_query_names: bool = True,
-    capture: bool,
-) -> Path:
-    """Convert a BAM to FASTA in a temp file and run HKS lookup on it.
-
-    One conversion per call: a caller querying several feature sets
-    against the same BAM should convert once with
-    :func:`convert_bam_to_fasta` and pass the FASTA instead.
-    """
-    tmp_fasta = convert_bam_to_fasta(bam_path, output_path.parent, capture=capture)
-    try:
-        return run_hks_lookup(
-            base_path=base_path,
-            feature_set_file=feature_set_file,
-            k=k,
-            input_path=tmp_fasta,
-            output_path=output_path,
-            threads=threads,
-            report_query_names=report_query_names,
-            capture=capture,
-        )
-    finally:
-        tmp_fasta.unlink(missing_ok=True)
+    return output_path
 
 
 def run_hks_lookup_batch(
