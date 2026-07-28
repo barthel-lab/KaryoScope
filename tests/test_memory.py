@@ -156,9 +156,7 @@ def test_hks_requirement_is_base_plus_largest_labeling(tmp_path: Path) -> None:
 
     # Requesting only the smaller set lowers it.
     assert (
-        estimate_hks_memory_bytes(
-            db_dir=tmp_path, basename="features", feature_sets=["repeat"]
-        )
+        estimate_hks_memory_bytes(db_dir=tmp_path, basename="features", feature_sets=["repeat"])
         == 1000 + 300
     )
 
@@ -168,15 +166,11 @@ def test_hks_requirement_is_none_when_the_index_cannot_be_sized(tmp_path: Path) 
     from karyoscope.core.io.hks import estimate_hks_memory_bytes
 
     assert (
-        estimate_hks_memory_bytes(
-            db_dir=tmp_path, basename="features", feature_sets=["chromosome"]
-        )
+        estimate_hks_memory_bytes(db_dir=tmp_path, basename="features", feature_sets=["chromosome"])
         is None
     )
     (tmp_path / "features.hksb").write_bytes(b"x" * 10)
     assert (
-        estimate_hks_memory_bytes(
-            db_dir=tmp_path, basename="features", feature_sets=["missing"]
-        )
+        estimate_hks_memory_bytes(db_dir=tmp_path, basename="features", feature_sets=["missing"])
         is None
     )

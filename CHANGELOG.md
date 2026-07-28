@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`annotate` now checks available memory before it starts**, not just disk.
+  For the HKS backend the requirement is knowable exactly rather than
+  estimated: `hks` holds the shared base index plus one feature set's labeling
+  at a time, so the peak is the sum of two file sizes read off disk (measured
+  9.73 GB predicted vs 10.04 GB observed on the human database). It resolves
+  the limit from `$SLURM_MEM_PER_NODE`/`_PER_CPU`, then the cgroup limit, then
+  `MemAvailable` — and fails open if either the index or the limit cannot be
+  determined, so it can only stop a run that would have been killed anyway.
+- **A process killed by a signal now says so.** `subprocess` reports `-N` for
+  signal N, so an out-of-memory kill surfaced as `command failed with exit code
+  -9` — not an exit code at all, and unsearchable. Failures now read `killed by
+  SIGKILL (signal 9)`, including the shell-style `137` that SLURM and Docker
+  report, with backend-specific advice on how much memory to request. This
+  previously existed for the KMC backend only; it now applies to every external
+  tool KaryoScope runs.
+
 - **`karyoscope prep-bed pave` — a papillomavirus `gene` feature set from PaVE
   genome records.** Leaves are the ORFs — `E6`, `E7`, `E1`, `E2`, the
   genus-specific `E5_*`, `E10`, `L2`, `L1` — plus the `URR`, grouped `early` and

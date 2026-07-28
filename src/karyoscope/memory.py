@@ -172,14 +172,11 @@ def require_memory(
     resolved = available_bytes()
 
     if skip:
-        logger.info(
-            "memory check skipped for %s: need ~%.1f GB", what, needed / GB
-        )
+        logger.info("memory check skipped for %s: need ~%.1f GB", what, needed / GB)
         return
     if resolved is None:
         logger.debug(
-            "could not determine available memory; not enforcing the ~%.1f GB "
-            "%s needs",
+            "could not determine available memory; not enforcing the ~%.1f GB %s needs",
             needed / GB,
             what,
         )
