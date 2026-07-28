@@ -231,12 +231,18 @@ PRESMOOTHED_BYTES_PER_BASE = 0.60
 SMOOTHED_BYTES_PER_BASE = 0.20
 
 #: Transient intermediate allowance, as a multiple of one feature set's
-#: presmoothed estimate. Covers the HKS raw lookup TSV (one at a time,
-#: deleted after each set) and the KMC combined BED. Both are "one row per
-#: k-mer run" files dominated by the sequence name and coordinates that a
-#: presmoothed BED also carries, so one feature set's worth is the right
+#: presmoothed estimate. Covers the KMC combined BED, and the HKS lookup
+#: output in the one case where it is still a temp file. Both are "one row
+#: per k-mer run" files dominated by the sequence name and coordinates that
+#: a presmoothed BED also carries, so one feature set's worth is the right
 #: scale; the 1.5 absorbs the spread between feature sets (the largest set
 #: measured 1.48x the six-set average).
+#:
+#: The HKS backend usually needs none of it. ``hks lookup`` writes the
+#: presmoothed BED directly, so when that output is being kept there is no
+#: second copy on disk at any point — the allowance only applies under
+#: ``--no-keep-presmoothed``, where the same file becomes a temp one that
+#: ``hks smooth`` reads and we then delete.
 TRANSIENT_INTERMEDIATE_FACTOR = 1.5
 
 #: Uncompressed-to-compressed ratio assumed for a gzipped nucleotide
@@ -313,6 +319,7 @@ def estimate_output_bytes(
     n_feature_sets: int,
     keep_presmoothed: bool,
     smooth: bool,
+    index_type: str = "kmc",
 ) -> int:
     """Estimate peak bytes written to the output directory by one annotate run.
 
@@ -320,6 +327,12 @@ def estimate_output_bytes(
     them have been written, so it shrinks the result but not the high-water
     mark. ``--no-keep-presmoothed`` and ``--no-smooth`` do reduce it, and
     are reflected here.
+
+    ``index_type`` decides whether a transient intermediate is counted at
+    all. An HKS run keeping its presmoothed output writes no second copy of
+    anything, so charging it for one would refuse runs that fit — about
+    5 GB's worth on a diploid human assembly. The default is the
+    conservative backend, so a caller that does not know errs high.
     """
     per_set = 0.0
     if keep_presmoothed:
@@ -327,7 +340,13 @@ def estimate_output_bytes(
     if smooth:
         per_set += SMOOTHED_BYTES_PER_BASE
     outputs = input_bases * per_set * n_feature_sets
-    transient = input_bases * PRESMOOTHED_BYTES_PER_BASE * TRANSIENT_INTERMEDIATE_FACTOR
+
+    needs_intermediate = index_type != "hks" or not keep_presmoothed
+    transient = (
+        input_bases * PRESMOOTHED_BYTES_PER_BASE * TRANSIENT_INTERMEDIATE_FACTOR
+        if needs_intermediate
+        else 0.0
+    )
     return int(outputs + transient)
 
 
@@ -1330,6 +1349,7 @@ def annotate(
         n_feature_sets=len(requested),
         keep_presmoothed=keep_presmoothed,
         smooth=smooth,
+        index_type=manifest.index.type,
     )
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp of input",

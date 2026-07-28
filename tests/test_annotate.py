@@ -391,7 +391,6 @@ def test_run_hks_backend_converts_bam_once_for_all_feature_sets(tmp_path, monkey
 
     monkeypatch.setattr(ann, "convert_bam_to_fasta", fake_convert)
     monkeypatch.setattr(ann, "run_hks_lookup", fake_lookup)
-    monkeypatch.setattr(ann, "convert_hks_tsv_to_bed", lambda tsv, bed: bed.write_text("x"))
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()

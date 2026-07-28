@@ -65,7 +65,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 | C++20 compiler | building the bundled `get_featureIDs` helper | GCC ≥ 11 or Clang ≥ 13 (Apple Clang) |
 | `bgzip`, `tabix` (htslib) | compressing and indexing BED output | 1.22.1 |
 | seqtk | telomere detection (`scaffold`, `centromeres`, `karyotype`) | 1.5 |
-| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | 0.4.0 |
+| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | **0.3.0 or newer** |
 | KMC | building a *KMC-backend* database (legacy — `karyoscope build` produces HKS databases). Not needed to *use* a pre-built KMC database; the bundled `get_featureIDs` helper queries its index directly | 3.2.x (vendored API 3.2.4) |
 | libcairo | rendering `--format pdf` / `--format png` | any recent release |
 | samtools | BAM input to `annotate`, and `karyoscope build` when the genome has no `.fai` index yet | 1.22.1 |
@@ -92,14 +92,16 @@ Size tracks the genome, not the tool: the 135 Mb *Arabidopsis* database installs
 
 `karyoscope download` checks free space before it starts transferring anything and refuses with the shortfall spelled out rather than failing after a 25-minute download. `karyoscope download --info <ID>` prints all three figures for any database. Sizes here are decimal GB (10⁹ bytes); `df -h` reports binary GiB, so 36 GB shows there as 34 GiB.
 
-**Annotation output** is also substantial, and `--bgzip` does not reduce the peak — every BED is written in full before the compression pass runs. Budget roughly **0.8 GB per feature set per Gbp of input**, plus one intermediate:
+**Annotation output** is also substantial, and `--bgzip` does not reduce the peak — every BED is written in full before the compression pass runs. Budget roughly **0.8 GB per feature set per Gbp of input**:
 
-| Input | Feature sets | Output BEDs (uncompressed) | Peak including intermediate |
-|---|---|---|---|
-| Single human haplotype (~3.1 Gbp) | 6 | ~15 GB | ~18 GB |
-| Diploid assembly, e.g. HG002 v1.1 (~6.0 Gbp) | 6 | ~29 GB | ~34 GB |
+| Input | Feature sets | Output BEDs (uncompressed) | Peak (HKS backend) | Peak (KMC backend) |
+|---|---|---|---|---|
+| Single human haplotype (~3.1 Gbp) | 6 | ~15 GB | ~15 GB | ~18 GB |
+| Diploid assembly, e.g. HG002 v1.1 (~6.0 Gbp) | 6 | ~29 GB | ~29 GB | ~34 GB |
 
-Measured on HG002 v1.1 against `HKS_human_CHM13_v2`. Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-space-check` to override the estimate.
+Measured on HG002 v1.1 against `HKS_human_CHM13_v2`. An HKS run needs no headroom beyond its outputs: `hks lookup` writes the presmoothed BED directly, so no intermediate copy of it ever exists. (Under `--no-keep-presmoothed` that file becomes a temp one, and the KMC column applies instead.) The KMC backend still writes a combined intermediate BED alongside.
+
+Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-space-check` to override the estimate.
 
 ## Installation
 
@@ -145,6 +147,14 @@ cargo install --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/h
 
 KaryoScope finds `hks` on `PATH` automatically (or set `$KARYOSCOPE_HKS` to its
 path). A future release will bundle `hks` via conda so this step goes away.
+
+**`hks` 0.3.0 or newer is required.** KaryoScope asks `hks` to write its output
+in the exact shape it needs — headerless, with `novel` for k-mers absent from
+the index — which removes a full read and a full write of a multi-gigabyte file
+per feature set. The options that do this (`--miss-label`, `--no-header`,
+`--report-label-ids` on `smooth`) landed in 0.3.0. KaryoScope reads the version
+`hks` logs on startup and refuses to begin against an older one, rather than
+failing partway through with an unrecognised-argument error.
 
 #### KMC
 
