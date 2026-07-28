@@ -66,10 +66,12 @@ DEPENDENCIES: dict[str, Dependency] = {
             "  or set $KARYOSCOPE_HKS to an existing hks binary."
         ),
         # 0.3.0 added --miss-label and smooth's --no-header, which let hks
-        # write KaryoScope's BED format directly. Against 0.2.0 every
-        # annotate would die at the first lookup with clap's "unexpected
-        # argument '--miss-label'" — true, but it does not say "upgrade hks".
-        min_version="0.3.0",
+        # write KaryoScope's BED format directly. 0.4.0 made --query/--output
+        # repeatable, which is what lets annotate query several inputs
+        # against one index load. Against an older hks every annotate would
+        # die at the first lookup with clap's "unexpected argument" — true,
+        # but it does not say "upgrade hks".
+        min_version="0.4.0",
     ),
     "get_featureIDs": Dependency(
         name="get_featureIDs",

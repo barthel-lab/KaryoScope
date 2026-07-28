@@ -388,12 +388,22 @@ def run_hks_lookup_batch(
         ]
         if report_query_names:
             cmd.append("--report-query-names")
-        cmd += ["--report-misses", "-t", str(n_threads)]
+        # Same output shape as the single-input path, and for the same reason:
+        # these ARE the presmoothed BEDs, and run_hks_smooth parses the miss
+        # token back out of them. See :func:`run_hks_lookup`.
+        cmd += [
+            "--report-misses",
+            "--miss-label",
+            NOVEL_NAME,
+            "--no-header",
+            "-t",
+            str(n_threads),
+        ]
         for query_path, (_input_path, output_path) in zip(query_paths, io_pairs, strict=True):
             cmd += ["-q", str(query_path), "-o", str(output_path)]
 
         logger.debug("running (batch, %d queries): %s", len(io_pairs), " ".join(cmd))
-        run_tool(cmd, capture=capture)
+        _relay_hks_log(run_tool(cmd, capture=capture), "lookup-batch")
     finally:
         for p in tmp_fastas:
             if p.exists():

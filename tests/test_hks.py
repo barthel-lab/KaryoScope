@@ -267,3 +267,94 @@ def _reference_convert(tsv_text: str) -> str:
     novel = f"\t{NOVEL_NAME}\n"
     lines = tsv_text.splitlines(keepends=True)
     return "".join(line.replace(miss, novel) for line in lines[1:])
+
+
+# --- batch lookup -----------------------------------------------------
+#
+# The batch path is a second copy of the same pipeline, so it can drift
+# from the single-input one silently. These pin the properties that
+# would break correctness rather than merely differ.
+
+
+def _capture_batch_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n_inputs: int = 2
+) -> tuple[list[str], list[tuple[Path, Path]]]:
+    from karyoscope.core.io.hks import run_hks_lookup_batch
+
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr(
+        "karyoscope.core.io.hks.run_tool",
+        lambda cmd, capture=False: captured.__setitem__("cmd", cmd),
+    )
+    io_pairs = [(tmp_path / f"in{i}.fa", tmp_path / f"out{i}.bed") for i in range(n_inputs)]
+    run_hks_lookup_batch(
+        base_path=tmp_path / "features.hksb",
+        feature_set_file=tmp_path / "features.chromosome.hksf",
+        k=31,
+        io_pairs=io_pairs,
+        report_query_names=True,
+    )
+    return captured["cmd"], io_pairs
+
+
+def test_batch_lookup_writes_the_presmoothed_bed_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The batch path must produce the same bytes as the single-input one.
+
+    Its outputs are read back by the same `hks smooth` invocation, so a
+    batch lookup that kept HKS's defaults would hand smooth a header and a
+    `none` token it is not expecting.
+    """
+    cmd, _ = _capture_batch_cmd(tmp_path, monkeypatch)
+    assert _flag_value(cmd, "--miss-label") == NOVEL_NAME
+    assert "--no-header" in cmd
+    assert "--report-label-ids" not in cmd
+
+
+def test_batch_lookup_pairs_every_query_with_its_own_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """-q and -o are positional pairs; a mismatch would cross-write outputs."""
+    cmd, io_pairs = _capture_batch_cmd(tmp_path, monkeypatch, n_inputs=3)
+    pairs = [
+        (cmd[i + 1], cmd[i + 3])
+        for i, tok in enumerate(cmd)
+        if tok == "-q" and i + 3 < len(cmd) and cmd[i + 2] == "-o"
+    ]
+    assert pairs == [(str(inp), str(out)) for inp, out in io_pairs]
+
+
+def test_batch_lookup_matches_the_single_input_output_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever governs output format must be identical across both paths."""
+    single = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    batch, _ = _capture_batch_cmd(tmp_path, monkeypatch)
+    fmt = ("--miss-label", "--no-header", "--report-misses", "--report-query-names")
+    for flag in fmt:
+        in_single = flag in single
+        in_batch = flag in batch
+        assert in_single == in_batch, flag
+        if in_single and flag == "--miss-label":
+            assert _flag_value(single, flag) == _flag_value(batch, flag)
+
+
+def test_batch_lookup_with_no_inputs_does_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from karyoscope.core.io.hks import run_hks_lookup_batch
+
+    calls: list[object] = []
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr(
+        "karyoscope.core.io.hks.run_tool", lambda cmd, capture=False: calls.append(cmd)
+    )
+    run_hks_lookup_batch(
+        base_path=tmp_path / "b.hksb",
+        feature_set_file=tmp_path / "b.chromosome.hksf",
+        k=31,
+        io_pairs=[],
+    )
+    assert calls == []

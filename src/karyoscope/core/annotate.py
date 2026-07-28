@@ -1632,8 +1632,16 @@ def _run_hks_backend_batch(
         t_fs = time.perf_counter()
         fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
         hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
-        raw_by_input = {
-            p: output_dir / f"{prefixes[p]}.{fs}.lookup_raw.tmp.tsv" for p in input_paths
+        # As in the single-input path: the lookup output already IS the
+        # presmoothed BED, so when it is being kept it goes straight to its
+        # final home and no copy is ever made.
+        lookup_by_input = {
+            p: (
+                presmoothed_by_input[p][fs]
+                if keep_presmoothed
+                else output_dir / f"{prefixes[p]}.{fs}.lookup_raw.tmp.bed"
+            )
+            for p in input_paths
         }
 
         # One batched lookup per report-query-names group (reads vs assemblies).
@@ -1653,7 +1661,7 @@ def _run_hks_backend_batch(
                 base_path=base_path,
                 feature_set_file=fs_file,
                 k=k,
-                io_pairs=[(p, raw_by_input[p]) for p in group],
+                io_pairs=[(p, lookup_by_input[p]) for p in group],
                 threads=threads,
                 report_query_names=not is_reads_group,
                 capture=True,
@@ -1666,46 +1674,44 @@ def _run_hks_backend_batch(
             time.perf_counter() - t_lookup,
         )
 
-        # Per-input: convert to presmoothed BED and/or smooth. Timed
-        # separately from the lookup so a batch-vs-per-input comparison can
-        # attribute any difference to the query or to this tail, rather than
-        # only seeing one wall-clock number for the whole feature set.
-        t_convert = 0.0
+        # Per-input smoothing. Timed separately from the lookup so a
+        # batch-vs-per-input comparison can attribute any difference to the
+        # query or to this tail, rather than only seeing one wall-clock
+        # number for the whole feature set.
         t_smooth = 0.0
         for p in input_paths:
-            raw_tsv = raw_by_input[p]
-            if not raw_tsv.is_file():
-                raise KaryoscopeError(
-                    f"hks lookup did not produce expected output at {raw_tsv}"
-                )
+            lookup_out = lookup_by_input[p]
+            if not lookup_out.is_file():
+                raise KaryoscopeError(f"hks lookup did not produce expected output at {lookup_out}")
             try:
-                if keep_presmoothed:
-                    t0 = time.perf_counter()
-                    convert_hks_tsv_to_bed(raw_tsv, presmoothed_by_input[p][fs])
-                    t_convert += time.perf_counter() - t0
                 if smooth:
                     t0 = time.perf_counter()
                     run_hks_smooth(
                         hierarchy_file=hierarchy_file,
-                        input_path=raw_tsv,
+                        input_path=lookup_out,
                         output_path=smoothed_by_input[p][fs],
                         threads=threads,
                         capture=True,
                     )
                     t_smooth += time.perf_counter() - t0
             finally:
-                try:
-                    raw_tsv.unlink()
-                except OSError as exc:
-                    logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
+                if not keep_presmoothed:
+                    try:
+                        lookup_out.unlink()
+                    except OSError as exc:
+                        logger.warning(
+                            "could not remove temp lookup output %s: %s", lookup_out, exc
+                        )
 
         logger.info(
-            "feature set %r: convert %.1fs, smooth %.1fs (summed over %d input(s))",
+            "feature set %r: smooth %.1fs (summed over %d input(s))",
             fs,
-            t_convert,
             t_smooth,
             len(input_paths),
         )
+        peak = _peak_child_rss_bytes()
+        if peak is not None:
+            logger.info("peak hks memory so far: %s", _human_bytes(peak))
         tracker.step(fs, time.perf_counter() - t_fs)
 
     logger.info(
@@ -1884,9 +1890,7 @@ def annotate_batch(
     diskspace.require_free_space(
         output_dir,
         needed_bytes,
-        what=(
-            f"annotating {len(input_paths)} input(s) ({len(requested)} feature set(s))"
-        ),
+        what=(f"annotating {len(input_paths)} input(s) ({len(requested)} feature set(s))"),
         estimated=True,
         hint=(
             "Note that --bgzip shrinks the final output but not the peak: every "
@@ -1925,9 +1929,7 @@ def annotate_batch(
             else {}
         )
         smoothed_by_input[p] = (
-            {fs: output_dir / f"{prefix}.{fs}.smoothed.bed" for fs in requested}
-            if smooth
-            else {}
+            {fs: output_dir / f"{prefix}.{fs}.smoothed.bed" for fs in requested} if smooth else {}
         )
 
     _run_hks_backend_batch(
