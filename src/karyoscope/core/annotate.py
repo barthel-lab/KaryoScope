@@ -1026,9 +1026,16 @@ def _run_hks_backend(
     directly. Each feature set is processed independently:
 
     1. ``hks lookup`` against ``<basename>.<fs>.hksf`` -> a raw TSV.
-    2. If ``keep_presmoothed``: convert the raw TSV to the presmoothed BED.
-    3. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
-       -> the smoothed BED.
+    2. Concurrently, both reading that raw TSV:
+
+       * if ``keep_presmoothed``: convert it to the presmoothed BED;
+       * if ``smooth``: ``hks smooth`` (using
+         ``<basename>.<fs>.hierarchy.txt``) -> the smoothed BED.
+
+    Step 2's two halves are independent, and each pins about one core, so
+    running them together roughly halves the single-threaded tail that
+    follows every (multi-threaded) lookup. It does not raise the run's peak
+    memory -- see the comment at the call site.
 
     The raw TSV is a per-feature-set temp file, deleted after each set. ``k`` is
     the query k-mer length (``manifest.kmer.size`` unless overridden for a
@@ -1070,20 +1077,48 @@ def _run_hks_backend(
             raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
 
         try:
-            if keep_presmoothed:
-                convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
-
-            if smooth:
-                t_smo = time.perf_counter()
-                logger.info("running hks smooth for feature set %r", fs)
-                run_hks_smooth(
-                    hierarchy_file=hierarchy_file,
-                    input_path=raw_tsv,
-                    output_path=smoothed_paths[fs],
-                    threads=threads,
-                    capture=True,
-                )
-                logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
+            # The convert and the smooth are independent readers of the same
+            # raw TSV -- neither consumes the other's output -- so they run
+            # concurrently rather than back to back. Both are effectively
+            # single-core (the convert is a Python block loop; `hks smooth`
+            # measures at ~1 core on a whole-genome input), so on a run with
+            # several threads this turns two serial single-core phases into
+            # one, without touching the peak: the convert holds ~50 MB and
+            # `hks smooth` ~4 GB, and that 4 GB is already dwarfed by the
+            # ~10 GB `hks lookup` peak that has just been released.
+            #
+            # Threads, not processes: `run_hks_smooth` spends its life in
+            # subprocess.wait() with the GIL released, so the convert thread
+            # gets a core to itself.
+            t_tail = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=2) as tail:
+                futures = []
+                if keep_presmoothed:
+                    futures.append(
+                        tail.submit(convert_hks_tsv_to_bed, raw_tsv, presmoothed_paths[fs])
+                    )
+                if smooth:
+                    logger.info("running hks smooth for feature set %r", fs)
+                    futures.append(
+                        tail.submit(
+                            run_hks_smooth,
+                            hierarchy_file=hierarchy_file,
+                            input_path=raw_tsv,
+                            output_path=smoothed_paths[fs],
+                            threads=threads,
+                            capture=True,
+                        )
+                    )
+                # Leaving the `with` block joins both workers even when the
+                # first result() raises, so the TSV is never unlinked out
+                # from under a task that is still reading it.
+                for future in futures:
+                    future.result()
+            logger.info(
+                "converted+smoothed feature set %r in %.1fs",
+                fs,
+                time.perf_counter() - t_tail,
+            )
         finally:
             try:
                 raw_tsv.unlink()
