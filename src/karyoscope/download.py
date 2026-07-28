@@ -30,27 +30,9 @@ from karyoscope.exceptions import (
 from karyoscope.installed import InstalledRecord, load, now_iso, record_install
 from karyoscope.manifest import check_install_readiness, validate_database_layout
 from karyoscope.registry import DatabaseEntry
+from karyoscope.versions import at_least
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_version(s: str) -> tuple[int, ...]:
-    """Parse a dotted version string into a tuple of ints, for comparison.
-
-    Non-numeric components are treated as 0 (so ``1.0.0.dev0`` < ``1.0.0``).
-    This is a small intentional subset of PEP 440 — enough to enforce the
-    ``karyoscope_min_version`` check, not a general-purpose comparator.
-    """
-    parts: list[int] = []
-    for part in s.split("."):
-        # Strip any non-digit suffix (e.g., "0dev0" -> 0).
-        n = 0
-        for ch in part:
-            if not ch.isdigit():
-                break
-            n = n * 10 + int(ch)
-        parts.append(n)
-    return tuple(parts)
 
 
 def is_installed(db_root: Path, db_id: str) -> bool:
@@ -60,9 +42,7 @@ def is_installed(db_root: Path, db_id: str) -> bool:
 
 def _check_version_compatibility(entry: DatabaseEntry) -> None:
     """Raise :class:`IncompatibleVersionError` if this KaryoScope is too old."""
-    required = _parse_version(entry.karyoscope_min_version)
-    have = _parse_version(__version__)
-    if have < required:
+    if not at_least(__version__, entry.karyoscope_min_version):
         raise IncompatibleVersionError(
             f"database '{entry.id}' requires KaryoScope >= "
             f"{entry.karyoscope_min_version}, but this is {__version__}. "
