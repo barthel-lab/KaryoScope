@@ -476,3 +476,63 @@ def test_query_names_refusal_names_the_offending_inputs() -> None:
         _reject_query_names_for_reads([Path("asm.fa"), Path("tumor.cram")], True)
     assert "tumor.cram" in str(excinfo.value)
     assert "asm.fa" not in str(excinfo.value)
+
+
+def _hks_cmd_for(tmp_path: Path, monkeypatch, *, input_name: str, query_names):
+    """Run the HKS backend with hks stubbed, returning the cmd it would invoke."""
+    from karyoscope.core import annotate as ann_mod
+
+    captured: dict = {}
+
+    def _fake_batch(**kwargs):
+        captured["report_query_names"] = kwargs["report_query_names"]
+        # the backend checks the lookup output exists before smoothing
+        for _inp, out in kwargs["io_pairs"]:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("")
+
+    monkeypatch.setattr(ann_mod, "run_hks_lookup_batch", _fake_batch)
+    monkeypatch.setattr(ann_mod, "run_hks_smooth", lambda **kw: None)
+
+    class _Manifest:
+        class index:
+            basename = "features"
+
+    inp = tmp_path / input_name
+    inp.write_text("")
+    ann_mod._run_hks_backend(
+        manifest=_Manifest(),
+        db_dir=tmp_path,
+        input_paths=[inp],
+        prefixes={inp: "p"},
+        output_dir=tmp_path / "out",
+        requested=["cytoband"],
+        smooth=False,
+        keep_presmoothed=True,
+        presmoothed_by_input={inp: {"cytoband": tmp_path / "out" / "p.cytoband.bed"}},
+        smoothed_by_input={inp: {}},
+        threads=1,
+        k=31,
+        query_names=query_names,
+    )
+    return captured["report_query_names"]
+
+
+def test_reads_default_to_ranks_with_no_flag_at_all(tmp_path: Path, monkeypatch) -> None:
+    """Passing neither flag must not silently hand hks the OOM-inducing option.
+
+    This is the path almost every user takes, so the safe behaviour has to be
+    the DEFAULT rather than something opted into.
+    """
+    for name in ("s.cram", "s.bam", "s.fastq"):
+        assert _hks_cmd_for(tmp_path, monkeypatch, input_name=name, query_names=None) is False
+
+
+def test_assemblies_still_default_to_names(tmp_path: Path, monkeypatch) -> None:
+    """Contig names are the useful identifier for an assembly and cost nothing."""
+    assert _hks_cmd_for(tmp_path, monkeypatch, input_name="asm.fa", query_names=None) is True
+
+
+def test_explicit_no_query_names_forces_ranks_on_an_assembly(tmp_path: Path, monkeypatch) -> None:
+    """The override works downward too, for databases with long feature names."""
+    assert _hks_cmd_for(tmp_path, monkeypatch, input_name="asm.fa", query_names=False) is False
