@@ -18,7 +18,7 @@ karyoscope annotate -i INPUT [OPTIONS]
 | --- | --- |
 | `-i`, `--input FILE` | Input sequence file. Accepts FASTA (`.fasta`/`.fa`/`.fna`, plain or `.gz`), FASTQ (`.fastq`/`.fq`, plain or `.gz`), BAM (`.bam`) or CRAM (`.cram`). BAM/CRAM inputs are converted with `samtools fasta` (requires `samtools` on PATH); CRAM also requires `--reference`. **[required]** |
 | `--reference FILE` | Reference FASTA a CRAM input was aligned against. **Required for `.cram`**, ignored otherwise. See [CRAM input](#cram-input). |
-| `--query-names` / `--no-query-names` | Identify output sequences by name rather than by ordinal rank. Default: assemblies get names, read-level inputs get ranks. See [Paired-end reads](#paired-end-reads). |
+| `--query-names` / `--no-query-names` | Identify output sequences by name rather than ordinal rank. Assemblies default to names; **refused for read-level input**, which always uses ranks. See [Paired-end reads](#paired-end-reads). |
 | `-o`, `--outdir DIRECTORY` | Directory to write output BEDs into. Default: same directory as `--input`. |
 | `--db TEXT` | Database id to use (e.g., `KS_human_CHM13_v2`). Default: the unique installed database if there's exactly one. |
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
@@ -80,22 +80,28 @@ backend cannot — `hks lookup` needs a seekable path — so it materialises a t
 
 ## Paired-end reads
 
-`annotate` has no concept of pairing: each mate is an independent query sequence. What
-matters is whether the output can still be joined back into fragments afterwards.
+`annotate` has no concept of pairing: each mate is an independent query sequence.
+What matters is whether the output can still be joined back into fragments afterwards.
 
-By default read-level inputs are identified in the output by **ordinal rank**, which is
-compact but undecodable once the input is gone — and for BAM/CRAM on the HKS backend the
-input is a temp file `annotate` itself deletes. Pass `--query-names` to get read names
-instead:
+Read-level output is identified by **ordinal rank**, and `--query-names` is *refused*
+for read-level input. This is not a style preference — `hks` collects every sequence
+name into memory before querying (`load_seq_names` builds a `Vec<String>` of the lot),
+which is fine for an assembly's few thousand contigs and fatal for reads. Measured on a
+64x human WGS CRAM: 1.315 G names at ~68 bytes each is ~90 GB on top of the ~12.3 GB
+index, and the run is OOM-killed roughly 20 minutes in, having already spent 15 of them
+decoding. Raising the memory limit buys nothing but longer identifiers.
 
+Nothing is lost. Rank N is the Nth record of the query file, and for an alignment input
+the query file is a deterministic function of the source, so the mapping is reproducible
+whenever it is actually needed:
+
+```bash
+samtools fasta -F 0x900 -N --reference GRCh38.fasta tumor.cram | grep '^>'
 ```
-A01925:18:H5VMFDSX7:4:1275:21187:23249/1   0    86   categorized
-A01925:18:H5VMFDSX7:4:1275:21187:23249/1   86   88   20q13.33
-```
 
-Mates then group by stripping the `/1`/`/2` suffix. This costs output size (a read name
-is far longer than a rank), though the shared instrument/run prefix compresses well under
-`--bgzip`.
+Line N+1 of that stream is rank N. Mates group by stripping the `/1`,`/2` suffix — which
+is why `-N` is forced during the decode. Materialising it once as a bgzipped sidecar is
+usually cheaper than regenerating it per query.
 
 Note the coordinates are k-mer offsets **within each read**, not genomic positions: a
 151 bp read queried at k=31 spans 0..121.

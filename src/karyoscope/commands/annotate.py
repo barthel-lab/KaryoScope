@@ -97,12 +97,12 @@ logger = logging.getLogger(__name__)
     "query_names",
     default=None,
     help="Identify each sequence in the output BED by NAME rather than by its "
-    "ordinal rank in the input. Default (neither flag): assemblies get names, "
-    "read-level inputs (FASTQ/BAM/CRAM) get ranks, which are compact but "
-    "meaningless once the input file is gone. Pass --query-names for read data "
-    "whose output has to be joined back to anything -- notably paired-end "
-    "mates, which are distinguishable only by the /1 and /2 suffix on their "
-    "shared read name.",
+    "ordinal rank in the input. Assemblies use names by default; --no-query-names "
+    "switches them to ranks to save space on a database with long feature names. "
+    "REFUSED for read-level input (FASTQ/BAM/CRAM): hks loads every name into "
+    "memory before querying, which costs ~90 GB on a human WGS sample and gets "
+    "the run OOM-killed after the decode is already paid for. Reads always use "
+    "ranks, and rank N is simply the Nth record of the query file.",
 )
 @click.option(
     "--reference",

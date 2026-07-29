@@ -435,3 +435,44 @@ def test_estimate_input_bases_uses_the_cram_factor(tmp_path: Path) -> None:
     cram = tmp_path / "s.cram"
     cram.write_bytes(b"x" * 1000)
     assert estimate_input_bases(cram) == int(1000 * _BASES_PER_CRAM_BYTE)
+
+
+def test_query_names_is_refused_for_read_level_input() -> None:
+    """Reads cannot carry names: hks buffers all of them and the run is OOM-killed.
+
+    Measured on a 64x human WGS CRAM -- 1.315 G names at ~68 bytes is ~90 GB on
+    top of the index. The refusal is deliberate rather than a warning, because
+    the failure lands ~20 minutes in, after the decode has been paid for, with
+    nothing written and nothing to resume from.
+    """
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    for name in ("s.cram", "s.bam", "s.fastq.gz", "s.fq"):
+        with pytest.raises(KaryoscopeError, match="not supported for read-level input"):
+            _reject_query_names_for_reads([Path(name)], True)
+
+
+def test_query_names_is_allowed_for_assemblies() -> None:
+    """An assembly has a few thousand contig names; buffering those is free."""
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    _reject_query_names_for_reads([Path("asm.fa.gz")], True)
+    _reject_query_names_for_reads([Path("asm.fasta")], True)
+
+
+def test_reads_may_still_opt_out_of_names_explicitly() -> None:
+    """--no-query-names and the default are both fine for reads; only True is refused."""
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    _reject_query_names_for_reads([Path("s.cram")], False)
+    _reject_query_names_for_reads([Path("s.cram")], None)
+
+
+def test_query_names_refusal_names_the_offending_inputs() -> None:
+    """A cohort run should say WHICH inputs are the problem, not just that one is."""
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    with pytest.raises(KaryoscopeError) as excinfo:
+        _reject_query_names_for_reads([Path("asm.fa"), Path("tumor.cram")], True)
+    assert "tumor.cram" in str(excinfo.value)
+    assert "asm.fa" not in str(excinfo.value)

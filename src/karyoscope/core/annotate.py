@@ -209,6 +209,49 @@ def _is_reads_input(input_path: Path) -> bool:
     return any(name_lower.endswith(ext) for ext in _READS_INPUT_EXTENSIONS)
 
 
+def _reject_query_names_for_reads(input_paths: list[Path], query_names: bool | None) -> None:
+    """Refuse ``--query-names`` on read-level input. It cannot survive the scale.
+
+    ``hks``'s ``--report-query-names`` is not streaming: ``load_seq_names``
+    reads the whole query file up front and builds a ``Vec<String>`` of every
+    sequence name before a single k-mer is looked up. That is fine for an
+    assembly (a few thousand contigs) and catastrophic for reads.
+
+    Measured on a 64x human WGS CRAM: 1.315 G reads x ~68 bytes per name is
+    ~90 GB of names, on top of the ~12.3 GB index. The run died to the OOM
+    killer after ~20 minutes -- having already spent 15 of them decoding the
+    CRAM -- with nothing written and nothing to resume from.
+
+    Raising the memory limit is not a fix: it would take a ~160 GB allocation
+    per sample to buy nothing but longer identifiers in the output. So this is
+    a hard error rather than a warning. The information is not lost either way
+    -- rank N is the Nth record of the query file, which for an alignment input
+    is a deterministic function of the source (see the CRAM section of
+    docs/commands/annotate.md).
+    """
+    if not query_names:
+        return
+    reads = [p for p in input_paths if _is_reads_input(p)]
+    if not reads:
+        return
+    listed = ", ".join(p.name for p in reads[:3])
+    if len(reads) > 3:
+        listed += f", ... (+{len(reads) - 3} more)"
+    raise KaryoscopeError(
+        f"--query-names is not supported for read-level input ({listed}).\n"
+        f"\n"
+        f"hks collects every sequence name into memory before querying, which "
+        f"is fine for an assembly's contigs but not for reads: a 64x human WGS "
+        f"input holds ~1.3 G names at ~90 GB, and the run is OOM-killed after "
+        f"the decode has already been paid for.\n"
+        f"\n"
+        f"Read-level output is identified by ordinal rank instead, and no "
+        f"information is lost -- rank N is the Nth record of the query file. "
+        f"For a BAM/CRAM input that mapping is reproducible at any time with:\n"
+        f"  samtools fasta -F 0x900 -N --reference <ref> <input> | grep '^>'"
+    )
+
+
 # --- output-size estimation ------------------------------------------
 #
 # Annotate is the command most likely to fill a disk: a six-feature-set
@@ -1351,6 +1394,7 @@ def annotate(
             "no output would be produced: cannot combine --no-smooth with "
             "--no-keep-presmoothed. Choose at least one output type."
         )
+    _reject_query_names_for_reads([input_path], query_names)
     if not input_path.is_file():
         raise KaryoscopeError(f"input file not found: {input_path}")
 
@@ -1723,6 +1767,8 @@ def annotate_batch(
     """
     if not input_paths:
         return {}
+
+    _reject_query_names_for_reads(input_paths, query_names)
 
     # A single input has nothing to batch — delegate to the exact, battle-tested
     # single-input path (covers both HKS and KMC backends). This makes

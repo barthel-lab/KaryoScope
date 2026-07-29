@@ -28,13 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **full size** — a 64x human WGS CRAM measured 28.9 GB in, 254 GB out — so
   `$TMPDIR` must point at node-local scratch, never at a shared filesystem.
 
-- **`--query-names/--no-query-names`** overrides which identifier the output
-  BED carries. The default is unchanged (assemblies get names, read-level
-  inputs get ordinal ranks), but a rank is undecodable once the input file is
-  gone, and for read data the input is often a temp file that `annotate` itself
-  deletes. Pass `--query-names` whenever the output has to be joined back to
-  anything — most importantly paired-end mates, which are distinguishable
-  *only* by the `/1` and `/2` suffix on their shared read name.
+- **`--query-names/--no-query-names`** controls which identifier the output BED
+  carries, and **`--query-names` is now refused outright for read-level input**
+  (FASTQ/BAM/CRAM). It is not a tuning knob there — it is a way to lose a run.
+
+  `hks --report-query-names` is not streaming: `load_seq_names` reads the whole
+  query file and builds a `Vec<String>` of every sequence name before the first
+  k-mer is looked up. Fine for an assembly's few thousand contigs; fatal for
+  reads. Measured on a 64x human WGS CRAM — 1.315 G names at ~68 bytes each is
+  ~90 GB on top of the ~12.3 GB index. The run was OOM-killed ~20 minutes in,
+  having already spent 15 of them decoding the CRAM, with nothing written and
+  nothing to resume from.
+
+  Raising the memory limit is not a fix: it would take a ~160 GB allocation per
+  sample to buy nothing but longer identifiers. So this is an error rather than
+  a warning, and it fires in a second instead of after the decode.
+
+  No information is lost. Rank N is the Nth record of the query file, and for
+  an alignment input that file is a deterministic function of the source, so
+  the mapping regenerates on demand:
+  `samtools fasta -F 0x900 -N --reference <ref> <input> | grep '^>'`.
+
+  Assemblies are unaffected: they still default to names, and
+  `--no-query-names` switches them to ranks to save space.
 
 - **`annotate` now checks available memory before it starts**, not just disk.
   For the HKS backend the requirement is knowable exactly rather than
