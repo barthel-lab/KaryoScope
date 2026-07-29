@@ -58,9 +58,10 @@ logger = logging.getLogger(__name__)
     required=True,
     multiple=True,
     help="Input sequence file. Accepts FASTA (.fasta/.fa/.fna, plain "
-    "or .gz), FASTQ (.fastq/.fq, plain or .gz), or BAM (.bam). BAM "
-    "inputs are piped through `samtools fasta` (requires samtools on "
-    "PATH); no intermediate file is written. See --preserve-order for "
+    "or .gz), FASTQ (.fastq/.fq, plain or .gz), BAM (.bam) or CRAM "
+    "(.cram). BAM/CRAM inputs are converted with `samtools fasta` "
+    "(requires samtools on PATH); CRAM additionally requires "
+    "--reference. See --preserve-order for "
     "how the smoothing implementation adapts to the input type. "
     "Repeatable: pass -i several times to annotate multiple inputs in "
     "one run; on the HKS backend the index is loaded once per feature "
@@ -90,6 +91,30 @@ logger = logging.getLogger(__name__)
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
     help="Override the database root directory (default: $KARYOSCOPE_DB or ~/.karyoscope/db/).",
+)
+@click.option(
+    "--query-names/--no-query-names",
+    "query_names",
+    default=None,
+    help="Identify each sequence in the output BED by NAME rather than by its "
+    "ordinal rank in the input. Default (neither flag): assemblies get names, "
+    "read-level inputs (FASTQ/BAM/CRAM) get ranks, which are compact but "
+    "meaningless once the input file is gone. Pass --query-names for read data "
+    "whose output has to be joined back to anything -- notably paired-end "
+    "mates, which are distinguishable only by the /1 and /2 suffix on their "
+    "shared read name.",
+)
+@click.option(
+    "--reference",
+    "reference",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Reference FASTA a CRAM input was aligned against, passed to "
+    "`samtools fasta --reference`. REQUIRED for .cram inputs, which store "
+    "bases as a diff against their reference and cannot be decoded without "
+    "it. Ignored for every other input format. Note this is the ALIGNMENT "
+    "reference (e.g. GRCh38), which is unrelated to --db: annotate is "
+    "alignment-free, so the database may well be a different assembly.",
 )
 @click.option(
     "--feature-set",
@@ -191,6 +216,8 @@ def cmd(
     output_dir: Path | None,
     db_id: str | None,
     db_root_arg: Path | None,
+    query_names: bool | None,
+    reference: Path | None,
     feature_sets_arg: tuple[str, ...],
     threads: int,
     k: int | None,
@@ -235,6 +262,23 @@ def cmd(
         output_dir = inputs[0].parent
     feature_sets = list(feature_sets_arg) if feature_sets_arg else None
 
+    # Caught here rather than deep in the backend: a CRAM run that reaches
+    # samtools without a reference either dies with an htslib error that says
+    # nothing about --reference, or silently decodes against whatever
+    # $REF_PATH/$REF_CACHE resolves from the header's M5 tags -- which is the
+    # worse outcome, because it produces plausible sequence from the wrong
+    # genome.
+    cram_inputs = [p for p in inputs if p.suffix.lower() == ".cram"]
+    if cram_inputs and reference is None:
+        listed = ", ".join(p.name for p in cram_inputs)
+        raise click.ClickException(
+            f"--reference is required for CRAM input ({listed}). CRAM stores "
+            f"bases as a diff against the reference used for alignment, so it "
+            f"cannot be decoded without that same FASTA.\n"
+            f"  karyoscope annotate -i {cram_inputs[0].name} "
+            f"--reference /path/to/genome.fasta ..."
+        )
+
     common = dict(
         output_dir=output_dir,
         db_root=db_root,
@@ -249,6 +293,8 @@ def cmd(
         preserve_input_order=preserve_input_order,
         force=force,
         check_space=not skip_checks,
+        reference=reference,
+        query_names=query_names,
         progress=_progress.from_context(),
     )
 

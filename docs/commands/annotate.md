@@ -10,13 +10,15 @@ karyoscope annotate -i INPUT [OPTIONS]
 
 ## Description
 
-`karyoscope annotate` assigns every k-mer in the input to a feature in a single alignment-free pass, by querying the database's index. The backend follows the database: an HKS-index database (e.g. `HKS_human_CHM13_v2`) is queried with `hks`, and a KMC-index database with the bundled `get_featureIDs` helper. It produces one BED per feature set, and by default writes BOTH a "presmoothed" (raw) and a "smoothed" (hierarchy-smoothed) BED for each feature set. k-mers that are not present in the index render as `novel`. Input may be FASTA, FASTQ, or BAM. The expensive k-mer-query step is resumable across reruns, so an interrupted (for example, OOM-killed) run can resume straight into smoothing.
+`karyoscope annotate` assigns every k-mer in the input to a feature in a single alignment-free pass, by querying the database's index. The backend follows the database: an HKS-index database (e.g. `HKS_human_CHM13_v2`) is queried with `hks`, and a KMC-index database with the bundled `get_featureIDs` helper. It produces one BED per feature set, and by default writes BOTH a "presmoothed" (raw) and a "smoothed" (hierarchy-smoothed) BED for each feature set. k-mers that are not present in the index render as `novel`. Input may be FASTA, FASTQ, BAM or CRAM. The expensive k-mer-query step is resumable across reruns, so an interrupted (for example, OOM-killed) run can resume straight into smoothing.
 
 ## Options
 
 | Option | Description |
 | --- | --- |
-| `-i`, `--input FILE` | Input sequence file. Accepts FASTA (`.fasta`/`.fa`/`.fna`, plain or `.gz`), FASTQ (`.fastq`/`.fq`, plain or `.gz`), or BAM (`.bam`). BAM inputs are piped through `samtools fasta` (requires `samtools` on PATH); no intermediate file is written. **[required]** |
+| `-i`, `--input FILE` | Input sequence file. Accepts FASTA (`.fasta`/`.fa`/`.fna`, plain or `.gz`), FASTQ (`.fastq`/`.fq`, plain or `.gz`), BAM (`.bam`) or CRAM (`.cram`). BAM/CRAM inputs are converted with `samtools fasta` (requires `samtools` on PATH); CRAM also requires `--reference`. **[required]** |
+| `--reference FILE` | Reference FASTA a CRAM input was aligned against. **Required for `.cram`**, ignored otherwise. See [CRAM input](#cram-input). |
+| `--query-names` / `--no-query-names` | Identify output sequences by name rather than by ordinal rank. Default: assemblies get names, read-level inputs get ranks. See [Paired-end reads](#paired-end-reads). |
 | `-o`, `--outdir DIRECTORY` | Directory to write output BEDs into. Default: same directory as `--input`. |
 | `--db TEXT` | Database id to use (e.g., `KS_human_CHM13_v2`). Default: the unique installed database if there's exactly one. |
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
@@ -44,6 +46,59 @@ karyoscope annotate -i asm.fa --feature-set chromosome -o results/
 # Read-level input (FASTQ): faster writes when output order doesn't matter
 karyoscope annotate -i reads.fastq.gz -o results/ --no-preserve-order
 ```
+
+## CRAM input
+
+CRAM stores bases as a diff against the reference used for alignment, so it cannot be
+decoded without that same FASTA. Pass it with `--reference`:
+
+```bash
+karyoscope annotate -i tumor.cram --reference GRCh38.fasta \
+                    --db HKS_human_CHM13_cytoband --feature-set cytoband -o results/
+```
+
+`--reference` is the **alignment** reference and has nothing to do with `--db`. `annotate`
+is alignment-free — it only ever sees read sequences — so annotating GRCh38-aligned reads
+against a CHM13 database is normal, not a mismatch.
+
+Omitting `--reference` is refused up front rather than left to htslib, which would
+otherwise resolve each contig's M5 checksum through `$REF_PATH`/`$REF_CACHE` and could
+decode against a *different* build of the same genome, yielding plausible but incorrect
+sequence.
+
+**What gets converted.** `samtools fasta -F 0x900 -N` — primary records only, with the
+`/1`,`/2` mate suffix forced on. That is exactly one full-length copy of every read:
+each read has one primary record carrying full-length SEQ, whereas supplementary records
+are hard-clipped slices of reads the primary already supplied. Unmapped reads and
+duplicates are **kept** — they are genuine distinct reads. Minus-strand records are
+reverse-complemented back to sequencing orientation.
+
+**Scratch space.** The KMC backend streams the conversion with no temp file. The HKS
+backend cannot — `hks lookup` needs a seekable path — so it materialises a temp FASTA in
+`$TMPDIR` first. **That file is full size**: a 64x human WGS CRAM measured 28.9 GB in and
+254 GB out. Point `$TMPDIR` at node-local scratch, never at a shared filesystem.
+
+## Paired-end reads
+
+`annotate` has no concept of pairing: each mate is an independent query sequence. What
+matters is whether the output can still be joined back into fragments afterwards.
+
+By default read-level inputs are identified in the output by **ordinal rank**, which is
+compact but undecodable once the input is gone — and for BAM/CRAM on the HKS backend the
+input is a temp file `annotate` itself deletes. Pass `--query-names` to get read names
+instead:
+
+```
+A01925:18:H5VMFDSX7:4:1275:21187:23249/1   0    86   categorized
+A01925:18:H5VMFDSX7:4:1275:21187:23249/1   86   88   20q13.33
+```
+
+Mates then group by stripping the `/1`/`/2` suffix. This costs output size (a read name
+is far longer than a rank), though the shared instrument/run prefix compresses well under
+`--bgzip`.
+
+Note the coordinates are k-mer offsets **within each read**, not genomic positions: a
+151 bp read queried at k=31 spans 0..121.
 
 ## Output
 

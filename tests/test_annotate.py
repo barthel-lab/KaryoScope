@@ -384,3 +384,54 @@ def test_peak_child_rss_is_reported_in_bytes() -> None:
     # pytest has already reaped children, so this is a plausible RSS in
     # bytes and an implausible one in kilobytes.
     assert peak < 1024**4
+
+
+# --- CRAM input ------------------------------------------------------------
+
+
+def test_cram_is_recognised_as_a_read_level_input() -> None:
+    """CRAM holds reads, so it takes the read dispatch path, not the assembly one."""
+    from karyoscope.core.annotate import _is_reads_input
+
+    assert _is_reads_input(Path("sample.cram")) is True
+    assert _is_reads_input(Path("sample.bam")) is True
+    assert _is_reads_input(Path("assembly.fa.gz")) is False
+
+
+def test_cram_extension_is_stripped_from_the_output_basename() -> None:
+    """Outputs are named after the input stem, so .cram must be a known suffix."""
+    from karyoscope.core.annotate import _derive_input_basename
+
+    assert _derive_input_basename(Path("ALTseq_00001A_tumor.cram")) == "ALTseq_00001A_tumor"
+
+
+def test_cram_input_declares_a_samtools_dependency() -> None:
+    """The preflight resolves tools from the input format rather than assuming."""
+    from karyoscope.core.annotate import _annotate_dependencies
+
+    needed = _annotate_dependencies(
+        index_type="hks", input_path=Path("s.cram"), bgzip=False
+    )
+    assert "samtools" in needed
+    assert "hks" in needed
+
+
+def test_cram_bases_estimate_exceeds_bam_per_byte() -> None:
+    """CRAM packs far harder than BAM, so a byte of it means far more sequence.
+
+    Sharing BAM's ~1 base/byte would under-estimate a CRAM run's output by
+    most of an order of magnitude -- and this figure feeds the disk check
+    whose job is to refuse a run that would fill the filesystem.
+    """
+    from karyoscope.core.annotate import _BASES_PER_BAM_BYTE, _BASES_PER_CRAM_BYTE
+
+    assert _BASES_PER_CRAM_BYTE > _BASES_PER_BAM_BYTE * 5
+
+
+def test_estimate_input_bases_uses_the_cram_factor(tmp_path: Path) -> None:
+    """A .cram file's size is scaled by the CRAM factor, not the FASTA fraction."""
+    from karyoscope.core.annotate import _BASES_PER_CRAM_BYTE, estimate_input_bases
+
+    cram = tmp_path / "s.cram"
+    cram.write_bytes(b"x" * 1000)
+    assert estimate_input_bases(cram) == int(1000 * _BASES_PER_CRAM_BYTE)
