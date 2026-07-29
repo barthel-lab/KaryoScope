@@ -434,6 +434,8 @@ def render_karyotype(
     inputs: list[RenderInput],
     *,
     colors: dict[str, str],
+    legend_groups: dict[str, str] | None = None,
+    legend_group_order: list[str] | None = None,
     mode: Mode = "genome",
     sex: str | None = None,
     sex_determination_system: str | dict = "XY",
@@ -624,6 +626,16 @@ def render_karyotype(
     initial_y = (60 if len(HAPLOTYPES) > 1 else 40) + title_offset
     min_q_arm_offset = 5
     text_color = "#000000" if background_color == "white" else "#FFFFFF"
+    # Outlines follow the text, for the same reason: a fill the same colour
+    # as the backdrop is otherwise invisible. That is not hypothetical --
+    # the cytoband palette contains pure #000000 (the gpos100 bands), which
+    # on a black background disappeared entirely, as did every legend swatch
+    # (they were drawn with a hardcoded black stroke regardless of theme).
+    outline_color = text_color
+    # Sequence columns are only ``2 * circle_radius`` px wide (6 px at the
+    # default), and a stroke straddles the path -- so a 1 px border ate a
+    # sixth of the column and read as a white cage rather than an edge.
+    sequence_outline_stroke = 0.5
 
     # Legend band (optional, drawn at the right margin). The total
     # width is computed dynamically after the feature pre-pass below,
@@ -634,6 +646,7 @@ def render_karyotype(
     legend_row_height = 20
     legend_swatch_size = 14
     legend_text_size = 14
+    legend_swatch_stroke = 0.5
 
     P_Q_ARM_GAP = 50
     if mode == "subtelomere":
@@ -709,6 +722,49 @@ def render_karyotype(
         features_in_data,
         key=lambda f: _legend_sort_key(f, feature_order),
     )
+
+    # Collapse to legend groups when the database declares them. A feature
+    # set can carry hundreds of features in a handful of colours (CHM13
+    # cytoband: 833 rendered features, 8 colours), where a per-feature
+    # legend dwarfs the figure AND silently truncates to whatever fits the
+    # canvas -- so the reader sees an arbitrary subset with no indication
+    # any were dropped.
+    #
+    # Group order follows first appearance in colors.tsv, which the database
+    # controls, rather than anything derived here. `novel` is never grouped:
+    # it is the renderer's own sentinel, injected rather than declared, and
+    # `_legend_sort_key` already sinks it to the bottom.
+    legend_swatch_feature: dict[str, str] = {}
+    if legend_groups:
+        grouped: list[str] = []
+        first_member: dict[str, str] = {}
+        for feature in sorted_legend_features:
+            group = legend_groups.get(feature)
+            if group is None or feature == NOVEL_NAME:
+                grouped.append(feature)
+                legend_swatch_feature[feature] = feature
+                continue
+            if group not in first_member:
+                first_member[group] = feature
+                legend_swatch_feature[group] = feature
+                grouped.append(group)
+        if legend_group_order:
+            rank = {g: i for i, g in enumerate(legend_group_order)}
+            order = {name: i for i, name in enumerate(grouped)}
+
+            def _row_key(name: str) -> tuple[int, int, str]:
+                # Groups first, in the order the database declared; then
+                # anything ungrouped, keeping the order _legend_sort_key
+                # already gave it -- which is what leaves ``novel`` at the
+                # bottom, where that key deliberately puts it.
+                if name in first_member:
+                    return (0, rank.get(name, len(rank)), name)
+                return (1, order[name], name)
+
+            grouped.sort(key=_row_key)
+        n_before, n_after = len(sorted_legend_features), len(grouped)
+        sorted_legend_features = grouped
+        logger.info("legend grouped: %d feature(s) collapsed into %d row(s)", n_before, n_after)
 
     # --- group by chromosome and haplotype ---------------------------
 
@@ -1000,66 +1056,41 @@ def render_karyotype(
                         )
                     )
 
-    # --- sequence outlines (white background only) -------------------
+    # --- sequence outlines --------------------------------------------
+    #
+    # Drawn on every background, not just white. They used to be white-only
+    # and hardcoded black, which left a black-background plot with no border
+    # at all -- and the cytoband palette's pure-black bands then merged into
+    # the backdrop and vanished. The outline is what separates a sequence
+    # from the page, so it has to contrast with the page.
 
-    if background_color == "white":
-        for seq, x in x_coords.items():
-            if mode == "subtelomere":
-                if seq in tel_start_sequences:
-                    height = subtelomere_boundary * pixels_per_pos
-                    d.append(
-                        draw.Rectangle(
-                            x - circle_radius,
-                            initial_y,
-                            2 * circle_radius,
-                            height,
-                            fill="none",
-                            stroke="black",
-                            stroke_width=1,
-                        )
-                    )
-                if seq in tel_stop_sequences:
-                    height = subtelomere_boundary * pixels_per_pos
-                    d.append(
-                        draw.Rectangle(
-                            x - circle_radius,
-                            q_arm_start_y,
-                            2 * circle_radius,
-                            height,
-                            fill="none",
-                            stroke="black",
-                            stroke_width=1,
-                        )
-                    )
-            elif mode == "centromere":
-                cen_start, cen_stop = centromere_coords[seq]
-                height = (cen_stop - cen_start) * pixels_per_pos
-                d.append(
-                    draw.Rectangle(
-                        x - circle_radius,
-                        initial_y,
-                        2 * circle_radius,
-                        height,
-                        fill="none",
-                        stroke="black",
-                        stroke_width=1,
-                    )
-                )
-            else:  # genome
-                seq_len = sequence_lengths.get(seq)
-                if seq_len:
-                    height = pos_to_y(seq_len) - initial_y
-                    d.append(
-                        draw.Rectangle(
-                            x - circle_radius,
-                            initial_y,
-                            2 * circle_radius,
-                            height,
-                            fill="none",
-                            stroke="black",
-                            stroke_width=1,
-                        )
-                    )
+    def _outline(x: float, top_y: float, height: float) -> draw.Rectangle:
+        """One sequence's border: same geometry as its column, no fill."""
+        return draw.Rectangle(
+            x - circle_radius,
+            top_y,
+            2 * circle_radius,
+            height,
+            fill="none",
+            stroke=outline_color,
+            stroke_width=sequence_outline_stroke,
+        )
+
+    for seq, x in x_coords.items():
+        if mode == "subtelomere":
+            # Two boxes, one per telomeric end, and only where there is one.
+            height = subtelomere_boundary * pixels_per_pos
+            if seq in tel_start_sequences:
+                d.append(_outline(x, initial_y, height))
+            if seq in tel_stop_sequences:
+                d.append(_outline(x, q_arm_start_y, height))
+        elif mode == "centromere":
+            cen_start, cen_stop = centromere_coords[seq]
+            d.append(_outline(x, initial_y, (cen_stop - cen_start) * pixels_per_pos))
+        else:  # genome
+            seq_len = sequence_lengths.get(seq)
+            if seq_len:
+                d.append(_outline(x, initial_y, pos_to_y(seq_len) - initial_y))
 
     # --- telomere indicator circles (genome mode only) ----------------
 
@@ -1073,7 +1104,7 @@ def render_karyotype(
                         initial_y,
                         2 * circle_radius,
                         fill=telomere_color,
-                        stroke="black",
+                        stroke=outline_color,
                         stroke_width=1,
                     )
                 )
@@ -1087,7 +1118,7 @@ def render_karyotype(
                             q_arm_y,
                             2 * circle_radius,
                             fill=telomere_color,
-                            stroke="black",
+                            stroke=outline_color,
                             stroke_width=1,
                         )
                     )
@@ -1248,9 +1279,12 @@ def render_karyotype(
             # Bail out if the legend would overflow the SVG height
             # (rare on tall karyotypes but possible for small ones).
             if row_y + legend_swatch_size > image_height - 5:
-                logger.info(
-                    "legend truncated at %d entries; remaining features fit outside the SVG height",
+                logger.warning(
+                    "legend truncated at %d of %d entries: the rest fall outside "
+                    "the SVG height and are NOT shown. The figure understates the "
+                    "features present.",
                     i,
+                    len(sorted_legend_features),
                 )
                 break
             d.append(
@@ -1259,9 +1293,9 @@ def render_karyotype(
                     row_y,
                     legend_swatch_size,
                     legend_swatch_size,
-                    fill=_color_for(feature),
-                    stroke="black",
-                    stroke_width=0.5,
+                    fill=_color_for(legend_swatch_feature.get(feature, feature)),
+                    stroke=outline_color,
+                    stroke_width=legend_swatch_stroke,
                 )
             )
             d.append(

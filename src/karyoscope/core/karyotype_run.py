@@ -47,7 +47,12 @@ from karyoscope.core.centromeres import (
     centromeres_run,
     find_centromere_ranges,
 )
-from karyoscope.core.io.colors import colors_for_set, parse_colors, validate_colors
+from karyoscope.core.io.colors import (
+    colors_for_set,
+    parse_colors_and_groups,
+    validate_colors,
+    validate_legend_groups,
+)
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, map_signature, read_map
 from karyoscope.core.karyotype import (
@@ -760,7 +765,7 @@ def karyotype_run(
     # Its stem tags the output filename so a custom-colour render never clobbers
     # the default-colour one (e.g. '...smoothed.colors_chromosome.karyotype.svg').
     colors_source = colors_path if colors_path is not None else db_dir / manifest.colors
-    colors = parse_colors(colors_source)
+    colors, legend_groups_all = parse_colors_and_groups(colors_source)
     colors_tag = _colors_filename_tag(colors_path)
     hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
     # Chromosomes to seed the karyotype layout with (so one missing from the
@@ -776,6 +781,7 @@ def karyotype_run(
     # locally-installed databases (which bypass download validation)
     # still get caught before any SVG is rendered.
     color_issues = validate_colors(hierarchy, colors)
+    color_issues += validate_legend_groups(colors, legend_groups_all)
     if color_issues:
         raise KaryotypeError(
             f"database {db_id_resolved!r} is missing colour entries; refusing "
@@ -1123,6 +1129,11 @@ def karyotype_run(
                 )
 
             flat_colors = colors_for_set(colors, fs)
+            # Legend grouping is per feature set and optional; a database
+            # without the column yields {} and the renderer keeps its
+            # per-feature legend unchanged.
+            fs_groups = legend_groups_all.get(fs, {})
+            fs_group_order = list(dict.fromkeys(fs_groups.values())) if fs_groups else None
             combined_tag = f".{_COMBINED_TAG}" if combine_chromosomes else ""
             stem_for_paths = (
                 f"{base_name}.{db_id_resolved}.{current_mode}.{fs}."
@@ -1139,6 +1150,8 @@ def karyotype_run(
             render_karyotype(
                 render_inputs,
                 colors=flat_colors,
+                legend_groups=fs_groups or None,
+                legend_group_order=fs_group_order,
                 mode=current_mode,  # type: ignore[arg-type]
                 sex=sex,
                 sex_determination_system=sex_determination_system,
