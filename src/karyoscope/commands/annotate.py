@@ -105,6 +105,17 @@ logger = logging.getLogger(__name__)
     "ranks, and rank N is simply the Nth record of the query file.",
 )
 @click.option(
+    "--query-names-sidecar",
+    is_flag=True,
+    default=False,
+    help="For BAM/CRAM input, also write <outdir>/<input>.query_names.txt.gz: "
+    "the record names in the order hks assigns ranks, one per line. Teed off the "
+    "decode annotate performs anyway, so it is nearly free -- whereas recovering "
+    "the same mapping afterwards costs a second full decode of the alignment "
+    "(~25 min on a 56 GB CRAM). Needed to join rank-identified output back to "
+    "read names, e.g. to pair paired-end mates.",
+)
+@click.option(
     "--reference",
     "reference",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -217,6 +228,7 @@ def cmd(
     db_id: str | None,
     db_root_arg: Path | None,
     query_names: bool | None,
+    query_names_sidecar: bool,
     reference: Path | None,
     feature_sets_arg: tuple[str, ...],
     threads: int,
@@ -295,6 +307,7 @@ def cmd(
         check_space=not skip_checks,
         reference=reference,
         query_names=query_names,
+        query_names_sidecar=query_names_sidecar,
         progress=_progress.from_context(),
     )
 

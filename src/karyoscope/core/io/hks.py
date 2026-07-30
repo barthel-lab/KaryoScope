@@ -18,8 +18,10 @@ If neither resolves, :func:`get_hks_binary` raises :class:`ToolNotFoundError`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -197,6 +199,7 @@ def run_hks_lookup(
     threads: int = 0,
     report_query_names: bool = True,
     reference: Path | None = None,
+    query_names_sidecar: Path | None = None,
     capture: bool = False,
 ) -> Path:
     """Invoke ``hks lookup`` for one feature set against one input.
@@ -219,9 +222,119 @@ def run_hks_lookup(
         threads=threads,
         report_query_names=report_query_names,
         reference=reference,
+        query_names_sidecar=query_names_sidecar,
         capture=capture,
     )
     return output_path
+
+
+@contextlib.contextmanager
+def materialised_queries(
+    input_paths: list[Path],
+    *,
+    reference: Path | None = None,
+    threads: int = 0,
+    query_names_sidecar: dict[Path, Path] | None = None,
+    capture: bool = False,
+):
+    """Yield ``{input_path: seekable_query_path}``, converting alignments once.
+
+    ``hks lookup`` needs a seekable path, so BAM/CRAM inputs are decoded to a
+    temp FASTA. That decode is EXPENSIVE -- ~25 minutes for a 56 GB CRAM -- and
+    it used to live inside :func:`run_hks_lookup_batch`, which the annotate
+    backend calls once per feature set. A six-feature-set database therefore
+    decoded the same alignment six times, ~2.5 hours of pure redundancy. Hoisting
+    it into a context manager lets the caller pay for it once and reuse the
+    result across every feature set.
+
+    ``query_names_sidecar`` maps an input to a path that receives its record
+    names, one per line, in the order hks will assign ranks. That is teed off
+    THIS decode rather than requiring the caller to decode the alignment a second
+    time purely to recover them (another ~25 minutes and a full re-read on the
+    largest sample).
+
+    Temp FASTAs are removed on exit, including on failure.
+    """
+    tmp_fastas: list[Path] = []
+    samtools: str | None = None
+    query_paths: dict[Path, Path] = {}
+    try:
+        for input_path in input_paths:
+            suffix = input_path.suffix.lower()
+            if suffix not in _ALIGNMENT_EXTENSIONS:
+                query_paths[input_path] = input_path
+                continue
+            fmt = suffix.lstrip(".").upper()
+            if suffix == ".cram" and reference is None:
+                raise KaryoscopeError(
+                    f"{input_path.name} is a CRAM, which stores bases as a diff "
+                    f"against the reference it was aligned to, so it cannot be "
+                    f"decoded without that reference. Pass --reference "
+                    f"<genome.fasta> (the same one used for alignment)."
+                )
+            if samtools is None:
+                samtools = require_tool(
+                    "samtools",
+                    install_hint=(
+                        "Install samtools to use BAM/CRAM inputs:\n"
+                        "  conda install -c bioconda samtools\n"
+                        "Or convert the alignment to FASTA first:\n"
+                        "  samtools fasta input.bam | gzip > input.fasta.gz"
+                    ),
+                )
+            with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp:
+                tmp_fasta = Path(tmp.name)
+            tmp_fastas.append(tmp_fasta)
+
+            cmd = [samtools, "fasta", "-F", "0x900", "-N"]
+            if reference is not None:
+                # NOT -T: in `samtools fasta` that is the copy-tags-to-header
+                # taglist, and a path there silently yields a tag-decorated FASTA
+                # with no reference supplied at all.
+                cmd += ["--reference", str(reference)]
+            if threads > 0:
+                cmd += ["-@", str(threads)]
+            cmd.append(str(input_path))
+
+            sidecar = (query_names_sidecar or {}).get(input_path)
+            logger.debug("converting %s to FASTA: %s -> %s", fmt, input_path, tmp_fasta)
+            if sidecar is None:
+                result = subprocess.run(
+                    cmd,
+                    stdout=tmp_fasta.open("wb"),
+                    stderr=subprocess.PIPE if capture else None,
+                    check=False,
+                )
+            else:
+                # tee(1) rather than Python: the FASTA branch is hundreds of GB
+                # and must not be marshalled through this process.
+                sidecar.parent.mkdir(parents=True, exist_ok=True)
+                pipeline = (
+                    f"{shlex.join(cmd)} "
+                    f"| tee >(grep '^>' | cut -c2- | cut -d' ' -f1 "
+                    f"| gzip > {shlex.quote(str(sidecar))}) "
+                    f"> {shlex.quote(str(tmp_fasta))}"
+                )
+                logger.debug("teeing query names to %s", sidecar)
+                result = subprocess.run(
+                    ["bash", "-o", "pipefail", "-c", pipeline],
+                    stderr=subprocess.PIPE if capture else None,
+                    check=False,
+                )
+            if result.returncode != 0:
+                stderr = result.stderr.decode() if result.stderr else ""
+                raise ExternalToolError(cmd=cmd, returncode=result.returncode, stderr=stderr)
+            logger.info(
+                "decoded %s to %.1f GB of FASTA at %s",
+                input_path.name,
+                tmp_fasta.stat().st_size / 1_000_000_000,
+                tmp_fasta,
+            )
+            query_paths[input_path] = tmp_fasta
+        yield query_paths
+    finally:
+        for tmp in tmp_fastas:
+            tmp.unlink(missing_ok=True)
 
 
 def run_hks_lookup_batch(
@@ -233,6 +346,7 @@ def run_hks_lookup_batch(
     threads: int = 0,
     report_query_names: bool = True,
     reference: Path | None = None,
+    query_names_sidecar: dict[Path, Path] | None = None,
     capture: bool = False,
 ) -> None:
     """Invoke ``hks lookup`` ONCE for a feature set, querying many inputs.
@@ -292,71 +406,20 @@ def run_hks_lookup_batch(
     binary = get_hks_binary()
     n_threads = threads if threads > 0 else 4
 
-    tmp_fastas: list[Path] = []
-    samtools: str | None = None
-    try:
-        # Resolve each input to a seekable query path (converting BAM up front).
-        query_paths: list[Path] = []
-        for input_path, output_path in io_pairs:
+    # Conversion is delegated so it is defined in exactly one place. Inputs that
+    # are already seekable pass straight through, so a caller that pre-converted
+    # (see materialised_queries, which the annotate backend uses to decode once
+    # for ALL feature sets) pays nothing here.
+    with materialised_queries(
+        [inp for inp, _ in io_pairs],
+        reference=reference,
+        threads=threads,
+        query_names_sidecar=query_names_sidecar,
+        capture=capture,
+    ) as resolved:
+        query_paths = [resolved[inp] for inp, _ in io_pairs]
+        for _inp, output_path in io_pairs:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            suffix = input_path.suffix.lower()
-            if suffix in _ALIGNMENT_EXTENSIONS:
-                fmt = suffix.lstrip(".").upper()
-                if suffix == ".cram" and reference is None:
-                    raise KaryoscopeError(
-                        f"{input_path.name} is a CRAM, which stores bases as a diff "
-                        f"against the reference it was aligned to, so it cannot be "
-                        f"decoded without that reference. Pass --reference "
-                        f"<genome.fasta> (the same one used for alignment)."
-                    )
-                if samtools is None:
-                    samtools = require_tool(
-                        "samtools",
-                        install_hint=(
-                            "Install samtools to use BAM/CRAM inputs:\n"
-                            "  conda install -c bioconda samtools\n"
-                            "Or convert the alignment to FASTA first:\n"
-                            "  samtools fasta input.bam | gzip > input.fasta.gz"
-                        ),
-                    )
-                with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp:
-                    tmp_fasta = Path(tmp.name)
-                tmp_fastas.append(tmp_fasta)
-                samtools_cmd = [samtools, "fasta", "-F", "0x900", "-N"]
-                if reference is not None:
-                    # NOT -T: in `samtools fasta` that is the copy-tags-to-header
-                    # taglist, and passing a path there silently produces a
-                    # tag-decorated FASTA with no reference supplied at all.
-                    samtools_cmd += ["--reference", str(reference)]
-                # Give the decode its own threads: on a 30x human CRAM this
-                # stage is minutes of wall clock, and it is pure setup before
-                # the index load can even begin.
-                if threads > 0:
-                    samtools_cmd += ["-@", str(threads)]
-                samtools_cmd.append(str(input_path))
-                logger.debug("converting %s to FASTA: %s -> %s", fmt, input_path, tmp_fasta)
-                result = subprocess.run(
-                    samtools_cmd,
-                    stdout=tmp_fasta.open("wb"),
-                    stderr=subprocess.PIPE if capture else None,
-                    check=False,
-                )
-                if result.returncode != 0:
-                    stderr = result.stderr.decode() if result.stderr else ""
-                    raise ExternalToolError(
-                        cmd=samtools_cmd,
-                        returncode=result.returncode,
-                        stderr=stderr,
-                    )
-                logger.info(
-                    "decoded %s to %.1f GB of FASTA at %s",
-                    input_path.name,
-                    tmp_fasta.stat().st_size / 1_000_000_000,
-                    tmp_fasta,
-                )
-                query_paths.append(tmp_fasta)
-            else:
-                query_paths.append(input_path)
 
         cmd: list[str] = [
             binary,
@@ -386,10 +449,6 @@ def run_hks_lookup_batch(
 
         logger.debug("running (batch, %d queries): %s", len(io_pairs), " ".join(cmd))
         _relay_hks_log(run_tool(cmd, capture=capture, oom_hint=HKS_OOM_HINT), "lookup-batch")
-    finally:
-        for p in tmp_fastas:
-            if p.exists():
-                p.unlink()
 
 
 def run_hks_smooth(
