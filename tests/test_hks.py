@@ -9,6 +9,7 @@ import pytest
 from karyoscope.core.external import ToolNotFoundError
 from karyoscope.core.io.features import NOVEL_NAME
 from karyoscope.core.io.hks import (
+    _HKS_MISS_LABEL,
     ENV_OVERRIDE,
     _infer_prefix,
     convert_hks_tsv_to_bed,
@@ -232,3 +233,116 @@ def test_validate_sibling_priorities() -> None:
     # mixed (two share, one distinct) -> flagged
     issues = validate_sibling_priorities(parent_of, {"a": 1, "b": 1, "c": 2})
     assert len(issues) == 1 and "mixed priorities" in issues[0]
+
+
+# --- convert_hks_tsv_to_bed: block-boundary correctness ------------------
+#
+# The conversion reads binary blocks and lets bytes.replace do the scan,
+# rather than looping per line in Python (it was ~10% of annotate's wall
+# time on human input). Correctness then hinges entirely on never handing
+# a partial line to replace, so these tests drive the block size down to a
+# few bytes and compare against the obvious line-by-line implementation.
+
+
+def _reference_convert(tsv_text: str) -> str:
+    """The original line-by-line implementation, as an oracle."""
+    miss = f"\t{_HKS_MISS_LABEL}\n"
+    novel = f"\t{NOVEL_NAME}\n"
+    lines = tsv_text.splitlines(keepends=True)
+    return "".join(line.replace(miss, novel) for line in lines[1:])
+
+
+@pytest.mark.parametrize("block", [1, 2, 3, 5, 6, 7, 8, 13, 64, 8192])
+def test_convert_matches_line_by_line_at_every_block_size(tmp_path: Path, block: int) -> None:
+    """Output must not depend on where blocks happen to fall.
+
+    Block sizes of 5-7 straddle the 6-byte '\\tnone\\n' token specifically.
+    """
+    tsv_text = (
+        "query_name\tfrom_kmer\tto_kmer\tlabel_name\n"
+        "chr1\t0\t10\tchr1\n"
+        "chr1\t10\t20\tnone\n"
+        "chr1\t20\t30\tnone\n"
+        "chr1\t30\t40\tnonesuch\n"
+        "chr2\t0\t5\tcentromere\n"
+        "chr2\t5\t9\tnone\n"
+    )
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_text(tsv_text)
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed, block_bytes=block)
+    assert bed.read_text() == _reference_convert(tsv_text)
+
+
+def test_convert_handles_a_final_line_without_a_newline(tmp_path: Path) -> None:
+    """Both implementations leave an unterminated trailing 'none' alone.
+
+    The token includes its newline, so a label at EOF with no newline
+    isn't a match. Pinned because the block version carries that partial
+    line through a different path than the rest.
+    """
+    tsv_text = "hdr\nchr1\t0\t10\tnone\nchr1\t10\t20\tnone"
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_text(tsv_text)
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed, block_bytes=4)
+    out = bed.read_text()
+    assert out == _reference_convert(tsv_text)
+    assert out.endswith("chr1\t10\t20\tnone")  # unterminated: untouched
+
+
+def test_convert_of_an_empty_file_writes_nothing(tmp_path: Path) -> None:
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_bytes(b"")
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed)
+    assert bed.read_bytes() == b""
+
+
+def test_convert_of_a_header_only_file_writes_nothing(tmp_path: Path) -> None:
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_text("query_name\tfrom_kmer\tto_kmer\tlabel_name\n")
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed, block_bytes=3)
+    assert bed.read_bytes() == b""
+
+
+def test_convert_drops_a_header_longer_than_one_block(tmp_path: Path) -> None:
+    """The header may span reads when the block size is small."""
+    tsv_text = "a_very_long_header_line_indeed\nchr1\t0\t10\tnone\n"
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_text(tsv_text)
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed, block_bytes=4)
+    assert bed.read_text() == f"chr1\t0\t10\t{NOVEL_NAME}\n"
+
+
+def test_convert_handles_a_line_longer_than_a_block(tmp_path: Path) -> None:
+    """A record longer than one block must accumulate, not be split."""
+    long_name = "contig_" + "x" * 500
+    tsv_text = f"hdr\n{long_name}\t0\t10\tnone\n{long_name}\t10\t20\tsat\n"
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_text(tsv_text)
+    bed = tmp_path / "out.bed"
+    convert_hks_tsv_to_bed(tsv, bed, block_bytes=16)
+    assert bed.read_text() == _reference_convert(tsv_text)
+
+
+def test_convert_is_byte_identical_on_pseudorandom_records(tmp_path: Path) -> None:
+    """Fuzz the label mix and line lengths against the oracle."""
+    import random
+
+    rng = random.Random(20260727)
+    labels = ["none", "novel", "nonesuch", "sat", "a", "none", "rDNA_none", ""]
+    rows = [
+        f"ctg{rng.randrange(100)}\t{i}\t{i + rng.randrange(1, 9)}\t{rng.choice(labels)}"
+        for i in range(4000)
+    ]
+    tsv_text = "header\n" + "\n".join(rows) + "\n"
+    tsv = tmp_path / "raw.tsv"
+    tsv.write_text(tsv_text)
+    expected = _reference_convert(tsv_text)
+    for block in (7, 64, 997, 65536):
+        bed = tmp_path / f"out_{block}.bed"
+        convert_hks_tsv_to_bed(tsv, bed, block_bytes=block)
+        assert bed.read_text() == expected, f"mismatch at block_bytes={block}"

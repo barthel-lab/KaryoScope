@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`--threads 0` (the default) now sizes its worker pool from the CPUs the
+  process may actually use**, not the machine's core count. It read
+  `os.cpu_count()`, which ignores cgroups, CPU affinity, and SLURM allocations.
+  Measured on one of our own nodes: `os.cpu_count()` reported 36 while
+  `sched_getaffinity` reported 1, so the default spawned 36 workers to contend
+  for a single allocated CPU. New `karyoscope.cpus` resolves, in order,
+  `$SLURM_CPUS_PER_TASK`, `sched_getaffinity`, `os.process_cpu_count` (3.13+),
+  then `os.cpu_count`.
+
+### Changed
+- **`convert_hks_tsv_to_bed` reads binary blocks instead of looping per line.**
+  It runs twice per feature set — on the raw lookup TSV and again inside
+  `run_hks_smooth` — and on human input those two passes were ~10% of
+  `annotate`'s wall time (129 s of a 21-minute HG002 run), single-threaded,
+  while the rest of the machine idled. Now 8 MiB blocks through
+  `bytes.replace`, with no decode/encode per line. **Measured 2.3x** on a 4 GB
+  real `hks` TSV (21.9 s → 9.5 s), 1.7x at a 30% miss rate; output is
+  byte-identical. Still streams — memory is one block plus a partial line.
+  Blocks are cut at their last newline, so a match can never straddle a
+  boundary (the token ends in a newline, and contains no interior one).
+- **The `karyoscope` console script now routes through `karyoscope._entry`.**
+  Existing editable installs need a `pip install -e .` for the new script to
+  take effect; a fresh install is unaffected.
+
+### Added
+- A dependency missing at *import* time now reports itself in a few readable
+  lines naming the interpreter in use, instead of a bare `ModuleNotFoundError`
+  traceback. `karyoscope.cli` eagerly imports every command module, so one
+  missing package took down **every** command including `--help` and `version`
+  — the two a user would reach for to diagnose it. That import happens inside
+  the pip-generated console script, outside any code KaryoScope controls, so
+  the fix required moving the entry point; the dependency preflight added in
+  2.1.0 cannot help because it runs long after import.
+- An explicit `--threads` above the usable CPU count now logs a warning naming
+  the limiting source (e.g. `$SLURM_CPUS_PER_TASK`) and suggesting a value.
+  Deliberately a warning, not a cap: oversubscription is sometimes faster on
+  heterogeneous CPUs — an Apple M1 Max is 8 performance + 2 efficiency cores,
+  and macOS exposes no way to learn that split, so "number of CPUs" is advice
+  rather than a limit.
+
 ## [2.1.0] - 2026-07-27
 
 ### Added

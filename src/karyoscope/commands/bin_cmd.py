@@ -100,7 +100,7 @@ logger = logging.getLogger(__name__)
     type=int,
     default=1,
     show_default=True,
-    help="Per-sequence-chunk parallelism. 0 = auto (os.cpu_count()). 1 = single-threaded. "
+    help="Per-sequence-chunk parallelism. 0 = auto (the CPUs this process may actually use: a SLURM allocation or CPU affinity, not the machine's core count). 1 = single-threaded. "
     "Stdin/stdout I/O is always single-threaded regardless of this flag.",
 )
 def cmd(

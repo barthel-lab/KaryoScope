@@ -70,7 +70,10 @@ Issues = "https://github.com/barthel-lab/KaryoScope/issues"
 Changelog = "https://github.com/barthel-lab/KaryoScope/blob/main/CHANGELOG.md"
 
 [project.scripts]
-karyoscope = "karyoscope.cli:main"
+# Routed through _entry so a missing dependency reports itself readably
+# instead of raising a bare ModuleNotFoundError out of the generated
+# console script, where KaryoScope cannot catch it. See karyoscope._entry.
+karyoscope = "karyoscope._entry:main"
 
 # --- hatchling configuration ---
 
