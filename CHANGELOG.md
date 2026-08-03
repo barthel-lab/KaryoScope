@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`bin` no longer emits a runt trailing bin.** A trailing partial bin cast a
+  label vote of equal standing to a full one, so a handful of bases could
+  outvote hundreds of kilobases. This was not a rare edge case: the karyotype
+  genome view chooses `bin_size = round(longest_sequence / 250)`, which by
+  construction leaves the longest sequence with a remainder of order tens of
+  bases every time. On CHM13 it produced a lone **48 bp `categorized` row** at
+  the end of chr1 — the last k-mer starts before the trailing `k-1` bases,
+  which stay ambiguous up to the hierarchy root — and that row then earned a
+  full karyotype legend entry for something occupying about 1/5000 of a pixel.
+  A trailing bin shorter than half `bin_size` is now folded into the preceding
+  row. No bases are lost, and a runt that is the only bin on its contig is
+  still emitted rather than dropped.
+
+- **A failed `build` no longer blocks the re-run.** It left the
+  partially-written database directory behind, so the obvious next move — fix
+  the offending BED, colours, or priority file and run the same command again —
+  hit `database directory already exists ... Pass --force to overwrite`, about
+  a directory that never contained a working database. A build that fails now
+  removes what it created, restoring the state it started from.
+  `--keep-intermediates` retains it for inspecting a build that failed late.
+  (Note that `--force` still deletes an existing database *before* building, so
+  a failed `--force` rebuild does not bring the old one back.)
+
 - **`--threads 0` (the default) now sizes its worker pool from the CPUs the
   process may actually use**, not the machine's core count. It read
   `os.cpu_count()`, which ignores cgroups, CPU affinity, and SLURM allocations.
