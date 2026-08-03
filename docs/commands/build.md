@@ -63,6 +63,7 @@ Bases that no feature annotates are, by default, filled with a **background** le
 
 - No hierarchy for a set → a flat star: every leaf is a child of the root, `categorized`.
 - No colours → an auto-generated distinct palette per leaf; grouping/root nodes are `#B0C4DE`, background is `#808080`. Provide your own with `--colors NAME=file` (`feature<tab>color`, or the full `feature_set<tab>feature<tab>color`).
+- `features.tsv` is **not** produced: the HKS backend reads label names from the index and never uses it.
 
 ### Grouping the legend
 
@@ -92,7 +93,6 @@ must share a colour** — otherwise there is no well-defined swatch and the figu
 would silently misrepresent the rest. `build` checks this and fails if a group
 spans two colours. The reverse is fine: two groups may share a colour (two
 labels, one swatch — legible, just redundant).
-- `features.tsv` is **not** produced: the HKS backend reads label names from the index and never uses it.
 
 ## Options
 
