@@ -383,6 +383,8 @@ def build_database(
         Overwrite an existing database directory and/or install record.
     keep_intermediates
         Keep the per-feature FASTA working directory instead of deleting it.
+        Also keeps the partially-built database directory when a build fails,
+        which is otherwise removed so a failed run doesn't block the re-run.
     """
     spec.validate()
     get_hks_binary()  # fail fast if the builder isn't installed
@@ -461,6 +463,20 @@ def build_database(
         result = BuildResult(
             db_id=spec.id, db_dir=db_dir, feature_sets=results, registered=registered
         )
+    except BaseException:
+        # A build that fails partway leaves an unusable half-database behind --
+        # and that half-database then blocks the obvious next move. The user
+        # fixes their BED or colours file, re-runs the same command, and gets
+        # "database directory already exists ... Pass --force to overwrite",
+        # about a directory that never held a working database. Every path
+        # that reaches here created (or, under --force, re-created) db_dir
+        # this run, so removing it restores the state we started from.
+        #
+        # --keep-intermediates leaves it in place, for inspecting a build that
+        # failed late (it already means "keep the working files around").
+        if not keep_intermediates:
+            shutil.rmtree(db_dir, ignore_errors=True)
+        raise
     finally:
         if not keep_intermediates:
             shutil.rmtree(work_dir, ignore_errors=True)

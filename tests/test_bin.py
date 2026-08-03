@@ -134,6 +134,59 @@ class TestBinRecords:
         recs = [("chr1", 0, 150, "A")]
         assert list(bin_records(recs, bin_size=100)) == [("chr1", 0, 150, "A")]
 
+
+class TestRuntTrailingBin:
+    """A trailing remainder must not cast a label vote of its own.
+
+    The genome view sets ``bin_size = round(longest_seq / 250)``, so the
+    longest sequence is left with a remainder of order tens of bp every
+    time. On CHM13 that surfaced as a lone 48 bp ``categorized`` row at the
+    end of chr1 -- one that also earned a full karyotype legend entry.
+    """
+
+    def test_runt_absorbed_into_previous_row(self) -> None:
+        # 10 bp of B trailing a full 100 bp bin of A must not become its own row.
+        recs = [("chr1", 0, 100, "A"), ("chr1", 100, 110, "B")]
+        assert list(bin_records(recs, bin_size=100)) == [("chr1", 0, 110, "A")]
+
+    def test_runt_absorption_loses_no_bases(self) -> None:
+        recs = [("chr1", 0, 100, "A"), ("chr1", 100, 110, "B")]
+        out = list(bin_records(recs, bin_size=100))
+        assert out[-1][2] == 110
+
+    def test_chm13_chr1_case(self) -> None:
+        # The exact observed case: 250 full bins plus a 48 bp remainder whose
+        # k-mers stayed ambiguous up to the hierarchy root.
+        bin_size = 993_549
+        recs = [
+            ("chr1", 0, 248_387_250, "chr1"),
+            ("chr1", 248_387_250, 248_387_298, "categorized"),
+        ]
+        assert list(bin_records(recs, bin_size=bin_size)) == [("chr1", 0, 248_387_298, "chr1")]
+
+    def test_trailing_bin_above_cutoff_keeps_its_label(self) -> None:
+        # Over half a bin is real signal, not a remainder -- keep it.
+        recs = [("chr1", 0, 100, "A"), ("chr1", 100, 180, "B")]
+        assert list(bin_records(recs, bin_size=100)) == [
+            ("chr1", 0, 100, "A"),
+            ("chr1", 100, 180, "B"),
+        ]
+
+    def test_lone_runt_still_emitted(self) -> None:
+        # No preceding row to absorb into: emit it rather than drop the contig.
+        assert list(bin_records([("tig", 0, 40, "A")], bin_size=100)) == [("tig", 0, 40, "A")]
+
+    def test_runt_does_not_bleed_across_chromosomes(self) -> None:
+        recs = [
+            ("chr1", 0, 100, "A"),
+            ("chr1", 100, 110, "Z"),
+            ("chr2", 0, 100, "B"),
+        ]
+        assert list(bin_records(recs, bin_size=100)) == [
+            ("chr1", 0, 110, "A"),
+            ("chr2", 0, 100, "B"),
+        ]
+
     def test_winning_feature_per_bin(self) -> None:
         recs = [
             ("chr1", 0, 60, "A"),
