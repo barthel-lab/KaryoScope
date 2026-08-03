@@ -13,7 +13,7 @@ karyoscope build --spec build.yaml [OPTIONS]
 
 `build` produces a complete, registry-ready [HKS](https://github.com/jnalanko/HKS) database — the same layout `download`/`register` expect (`manifest.yaml`, `hierarchy.tsv`, `colors.tsv`, and an `index/` directory) — from a reference genome and one or more feature-set BED files. It runs the HKS `build-base` and `add-feature-set` construction steps for you, gap-fills unannotated regions with a named background feature, derives the label hierarchy and colours, writes the manifest, and records the result in `installed.json`.
 
-The command's contract begins at a **final per-feature-set BED** whose 4th column is the leaf label. Turning raw annotation sources (RepeatMasker, censat, GENCODE, …) into that BED is up to you — see the worked example under [Preparing a feature-set BED](#preparing-a-feature-set-bed).
+The command's contract begins at a **final per-feature-set BED** whose 4th column is the **feature label**: a leaf of that feature set's hierarchy. Turning raw annotation sources (RepeatMasker, censat, GENCODE, …) into that BED is up to you — see the worked example under [Preparing a feature-set BED](#preparing-a-feature-set-bed).
 
 ## Required inputs
 
@@ -22,7 +22,7 @@ Only two inputs are required — a genome and at least one annotation BED:
 | Input | Required | What it is |
 | --- | --- | --- |
 | **Genome FASTA** (`--sequence`) | **Yes**, for BED (mode A) feature sets | The assembly your annotations are in coordinates of; plain or bgzipped. If a `.fai` is missing, `build` creates one with `samtools faidx`. |
-| **Feature-set BED** (`--feature-set NAME=BED`) | **Yes**, at least one | A BED whose **4th column is the leaf label**. Repeat the flag for more sets. Overlaps are allowed and gaps are filled automatically. |
+| **Feature-set BED** (`--feature-set NAME=BED`) | **Yes**, at least one | A BED whose **4th column is the feature label** — a leaf of this feature set's hierarchy. With no hierarchy file, each distinct label simply becomes its own leaf. Repeat the flag for more sets. Overlaps are allowed and gaps are filled automatically. |
 | Hierarchy (`--hierarchy NAME=PATH`) | No | `child<tab>parent` edge list. Without one, every leaf becomes a child of the root `categorized` (a flat star). |
 | Priorities (`--priority NAME=PATH`) | No | Resolves which label wins a k-mer claimed by several. In its 3-column `child priority parent` form it **also supplies the hierarchy**, so one file covers both. |
 | Colours (`--colors NAME=PATH`) | No | `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`. Without one, a distinct palette is generated per leaf. |
@@ -42,7 +42,7 @@ For what this costs in time, memory, and disk, see [Resource requirements](#reso
 
 Each feature set is one of:
 
-- **BED (mode A):** `--feature-set NAME=annot.bed` together with a shared `--sequence` genome. The genome is sliced into one FASTA per leaf label (each region extended by `k-1` bp so every k-mer that starts in the region is captured). Gaps are filled with a background leaf (see below).
+- **BED (mode A):** `--feature-set NAME=annot.bed` together with a shared `--sequence` genome. The genome is sliced into one FASTA per feature label (each region extended by `k-1` bp so every k-mer that starts in the region is captured). Gaps are filled with a background leaf (see below).
 - **FASTAs (mode B, spec file only):** a feature set entry with `fastas:` (one file per feature) or `per_seq_file:` (one sequence per feature). No genome slicing and no gap-fill.
 
 ### Overlaps, priorities, and variable-k
@@ -71,11 +71,11 @@ Bases that no feature annotates are, by default, filled with a **background** le
 | --- | --- |
 | `--id TEXT` | Database id (also the directory name). Required unless `--spec`. |
 | `--sequence FILE` | Genome FASTA (plain or bgzipped). Required for BED (mode A) feature sets. |
-| `--feature-set NAME=BED` | A feature set as `NAME=annotation.bed` (4th column = leaf label). Repeatable. |
+| `--feature-set NAME=BED` | A feature set as `NAME=annotation.bed` (4th column = the feature label, a leaf of its hierarchy). Repeatable. |
 | `--background NAME=LABEL` | Gap-fill label for a feature set (default `background`). Repeatable. |
 | `--hierarchy NAME=PATH` | Edge-list (`child parent`) hierarchy for a feature set. Repeatable. |
 | `--priority NAME=PATH` | Priority file for a feature set; enables priority mode. Repeatable. |
-| `--colors NAME=PATH` | Colours file (`feature<tab>color`) for a feature set. Repeatable. |
+| `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`. Repeatable. |
 | `--flatten` | Pre-flatten overlapping BED regions to one label per base. |
 | `--variable-k` | Build a variable-k index (queryable at any k ≤ s, e.g. a k-sweep). Not combinable with `--priority`. |
 | `--spec FILE` | Build-spec YAML (alternative to `--id`/`--sequence`/`--feature-set`). |
@@ -104,7 +104,7 @@ kmer: { s: 31 }
 build: { threads: 16, mem_gigas: 8, external_memory: /scratch/tmp }  # last two optional
 feature_sets:
   - name: repeat
-    bed: /path/repeat.bed            # 4th col = leaf label
+    bed: /path/repeat.bed            # 4th col = feature label (a hierarchy leaf)
     background: nonrepeat            # default "background"; null disables gap-fill
     priority: /path/repeat.priority.txt   # optional; enables priority mode
     hierarchy: /path/repeat.hierarchy.txt # optional; else a flat star
@@ -156,7 +156,7 @@ done
 
 ## Preparing a feature-set BED
 
-`build` starts from a final BED; producing one is dataset-specific. A typical recipe is: take a reference annotation source (RepeatMasker, censat, GENCODE, EDTA, a satellite-monomer catalog, …), reduce it to a BED whose 4th column is the leaf label, optionally priority-merge overlaps, and hand that BED to `build`. Overlaps and gaps are fine — `build` gap-fills automatically and HKS resolves overlaps per k-mer.
+`build` starts from a final BED; producing one is dataset-specific. A typical recipe is: take a reference annotation source (RepeatMasker, censat, GENCODE, EDTA, a satellite-monomer catalog, …), reduce it to a BED whose 4th column is the feature label, optionally priority-merge overlaps, and hand that BED to `build`. Overlaps and gaps are fine — `build` gap-fills automatically and HKS resolves overlaps per k-mer.
 
 > **Planned: `karyoscope prep-bed`.** Turning those raw annotation sources into a final labelled BED — GFF3/GTF gene models into exon/intron/intergenic, RepeatMasker/EDTA tables into labelled repeat BEDs with a hierarchy, satellite monomer files into merged array bands — is the main friction in building a database today, and each source currently needs its own conversion. A dedicated `karyoscope prep-bed` helper for these common conversions is planned. It will be a **separate subcommand**, not folded into `build`: `build`'s contract stays "a final labelled BED", so it never has to sniff and guess at raw file formats.
 
@@ -214,7 +214,7 @@ memory** — so threads are not the lever, even at the extreme.
 
 ### Disk
 
-Budget roughly **2× the final database size** during the build. `build` slices the genome into one FASTA per leaf label before indexing; with feature sets that tile the genome, that working directory is about one genome copy per feature set (~18 GB for CHM13 v2's six sets). It is removed at the end unless you pass `--keep-intermediates`.
+Budget roughly **2× the final database size** during the build. `build` slices the genome into one FASTA per feature label before indexing; with feature sets that tile the genome, that working directory is about one genome copy per feature set (~18 GB for CHM13 v2's six sets). It is removed at the end unless you pass `--keep-intermediates`.
 
 ## Notes
 
