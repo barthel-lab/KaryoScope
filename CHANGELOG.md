@@ -32,6 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Arabidopsis) with notes on what each shows, for comparing your own output
   against.
 
+### Changed
+- **CLI subcommands are imported on demand, cutting startup from ~290 ms to
+  ~70 ms.** Registering the eleven subcommands meant importing all eleven
+  command modules, and one of them (`download`) pulls in `requests` — about
+  190 ms of that 290 ms, paid by every invocation, for an HTTP library most
+  commands never touch. `karyoscope --help` still imports everything, because
+  Click asks each command for its short help to build the listing; every other
+  path now imports only the command being run.
+
+  The broken-install check that `_entry` performs used to be a side-effect of
+  those eager imports, so it is now explicit: the declared dependencies are
+  verified with `importlib.util.find_spec`, which locates a module without
+  executing it (~8 ms for the full set). The check is consequently *stricter*
+  than before — it covers every declared dependency, where the old form caught
+  only what the eager imports happened to touch — and the list is read from
+  installed metadata so it cannot drift from `pyproject.toml`. Since
+  `find_spec` proves presence but not importability, the CLI run is also
+  wrapped, so a dependency that is installed yet unimportable (a truncated
+  install, or `cairosvg` built against the wrong ABI) still reports readably
+  instead of as a traceback.
+
+
 ### Fixed
 - **Karyotype outlines now follow the theme, and the legend lists only what is
   visible.** The sequence-outline guard read `if background_color == "white"`,
