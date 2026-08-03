@@ -677,9 +677,7 @@ class TestLegend:
         ]
         ri = RenderInput(
             map_rows=rows,
-            binned_bed={
-                f"Chr{i}_h1_c{i}": [(0, 30_000_000, f"Chr{i}")] for i in range(1, 6)
-            },
+            binned_bed={f"Chr{i}_h1_c{i}": [(0, 30_000_000, f"Chr{i}")] for i in range(1, 6)},
         )
         out = tmp_path / "x.svg"
         render_karyotype(
