@@ -15,6 +15,7 @@ import pytest
 from karyoscope.core.build import build_database
 from karyoscope.core.buildspec import BuildSpec, FeatureSetSpec
 from karyoscope.core.io.hks import run_hks_lookup
+from karyoscope.exceptions import BuildError
 from karyoscope.manifest import validate_database_layout
 
 requires_hks = pytest.mark.skipif(shutil.which("hks") is None, reason="hks binary not on PATH")
@@ -225,3 +226,61 @@ def test_build_refuses_existing_dir_without_force(tmp_path: Path, tiny_inputs: d
     build_database(spec, db_root, register=False, force=False)
     with pytest.raises(BuildError, match="already exists"):
         build_database(spec, db_root, register=False, force=False)
+
+
+@requires_hks
+def test_failed_build_removes_the_partial_database(tmp_path: Path, tiny_inputs: dict) -> None:
+    """A failed build must not block the re-run.
+
+    It used to leave an unusable half-database behind, so the obvious next
+    move -- fix the input, run the same command again -- hit "database
+    directory already exists ... Pass --force", about a directory that never
+    held a working database.
+    """
+    db_root = tmp_path / "db"
+    # Siblings whose priorities are neither all-equal nor all-distinct: an
+    # HKS constraint, checked during preparation.
+    bad_priority = tmp_path / "bad.priority.txt"
+    bad_priority.write_text("LINE 1 categorized\nSINE 1 categorized\nnonrepeat 2 categorized\n")
+    spec = BuildSpec.from_flags(
+        db_id="HKS_fail",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        priorities={"repeat": bad_priority},
+        s=11,
+    )
+    with pytest.raises(BuildError):
+        build_database(spec, db_root, register=False)
+    assert not (db_root / "HKS_fail").exists()
+
+    # The re-run with a valid spec now succeeds without --force.
+    good = BuildSpec.from_flags(
+        db_id="HKS_fail",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        s=11,
+    )
+    result = build_database(good, db_root, register=False)
+    assert result.db_dir.is_dir()
+    validate_database_layout(result.db_dir)
+
+
+@requires_hks
+def test_keep_intermediates_preserves_a_failed_build(tmp_path: Path, tiny_inputs: dict) -> None:
+    # The escape hatch for inspecting a build that failed late.
+    db_root = tmp_path / "db"
+    bad_priority = tmp_path / "bad.priority.txt"
+    bad_priority.write_text("LINE 1 categorized\nSINE 1 categorized\nnonrepeat 2 categorized\n")
+    spec = BuildSpec.from_flags(
+        db_id="HKS_keep",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        priorities={"repeat": bad_priority},
+        s=11,
+    )
+    with pytest.raises(BuildError):
+        build_database(spec, db_root, register=False, keep_intermediates=True)
+    assert (db_root / "HKS_keep").is_dir()
