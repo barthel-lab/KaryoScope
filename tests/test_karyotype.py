@@ -663,6 +663,58 @@ class TestLegend:
         assert text.count("rA") >= 1
         assert "rB" not in text
 
+    def test_title_fits_the_canvas_over_few_chromosomes(self, tmp_path: Path) -> None:
+        # A long title over a narrow karyotype must widen the canvas to hold it.
+        # SVG viewers let text overflow the canvas, so the SVG looks fine while
+        # the rasterised PNG loses both ends -- which is exactly how this shipped:
+        # the Arabidopsis genome plot (5 chromosomes, ~104-char title) rendered
+        # correctly on one node and clipped on another whose default font was
+        # wider. The canvas must fit the title even for a font appreciably wider
+        # than the one used here.
+        rows = [
+            _row(f"Chr{i}_h1_c{i}", chrom=f"Chr{i}", hap="hap1", length=30_000_000)
+            for i in range(1, 6)
+        ]
+        ri = RenderInput(
+            map_rows=rows,
+            binned_bed={
+                f"Chr{i}_h1_c{i}": [(0, 30_000_000, f"Chr{i}")] for i in range(1, 6)
+            },
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={f"Chr{i}": "#2ca02c" for i in range(1, 6)},
+            mode="genome",
+            output_path=out,
+            sample_label="Col-CEN_v1.2",
+            database_id="HKS_arabidopsis_ColCEN",
+            feature_set_label="chromosome",
+            smoothed=True,
+        )
+        svg = out.read_text()
+        width = float(re.search(r'width="([\d.]+)"', svg).group(1))
+        title = re.search(r">([^<]*database[^<]*)<", svg).group(1)
+        # 7.9 px/char is above the ~7.79 that clipped on the node where this was
+        # found, so the canvas has real headroom rather than only just fitting.
+        assert width >= len(title) * 7.9
+
+    def test_every_text_element_declares_a_font_family(self, tmp_path: Path) -> None:
+        # Without font-family the renderer picks its own default sans-serif, so
+        # the same SVG rasterises to different text widths on different machines
+        # -- and the canvas is sized to hold the title, so a wider default clips
+        # it. Pinning the family is what makes the output reproducible.
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=1000)],
+            binned_bed={"chr1_h1_a": [(0, 1000, "rA")]},
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype([ri], colors={"rA": "#2ca02c"}, mode="genome", output_path=out)
+        svg = out.read_text()
+        n_text = svg.count("<text")
+        assert n_text > 0
+        assert svg.count("font-family") == n_text
+
     def test_legend_collapses_features_sharing_a_group(self, tmp_path: Path) -> None:
         # The motivating case: the CHM13 cytoband database has 833 features in
         # a handful of colours, and the legend silently truncated to the ~51

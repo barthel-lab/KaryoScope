@@ -134,6 +134,31 @@ _CENTROMERE_TARGET_PX = 1000
 #: instead of a fixed 10 Mbp that's a third of the chromosome).
 _SCALE_BAR_TARGET_PX = 40
 
+#: Font stack for every text element in the SVG.
+#:
+#: Declaring this matters for more than looks. With no ``font-family``, each
+#: renderer picks its own default sans-serif, so the *same* SVG rasterises to
+#: different text widths on different machines -- and since the canvas width is
+#: sized to hold the title (see :data:`_TITLE_PX_PER_CHAR`), a machine whose
+#: default font is wider than the one the width was computed for clips the
+#: title. That is not hypothetical: the Arabidopsis genome plot rendered
+#: correctly on one node and lost both ends of its title on another, from this
+#: exact cause. DejaVu Sans is the first choice because it ships with the
+#: KaryoScope environment (and with matplotlib), so it is present wherever
+#: KaryoScope runs; the rest are fallbacks.
+_FONT_FAMILY = "DejaVu Sans, Verdana, Helvetica, Arial, sans-serif"
+
+#: Width estimate for the title, in px per character at 14 px bold.
+#:
+#: This MUST over-estimate. The title is centred and the canvas is widened to
+#: hold it, so an under-estimate clips it at both ends, while an over-estimate
+#: only adds whitespace. Measured for the pinned font above: DejaVu Sans at
+#: 14 px is 7.34 px/char, and cairosvg's synthesised bold renders 7.58. The
+#: previous value of 7.5 sat *below* the bold figure and was described as an
+#: over-estimate, which is what let the clipping through. 9.0 keeps ~19%
+#: headroom, enough to absorb a fallback font being wider than DejaVu Sans.
+_TITLE_PX_PER_CHAR = 9.0
+
 #: Minimum total drawn height (px) for a feature to earn a legend row. A feature
 #: whose entire rendered extent is a fraction of one pixel cannot be found in the
 #: figure, so a legend entry for it only sends the reader hunting for a colour
@@ -897,9 +922,7 @@ def render_karyotype(
             title_parts.append("smoothed")
         title_text = "  |  ".join(title_parts)
         title_margin = 15
-        # ~7.5 px/char for 14 pt bold sans-serif (a rough over-estimate so
-        # the title never clips).
-        title_half = (len(title_text) * 7.5) / 2
+        title_half = (len(title_text) * _TITLE_PX_PER_CHAR) / 2
         title_center = max(title_center, title_half + title_margin)
         image_width = max(image_width, title_center + title_half + title_margin)
 
@@ -923,6 +946,7 @@ def render_karyotype(
                 text_anchor="middle",
                 fill=text_color,
                 font_weight="bold",
+                font_family=_FONT_FAMILY,
             )
         )
 
@@ -957,6 +981,7 @@ def render_karyotype(
                 chrom_label_y,
                 text_anchor="middle",
                 fill=text_color,
+                font_family=_FONT_FAMILY,
             )
         )
         if len(HAPLOTYPES) > 1:
@@ -979,6 +1004,7 @@ def render_karyotype(
                         hap_label_y,
                         text_anchor="middle",
                         fill=text_color,
+                        font_family=_FONT_FAMILY,
                     )
                 )
 
@@ -1180,6 +1206,7 @@ def render_karyotype(
             text_anchor="middle",
             fill=text_color,
             transform=f"rotate(-90, {label1_x}, {label_y_center})",
+            font_family=_FONT_FAMILY,
         )
     )
     d.append(
@@ -1191,6 +1218,7 @@ def render_karyotype(
             text_anchor="middle",
             fill=text_color,
             transform=f"rotate(-90, {label2_x}, {label_y_center})",
+            font_family=_FONT_FAMILY,
         )
     )
     if mode == "subtelomere":
@@ -1215,6 +1243,7 @@ def render_karyotype(
                 text_anchor="middle",
                 fill=text_color,
                 transform=f"rotate(-90, {label1_x}, {q_arm_label_y_center})",
+                font_family=_FONT_FAMILY,
             )
         )
         d.append(
@@ -1226,6 +1255,7 @@ def render_karyotype(
                 text_anchor="middle",
                 fill=text_color,
                 transform=f"rotate(-90, {label2_x}, {q_arm_label_y_center})",
+                font_family=_FONT_FAMILY,
             )
         )
 
@@ -1250,6 +1280,7 @@ def render_karyotype(
                         bottom_chrom_label_y,
                         text_anchor="middle",
                         fill=text_color,
+                        font_family=_FONT_FAMILY,
                     )
                 )
             else:
@@ -1272,6 +1303,7 @@ def render_karyotype(
                             bottom_hap_label_y,
                             text_anchor="middle",
                             fill=text_color,
+                            font_family=_FONT_FAMILY,
                         )
                     )
                 d.append(
@@ -1285,6 +1317,7 @@ def render_karyotype(
                         bottom_chrom_label_y,
                         text_anchor="middle",
                         fill=text_color,
+                        font_family=_FONT_FAMILY,
                     )
                 )
 
@@ -1331,6 +1364,7 @@ def render_karyotype(
                     row_y + legend_swatch_size - 2,
                     text_anchor="start",
                     fill=text_color,
+                    font_family=_FONT_FAMILY,
                 )
             )
 
