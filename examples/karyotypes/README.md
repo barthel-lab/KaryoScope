@@ -113,7 +113,44 @@ and chr2 and chr4 have short NOR-bearing p-arms.
 
 ## Regenerating these
 
-`ks_examples_karyotype.sh` in the KaryoScope working notes drives all six.
+Each plot is one `karyotype` invocation. All six use `--sex unknown` (so the
+haplotypes actually present in the data are drawn, rather than assumed),
+`--format svg --format png`, and `-t 16`. Substitute your own paths:
+
+```bash
+# CHM13 — haploid, single input
+karyoscope karyotype -i chm13v2.0.fasta \
+    --db HKS_human_CHM13_v2 --sample-label CHM13v2.0 \
+    --sex unknown --format svg --format png -t 16 -o out/
+
+# HG002 / HG008N / HG008T — diploid, one -i per haplotype
+karyoscope karyotype -i hap1=hg002v1.1_hap1.fasta.gz -i hap2=hg002v1.1_hap2.fasta.gz \
+    --db HKS_human_CHM13_v2 --sample-label HG002v1.1 \
+    --sex unknown --format svg --format png -t 16 -o out/
+
+# NA19185 — HPRC release 2 (note: release 2 mixes hap1/hap2 and mat/pat naming)
+karyoscope karyotype -i hap1=NA19185_hap1_hprc_r2_v1.0.1.fa.gz \
+                     -i hap2=NA19185_hap2_hprc_r2_v1.0.1.fa.gz \
+    --db HKS_human_CHM13_v2 --sample-label NA19185_HPRCr2 \
+    --sex unknown --format svg --format png -t 16 -o out/
+
+# Arabidopsis — a locally built database, and the plant telomere motif
+karyoscope karyotype -i Col-CEN_v1.2=Col-CEN_v1.2.fasta.gz \
+    --db HKS_arabidopsis_ColCEN --db-root /path/to/your/db \
+    --sample-label Col-CEN_v1.2 --telo-motif CCCTAAA \
+    --sex unknown --format svg --format png -t 16 -o out/
+```
+
+The exact assemblies are named in the table above. The human plots use the
+shipped `HKS_human_CHM13_v2`; the Arabidopsis one needs a database you build
+yourself with [`karyoscope build`](../../docs/commands/build.md), so
+`--db-root` has to point wherever you built it.
+
 Rendering is deterministic given the same assembly, database, and KaryoScope
-version, so a rebuild should reproduce these images — with the caveat that
-changes to the renderer or to binning will legitimately change them.
+version — so a rebuild reproduces these images, with the caveat that changes to
+the renderer or to binning will legitimately change them.
+
+These were produced on a cluster, one job per sample. The whole cascade
+(annotate → scaffold → centromere detection → bin → render) takes roughly
+15–45 minutes per human sample at `-t 16` and about a minute for Arabidopsis;
+peak memory is dominated by the index load, ~10 GB for the human database.
