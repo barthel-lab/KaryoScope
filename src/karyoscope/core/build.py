@@ -29,6 +29,7 @@ from karyoscope._version import __version__
 from karyoscope.core.buildspec import BuildSpec, FeatureSetSpec
 from karyoscope.core.external import require_tool, run_tool
 from karyoscope.core.io import emit, partition
+from karyoscope.core.io.colors import validate_legend_groups
 from karyoscope.core.io.hierarchy import (
     REQUIRED_ROOT,
     Hierarchy,
@@ -129,29 +130,44 @@ def _parse_edge_list(path: Path) -> list[tuple[str, str]]:
     return edges
 
 
-def _parse_set_colors(path: Path) -> dict[str, str]:
-    """Parse a per-set colours file into ``{feature: hex}``.
+def _parse_set_colors(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Parse a per-set colours file into ``({feature: hex}, {feature: legend_group})``.
 
-    Accepts ``feature <tab> color`` or ``feature_set <tab> feature <tab> color``;
-    a header row (last column literally ``color``) is skipped.
+    Accepts, with or without a header row:
+
+    * ``feature <tab> color``
+    * ``feature_set <tab> feature <tab> color``
+    * ``feature_set <tab> feature <tab> color <tab> legend_group``
+
+    The 4th column is optional and matches the ``colors.tsv`` a database
+    carries, so the file `build` consumes has the same shape as the one it
+    emits. Features sharing a ``legend_group`` collapse to a single legend row
+    when the karyotype is rendered; a blank cell means "ungrouped".
     """
     out: dict[str, str] = {}
+    groups: dict[str, str] = {}
     with path.open() as fh:
         for raw in fh:
             line = raw.rstrip("\n")
             if not line.strip() or line.startswith("#"):
                 continue
             parts = line.split("\t")
-            if parts[-1].strip().lower() == "color":
+            last = parts[-1].strip().lower()
+            if last in ("color", "legend_group"):
                 continue  # header
-            if len(parts) >= 3:
+            group = ""
+            if len(parts) >= 4:
+                feature, color, group = parts[1].strip(), parts[2].strip(), parts[3].strip()
+            elif len(parts) == 3:
                 feature, color = parts[1].strip(), parts[2].strip()
             elif len(parts) == 2:
                 feature, color = parts[0].strip(), parts[1].strip()
             else:
                 continue
             out[feature] = color
-    return out
+            if group:
+                groups[feature] = group
+    return out, groups
 
 
 # --- per-feature-set preparation -------------------------------------
@@ -167,6 +183,10 @@ class _PreparedSet:
     edges: list[tuple[str, str]]  # child -> parent
     leaves: list[str]
     node_colors: dict[str, str]
+    #: Optional ``{feature: legend_group}`` from the colours file's 4th column.
+    #: Empty unless the user supplied one, which keeps the emitted colors.tsv
+    #: 3-column for every build that doesn't ask for grouping.
+    node_legend_groups: dict[str, str]
     feature_fastas: list[Path]  # for base-index input in mode B
 
 
@@ -244,10 +264,21 @@ def _prepare_feature_set(
     nodes = hierarchy.nodes(fs.name)
 
     # -- colours --
-    provided = _parse_set_colors(fs.colors) if fs.colors is not None else {}
+    provided, provided_groups = _parse_set_colors(fs.colors) if fs.colors is not None else ({}, {})
     node_colors = emit.assign_colors(
         nodes=nodes, leaves=leaves, background=fs.background, provided=provided
     )
+    # Only keep groups for features this set actually has, so a shared colours
+    # file covering several feature sets doesn't leak another set's groups in.
+    node_legend_groups = {n: g for n, g in provided_groups.items() if n in node_colors}
+    # A legend row is one swatch and one label, so a group spanning two colours
+    # has no well-defined swatch and the figure would silently misrepresent its
+    # members. Catch it here, where it is cheapest to fix, rather than in a plot.
+    group_issues = validate_legend_groups({fs.name: node_colors}, {fs.name: node_legend_groups})
+    if group_issues:
+        raise BuildError(
+            f"feature set {fs.name!r}: invalid legend groups:\n  " + "\n  ".join(group_issues)
+        )
 
     # -- write per-set index artifacts --
     hierarchy_txt = index_dir / f"features.{fs.name}.hierarchy.txt"
@@ -280,6 +311,7 @@ def _prepare_feature_set(
         edges=edges,
         leaves=leaves,
         node_colors=node_colors,
+        node_legend_groups=node_legend_groups,
         feature_fastas=feature_fastas,
     )
 
@@ -549,12 +581,12 @@ def _build_base_index(
 
 def _emit_aggregate_artifacts(spec: BuildSpec, prepared: list[_PreparedSet], db_dir: Path) -> None:
     hierarchy_rows: list[tuple[str, str, str]] = []
-    color_rows: list[tuple[str, str, str]] = []
+    color_rows: list[tuple[str, str, str, str]] = []
     for prep in prepared:
         for child, parent in prep.edges:
             hierarchy_rows.append((prep.name, child, parent))
         for node, color in prep.node_colors.items():
-            color_rows.append((prep.name, node, color))
+            color_rows.append((prep.name, node, color, prep.node_legend_groups.get(node, "")))
 
     emit.write_hierarchy_tsv(db_dir / "hierarchy.tsv", hierarchy_rows)
     emit.write_colors_tsv(db_dir / "colors.tsv", color_rows)

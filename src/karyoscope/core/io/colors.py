@@ -43,9 +43,26 @@ class ColorsError(KaryoscopeError):
 
 _REQUIRED_HEADER: tuple[str, ...] = ("feature_set", "feature", "color")
 
+#: Optional 4th column. When present, features sharing a value are collapsed
+#: into one legend row labelled with it. Optional so every existing 3-column
+#: file keeps parsing unchanged.
+#:
+#: The point is legibility of large feature sets: the CHM13 cytoband database
+#: has 1105 features in 9 colours, and a per-feature legend both dwarfs the
+#: figure and gets silently truncated to whatever fits the canvas. Grouping by
+#: Giemsa stain turns 833 rendered features into 8 rows.
+_OPTIONAL_GROUP_COLUMN = "legend_group"
+_HEADER_WITH_GROUP: tuple[str, ...] = (*_REQUIRED_HEADER, _OPTIONAL_GROUP_COLUMN)
 
-def parse_colors(path: Path) -> dict[str, dict[str, str]]:
-    """Parse ``colors.txt`` at ``path`` into ``{feature_set: {feature: hex_color}}``.
+
+def parse_colors_and_groups(
+    path: Path,
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    """Parse ``colors.txt`` into ``(colours, legend_groups)``.
+
+    Both are ``{feature_set: {feature: value}}``. ``legend_groups`` is empty
+    for a 3-column file, which is every database shipped before the optional
+    column existed.
 
     Validates the header and column count. Hex colour validation is
     intentionally loose -- any non-empty value is accepted, since the
@@ -65,25 +82,44 @@ def parse_colors(path: Path) -> dict[str, dict[str, str]]:
         raise ColorsError(f"colors file is empty: {path}")
 
     header = tuple(h.strip() for h in lines[0].split("\t"))
-    if header != _REQUIRED_HEADER:
+    if header not in (_REQUIRED_HEADER, _HEADER_WITH_GROUP):
         raise ColorsError(
-            f"{path}: unexpected header. Got {header!r}, expected {_REQUIRED_HEADER!r}"
+            f"{path}: unexpected header. Got {header!r}, expected "
+            f"{_REQUIRED_HEADER!r} or {_HEADER_WITH_GROUP!r}"
         )
+    n_columns = len(header)
 
     out: dict[str, dict[str, str]] = {}
+    groups: dict[str, dict[str, str]] = {}
     for i, raw in enumerate(lines[1:], start=2):
         if not raw.strip():
             continue
         parts = raw.split("\t")
-        if len(parts) != 3:
+        if len(parts) != n_columns:
             raise ColorsError(
-                f"{path}:{i}: expected 3 tab-separated columns, got {len(parts)}: {raw!r}"
+                f"{path}:{i}: expected {n_columns} tab-separated columns, got {len(parts)}: {raw!r}"
             )
-        fs, feature, color = (p.strip() for p in parts)
+        fs, feature, color = (p.strip() for p in parts[:3])
         if not fs or not feature or not color:
-            raise ColorsError(f"{path}:{i}: all three columns must be non-empty: {raw!r}")
+            raise ColorsError(
+                f"{path}:{i}: feature_set, feature and color must be non-empty: {raw!r}"
+            )
         out.setdefault(fs, {})[feature] = color
-    return out
+        if n_columns == 4:
+            group = parts[3].strip()
+            if group:
+                groups.setdefault(fs, {})[feature] = group
+    return out, groups
+
+
+def parse_colors(path: Path) -> dict[str, dict[str, str]]:
+    """Parse ``colors.txt`` at ``path`` into ``{feature_set: {feature: hex_color}}``.
+
+    The colours alone, for the many callers that do not care about legend
+    grouping. See :func:`parse_colors_and_groups` for both halves.
+    """
+    colors, _ = parse_colors_and_groups(path)
+    return colors
 
 
 def colors_for_set(
@@ -146,5 +182,44 @@ def validate_colors(
                 issues.append(
                     f"feature set {feature_set!r}: hierarchy node {node!r} "
                     "has no entry in colors.tsv"
+                )
+    return issues
+
+
+def validate_legend_groups(
+    colors: dict[str, dict[str, str]],
+    groups: dict[str, dict[str, str]],
+) -> list[str]:
+    """Check the invariant the legend grouping rests on: one colour per group.
+
+    Returns human-readable issue strings, empty when the file is consistent
+    (which includes every 3-column file, since those declare no groups).
+
+    A legend row is one swatch and one label, so a group spanning two colours
+    has no well-defined swatch -- the renderer would have to pick one and
+    silently misrepresent the rest. That is exactly the failure the grouping
+    exists to prevent, so it is caught when the database is validated rather
+    than discovered in a figure.
+
+    The reverse is deliberately allowed: two groups may share a colour. That
+    is a legible figure (two labels, same swatch), just a redundant one.
+    """
+    issues: list[str] = []
+    for feature_set, per_feature in sorted(groups.items()):
+        colors_by_group: dict[str, dict[str, str]] = {}
+        for feature, group in per_feature.items():
+            color = colors.get(feature_set, {}).get(feature)
+            if color is None:
+                continue  # absent colour is already validate_colors' business
+            colors_by_group.setdefault(group, {})[feature] = color
+        for group, members in sorted(colors_by_group.items()):
+            distinct = sorted(set(members.values()))
+            if len(distinct) > 1:
+                examples = ", ".join(f"{f}={c}" for f, c in sorted(members.items())[:4])
+                issues.append(
+                    f"feature set {feature_set!r}: legend group {group!r} spans "
+                    f"{len(distinct)} colours ({', '.join(distinct)}) -- a legend "
+                    f"row has one swatch, so every feature in a group must share "
+                    f"a colour. Examples: {examples}"
                 )
     return issues

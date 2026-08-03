@@ -7,7 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`colors.tsv` gains an optional 4th column, `legend_group`, and `build`
+  carries it through.** A feature set with hundreds of leaves in a handful of
+  colours produced a legend that dwarfed the figure — and worse, silently
+  truncated to whatever fit the canvas. The CHM13 cytoband database has 833
+  features and the legend drew 51 of them, showing 6% of what was present with
+  no indication the rest were dropped. Features sharing a `legend_group` now
+  collapse to one legend row: 833 entries become 9, labelled by Giemsa stain.
+
+  The column is optional and the header must be exactly 3 or exactly 4 columns,
+  so every existing database parses unchanged and keeps its per-feature legend
+  (verified against `HKS_human_CHM13_v2`: 0 groups). `build --colors` accepts
+  the column and writes it to the database's `colors.tsv`, so the file you
+  supply and the file the database ships have the same shape; it is emitted only
+  when at least one feature declares a group, leaving ungrouped builds
+  byte-identical. Because a legend row is one swatch and one label, `build`
+  fails if a group spans two colours — there would be no well-defined swatch,
+  and the figure would silently misrepresent the rest of the group. See
+  [build → Grouping the legend](docs/commands/build.md#grouping-the-legend).
+
+- **`examples/karyotypes/`** — reference karyotype plots for six assemblies
+  (CHM13, HG002, the HG008 tumour/normal pair, an HPRC population sample, and
+  Arabidopsis) with notes on what each shows, for comparing your own output
+  against.
+
 ### Fixed
+- **Karyotype outlines now follow the theme, and the legend lists only what is
+  visible.** The sequence-outline guard read `if background_color == "white"`,
+  so a black-background plot got no border at all — and the cytoband palette
+  contains pure `#000000` (the gpos100 bands), which then merged into the
+  backdrop and vanished; 159 fills in a real HG002 plot were affected. Legend
+  swatches were stroked black unconditionally, so on a dark background a
+  black-filled swatch disappeared entirely. Outlines are now drawn on every
+  background and derive from the same `text_color` the module already computed;
+  there are zero hardcoded `stroke="black"` left.
+
+  Separately, the legend now omits features whose entire drawn extent is under
+  half a pixel. Such a feature cannot be found in the figure, so a legend row
+  for it only sends the reader hunting for a colour that was never visibly
+  rendered.
+
 - **`bin` no longer emits a runt trailing bin.** A trailing partial bin cast a
   label vote of equal standing to a full one, so a handful of bases could
   outvote hundreds of kilobases. This was not a rare edge case: the karyotype

@@ -25,7 +25,7 @@ Only two inputs are required — a genome and at least one annotation BED:
 | **Feature-set BED** (`--feature-set NAME=BED`) | **Yes**, at least one | A BED whose **4th column is the feature label** — a leaf of this feature set's hierarchy. With no hierarchy file, each distinct label simply becomes its own leaf. Repeat the flag for more sets. Overlaps are allowed and gaps are filled automatically. |
 | Hierarchy (`--hierarchy NAME=PATH`) | No | `child<tab>parent` edge list. Without one, every leaf becomes a child of the root `categorized` (a flat star). |
 | Priorities (`--priority NAME=PATH`) | No | Resolves which label wins a k-mer claimed by several. In its 3-column `child priority parent` form it **also supplies the hierarchy**, so one file covers both. |
-| Colours (`--colors NAME=PATH`) | No | `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`. Without one, a distinct palette is generated per leaf. |
+| Colours (`--colors NAME=PATH`) | No | `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, with an optional 4th `legend_group` column (see [Grouping the legend](#grouping-the-legend)). Without one, a distinct palette is generated per leaf. |
 | Background label (`--background NAME=LABEL`) | No | Names the gap-fill leaf (default `background`). |
 
 Nothing else is needed. In particular there is **no** alignment step, no pre-existing index, and no per-feature FASTA files — `build` slices those out of the genome itself.
@@ -63,6 +63,35 @@ Bases that no feature annotates are, by default, filled with a **background** le
 
 - No hierarchy for a set → a flat star: every leaf is a child of the root, `categorized`.
 - No colours → an auto-generated distinct palette per leaf; grouping/root nodes are `#B0C4DE`, background is `#808080`. Provide your own with `--colors NAME=file` (`feature<tab>color`, or the full `feature_set<tab>feature<tab>color`).
+
+### Grouping the legend
+
+A feature set with hundreds of leaves in a handful of colours produces a legend
+that dwarfs the figure. To collapse it, add an optional 4th column,
+`legend_group`, to the colours file you pass with `--colors`:
+
+```
+feature_set	feature	color	legend_group
+cytoband	p11.1	#000000	gpos100
+cytoband	q21.3	#000000	gpos100
+cytoband	p13.2	#ffffff	gneg
+```
+
+Features sharing a `legend_group` collapse to **one legend row**, labelled by
+the group. A blank cell means "ungrouped" — that feature keeps its own row. For
+the CHM13 cytoband database this turns 833 legend entries into 9, labelled by
+Giemsa stain.
+
+`build` carries the column through to the database's `colors.tsv`, so the file
+you supply and the file the database ships have the same shape. The column is
+written **only if at least one feature declares a group**, so a build that
+doesn't ask for grouping produces the same 3-column file as before.
+
+Because a legend row is one swatch and one label, **every feature in a group
+must share a colour** — otherwise there is no well-defined swatch and the figure
+would silently misrepresent the rest. `build` checks this and fails if a group
+spans two colours. The reverse is fine: two groups may share a colour (two
+labels, one swatch — legible, just redundant).
 - `features.tsv` is **not** produced: the HKS backend reads label names from the index and never uses it.
 
 ## Options
@@ -75,7 +104,7 @@ Bases that no feature annotates are, by default, filled with a **background** le
 | `--background NAME=LABEL` | Gap-fill label for a feature set (default `background`). Repeatable. |
 | `--hierarchy NAME=PATH` | Edge-list (`child parent`) hierarchy for a feature set. Repeatable. |
 | `--priority NAME=PATH` | Priority file for a feature set; enables priority mode. Repeatable. |
-| `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`. Repeatable. |
+| `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, optionally with a 4th `legend_group` column ([Grouping the legend](#grouping-the-legend)). Repeatable. |
 | `--flatten` | Pre-flatten overlapping BED regions to one label per base. |
 | `--variable-k` | Build a variable-k index (queryable at any k ≤ s, e.g. a k-sweep). Not combinable with `--priority`. |
 | `--spec FILE` | Build-spec YAML (alternative to `--id`/`--sequence`/`--feature-set`). |

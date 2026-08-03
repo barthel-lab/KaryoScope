@@ -134,6 +134,41 @@ _CENTROMERE_TARGET_PX = 1000
 #: instead of a fixed 10 Mbp that's a third of the chromosome).
 _SCALE_BAR_TARGET_PX = 40
 
+#: Font stack for every text element in the SVG.
+#:
+#: Declaring this matters for more than looks. With no ``font-family``, each
+#: renderer picks its own default sans-serif, so the *same* SVG rasterises to
+#: different text widths on different machines -- and since the canvas width is
+#: sized to hold the title (see :data:`_TITLE_PX_PER_CHAR`), a machine whose
+#: default font is wider than the one the width was computed for clips the
+#: title. That is not hypothetical: the Arabidopsis genome plot rendered
+#: correctly on one node and lost both ends of its title on another, from this
+#: exact cause. DejaVu Sans is the first choice because it ships with the
+#: KaryoScope environment (and with matplotlib), so it is present wherever
+#: KaryoScope runs; the rest are fallbacks.
+_FONT_FAMILY = "DejaVu Sans, Verdana, Helvetica, Arial, sans-serif"
+
+#: Width estimate for the title, in px per character at 14 px bold.
+#:
+#: This MUST over-estimate. The title is centred and the canvas is widened to
+#: hold it, so an under-estimate clips it at both ends, while an over-estimate
+#: only adds whitespace. Measured for the pinned font above: DejaVu Sans at
+#: 14 px is 7.34 px/char, and cairosvg's synthesised bold renders 7.58. The
+#: previous value of 7.5 sat *below* the bold figure and was described as an
+#: over-estimate, which is what let the clipping through. 9.0 keeps ~19%
+#: headroom, enough to absorb a fallback font being wider than DejaVu Sans.
+_TITLE_PX_PER_CHAR = 9.0
+
+#: Minimum total drawn height (px) for a feature to earn a legend row. A feature
+#: whose entire rendered extent is a fraction of one pixel cannot be found in the
+#: figure, so a legend entry for it only sends the reader hunting for a colour
+#: that was never visibly drawn. The motivating case: the trailing ``k-1`` bases
+#: of a contig begin no complete k-mer, and the last few k-mer starts can stay
+#: ambiguous all the way up to the hierarchy root -- on CHM13 that is a single
+#: 48 bp ``categorized`` interval at the end of chr1, roughly 1/5000 of a pixel
+#: at genome scale, which nonetheless earned a full legend row.
+_LEGEND_MIN_DRAWN_PX = 0.5
+
 
 def _nice_round(value: float) -> int:
     """Nearest 'nice' 1/2/5 x 10^n number (for scale-bar lengths)."""
@@ -434,6 +469,8 @@ def render_karyotype(
     inputs: list[RenderInput],
     *,
     colors: dict[str, str],
+    legend_groups: dict[str, str] | None = None,
+    legend_group_order: list[str] | None = None,
     mode: Mode = "genome",
     sex: str | None = None,
     sex_determination_system: str | dict = "XY",
@@ -624,6 +661,16 @@ def render_karyotype(
     initial_y = (60 if len(HAPLOTYPES) > 1 else 40) + title_offset
     min_q_arm_offset = 5
     text_color = "#000000" if background_color == "white" else "#FFFFFF"
+    # Outlines follow the text, for the same reason: a fill the same colour
+    # as the backdrop is otherwise invisible. That is not hypothetical --
+    # the cytoband palette contains pure #000000 (the gpos100 bands), which
+    # on a black background disappeared entirely, as did every legend swatch
+    # (they were drawn with a hardcoded black stroke regardless of theme).
+    outline_color = text_color
+    # Sequence columns are only ``2 * circle_radius`` px wide (6 px at the
+    # default), and a stroke straddles the path -- so a 1 px border ate a
+    # sixth of the column and read as a white cage rather than an edge.
+    sequence_outline_stroke = 0.5
 
     # Legend band (optional, drawn at the right margin). The total
     # width is computed dynamically after the feature pre-pass below,
@@ -634,6 +681,7 @@ def render_karyotype(
     legend_row_height = 20
     legend_swatch_size = 14
     legend_text_size = 14
+    legend_swatch_stroke = 0.5
 
     P_Q_ARM_GAP = 50
     if mode == "subtelomere":
@@ -692,13 +740,28 @@ def render_karyotype(
     # Walk the binned BEDs once (filtered to seen_sequences only) to
     # collect every feature label that will be drawn. Used for both
     # legend ordering and dynamic width sizing.
-    features_in_data: set[str] = set()
+    # Accumulate each feature's total drawn extent, not merely its presence,
+    # so sub-pixel features can be kept out of the legend (see
+    # :data:`_LEGEND_MIN_DRAWN_PX`).
+    drawn_bp: dict[str, int] = {}
     for ri in inputs:
         for seq, intervals in ri.binned_bed.items():
             if seq not in seen_sequences:
                 continue
-            for _, _, feature in intervals:
-                features_in_data.add(feature)
+            for start, stop, feature in intervals:
+                drawn_bp[feature] = drawn_bp.get(feature, 0) + max(0, stop - start)
+
+    features_in_data = {
+        feature for feature, bp in drawn_bp.items() if bp * pixels_per_pos >= _LEGEND_MIN_DRAWN_PX
+    }
+    dropped = len(drawn_bp) - len(features_in_data)
+    if dropped:
+        logger.info(
+            "legend: omitted %d feature(s) drawn below %.2g px (%s)",
+            dropped,
+            _LEGEND_MIN_DRAWN_PX,
+            ", ".join(sorted(set(drawn_bp) - features_in_data)),
+        )
 
     # Legend sort: see :func:`_legend_sort_key` for the full rule.
     # Briefly: chromosomes (chr*) at the top in natural order, then
@@ -709,6 +772,49 @@ def render_karyotype(
         features_in_data,
         key=lambda f: _legend_sort_key(f, feature_order),
     )
+
+    # Collapse to legend groups when the database declares them. A feature
+    # set can carry hundreds of features in a handful of colours (CHM13
+    # cytoband: 833 rendered features, 8 colours), where a per-feature
+    # legend dwarfs the figure AND silently truncates to whatever fits the
+    # canvas -- so the reader sees an arbitrary subset with no indication
+    # any were dropped.
+    #
+    # Group order follows first appearance in colors.tsv, which the database
+    # controls, rather than anything derived here. `novel` is never grouped:
+    # it is the renderer's own sentinel, injected rather than declared, and
+    # `_legend_sort_key` already sinks it to the bottom.
+    legend_swatch_feature: dict[str, str] = {}
+    if legend_groups:
+        grouped: list[str] = []
+        first_member: dict[str, str] = {}
+        for feature in sorted_legend_features:
+            group = legend_groups.get(feature)
+            if group is None or feature == NOVEL_NAME:
+                grouped.append(feature)
+                legend_swatch_feature[feature] = feature
+                continue
+            if group not in first_member:
+                first_member[group] = feature
+                legend_swatch_feature[group] = feature
+                grouped.append(group)
+        if legend_group_order:
+            rank = {g: i for i, g in enumerate(legend_group_order)}
+            order = {name: i for i, name in enumerate(grouped)}
+
+            def _row_key(name: str) -> tuple[int, int, str]:
+                # Groups first, in the order the database declared; then
+                # anything ungrouped, keeping the order _legend_sort_key
+                # already gave it -- which is what leaves ``novel`` at the
+                # bottom, where that key deliberately puts it.
+                if name in first_member:
+                    return (0, rank.get(name, len(rank)), name)
+                return (1, order[name], name)
+
+            grouped.sort(key=_row_key)
+        n_before, n_after = len(sorted_legend_features), len(grouped)
+        sorted_legend_features = grouped
+        logger.info("legend grouped: %d feature(s) collapsed into %d row(s)", n_before, n_after)
 
     # --- group by chromosome and haplotype ---------------------------
 
@@ -816,9 +922,7 @@ def render_karyotype(
             title_parts.append("smoothed")
         title_text = "  |  ".join(title_parts)
         title_margin = 15
-        # ~7.5 px/char for 14 pt bold sans-serif (a rough over-estimate so
-        # the title never clips).
-        title_half = (len(title_text) * 7.5) / 2
+        title_half = (len(title_text) * _TITLE_PX_PER_CHAR) / 2
         title_center = max(title_center, title_half + title_margin)
         image_width = max(image_width, title_center + title_half + title_margin)
 
@@ -842,6 +946,7 @@ def render_karyotype(
                 text_anchor="middle",
                 fill=text_color,
                 font_weight="bold",
+                font_family=_FONT_FAMILY,
             )
         )
 
@@ -876,6 +981,7 @@ def render_karyotype(
                 chrom_label_y,
                 text_anchor="middle",
                 fill=text_color,
+                font_family=_FONT_FAMILY,
             )
         )
         if len(HAPLOTYPES) > 1:
@@ -898,6 +1004,7 @@ def render_karyotype(
                         hap_label_y,
                         text_anchor="middle",
                         fill=text_color,
+                        font_family=_FONT_FAMILY,
                     )
                 )
 
@@ -1000,66 +1107,41 @@ def render_karyotype(
                         )
                     )
 
-    # --- sequence outlines (white background only) -------------------
+    # --- sequence outlines --------------------------------------------
+    #
+    # Drawn on every background, not just white. They used to be white-only
+    # and hardcoded black, which left a black-background plot with no border
+    # at all -- and the cytoband palette's pure-black bands then merged into
+    # the backdrop and vanished. The outline is what separates a sequence
+    # from the page, so it has to contrast with the page.
 
-    if background_color == "white":
-        for seq, x in x_coords.items():
-            if mode == "subtelomere":
-                if seq in tel_start_sequences:
-                    height = subtelomere_boundary * pixels_per_pos
-                    d.append(
-                        draw.Rectangle(
-                            x - circle_radius,
-                            initial_y,
-                            2 * circle_radius,
-                            height,
-                            fill="none",
-                            stroke="black",
-                            stroke_width=1,
-                        )
-                    )
-                if seq in tel_stop_sequences:
-                    height = subtelomere_boundary * pixels_per_pos
-                    d.append(
-                        draw.Rectangle(
-                            x - circle_radius,
-                            q_arm_start_y,
-                            2 * circle_radius,
-                            height,
-                            fill="none",
-                            stroke="black",
-                            stroke_width=1,
-                        )
-                    )
-            elif mode == "centromere":
-                cen_start, cen_stop = centromere_coords[seq]
-                height = (cen_stop - cen_start) * pixels_per_pos
-                d.append(
-                    draw.Rectangle(
-                        x - circle_radius,
-                        initial_y,
-                        2 * circle_radius,
-                        height,
-                        fill="none",
-                        stroke="black",
-                        stroke_width=1,
-                    )
-                )
-            else:  # genome
-                seq_len = sequence_lengths.get(seq)
-                if seq_len:
-                    height = pos_to_y(seq_len) - initial_y
-                    d.append(
-                        draw.Rectangle(
-                            x - circle_radius,
-                            initial_y,
-                            2 * circle_radius,
-                            height,
-                            fill="none",
-                            stroke="black",
-                            stroke_width=1,
-                        )
-                    )
+    def _outline(x: float, top_y: float, height: float) -> draw.Rectangle:
+        """One sequence's border: same geometry as its column, no fill."""
+        return draw.Rectangle(
+            x - circle_radius,
+            top_y,
+            2 * circle_radius,
+            height,
+            fill="none",
+            stroke=outline_color,
+            stroke_width=sequence_outline_stroke,
+        )
+
+    for seq, x in x_coords.items():
+        if mode == "subtelomere":
+            # Two boxes, one per telomeric end, and only where there is one.
+            height = subtelomere_boundary * pixels_per_pos
+            if seq in tel_start_sequences:
+                d.append(_outline(x, initial_y, height))
+            if seq in tel_stop_sequences:
+                d.append(_outline(x, q_arm_start_y, height))
+        elif mode == "centromere":
+            cen_start, cen_stop = centromere_coords[seq]
+            d.append(_outline(x, initial_y, (cen_stop - cen_start) * pixels_per_pos))
+        else:  # genome
+            seq_len = sequence_lengths.get(seq)
+            if seq_len:
+                d.append(_outline(x, initial_y, pos_to_y(seq_len) - initial_y))
 
     # --- telomere indicator circles (genome mode only) ----------------
 
@@ -1073,7 +1155,7 @@ def render_karyotype(
                         initial_y,
                         2 * circle_radius,
                         fill=telomere_color,
-                        stroke="black",
+                        stroke=outline_color,
                         stroke_width=1,
                     )
                 )
@@ -1087,7 +1169,7 @@ def render_karyotype(
                             q_arm_y,
                             2 * circle_radius,
                             fill=telomere_color,
-                            stroke="black",
+                            stroke=outline_color,
                             stroke_width=1,
                         )
                     )
@@ -1124,6 +1206,7 @@ def render_karyotype(
             text_anchor="middle",
             fill=text_color,
             transform=f"rotate(-90, {label1_x}, {label_y_center})",
+            font_family=_FONT_FAMILY,
         )
     )
     d.append(
@@ -1135,6 +1218,7 @@ def render_karyotype(
             text_anchor="middle",
             fill=text_color,
             transform=f"rotate(-90, {label2_x}, {label_y_center})",
+            font_family=_FONT_FAMILY,
         )
     )
     if mode == "subtelomere":
@@ -1159,6 +1243,7 @@ def render_karyotype(
                 text_anchor="middle",
                 fill=text_color,
                 transform=f"rotate(-90, {label1_x}, {q_arm_label_y_center})",
+                font_family=_FONT_FAMILY,
             )
         )
         d.append(
@@ -1170,6 +1255,7 @@ def render_karyotype(
                 text_anchor="middle",
                 fill=text_color,
                 transform=f"rotate(-90, {label2_x}, {q_arm_label_y_center})",
+                font_family=_FONT_FAMILY,
             )
         )
 
@@ -1194,6 +1280,7 @@ def render_karyotype(
                         bottom_chrom_label_y,
                         text_anchor="middle",
                         fill=text_color,
+                        font_family=_FONT_FAMILY,
                     )
                 )
             else:
@@ -1216,6 +1303,7 @@ def render_karyotype(
                             bottom_hap_label_y,
                             text_anchor="middle",
                             fill=text_color,
+                            font_family=_FONT_FAMILY,
                         )
                     )
                 d.append(
@@ -1229,6 +1317,7 @@ def render_karyotype(
                         bottom_chrom_label_y,
                         text_anchor="middle",
                         fill=text_color,
+                        font_family=_FONT_FAMILY,
                     )
                 )
 
@@ -1248,9 +1337,12 @@ def render_karyotype(
             # Bail out if the legend would overflow the SVG height
             # (rare on tall karyotypes but possible for small ones).
             if row_y + legend_swatch_size > image_height - 5:
-                logger.info(
-                    "legend truncated at %d entries; remaining features fit outside the SVG height",
+                logger.warning(
+                    "legend truncated at %d of %d entries: the rest fall outside "
+                    "the SVG height and are NOT shown. The figure understates the "
+                    "features present.",
                     i,
+                    len(sorted_legend_features),
                 )
                 break
             d.append(
@@ -1259,9 +1351,9 @@ def render_karyotype(
                     row_y,
                     legend_swatch_size,
                     legend_swatch_size,
-                    fill=_color_for(feature),
-                    stroke="black",
-                    stroke_width=0.5,
+                    fill=_color_for(legend_swatch_feature.get(feature, feature)),
+                    stroke=outline_color,
+                    stroke_width=legend_swatch_stroke,
                 )
             )
             d.append(
@@ -1272,6 +1364,7 @@ def render_karyotype(
                     row_y + legend_swatch_size - 2,
                     text_anchor="start",
                     fill=text_color,
+                    font_family=_FONT_FAMILY,
                 )
             )
 

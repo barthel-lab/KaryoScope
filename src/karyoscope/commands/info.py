@@ -174,10 +174,15 @@ def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
     # same checks as hard errors.
     color_issues: list[str] = []
     try:
-        from karyoscope.core.io.colors import parse_colors, validate_colors
+        from karyoscope.core.io.colors import (
+            parse_colors_and_groups,
+            validate_colors,
+            validate_legend_groups,
+        )
 
-        colors = parse_colors(db_dir / manifest.colors)
+        colors, legend_groups = parse_colors_and_groups(db_dir / manifest.colors)
         color_issues = validate_colors(hierarchy, colors)
+        color_issues += validate_legend_groups(colors, legend_groups)
     except Exception as e:
         color_issues = [f"colors.tsv could not be parsed: {e}"]
 
