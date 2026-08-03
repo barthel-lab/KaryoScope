@@ -26,6 +26,7 @@ like ``--quiet`` on ``download``.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import sys
 
@@ -33,19 +34,32 @@ import click
 
 from karyoscope import diskspace
 from karyoscope._version import __version__
-from karyoscope.commands import (
-    annotate,
-    bin_cmd,
-    build,
-    centromeres,
-    download,
-    info,
-    karyotype,
-    register,
-    remap_bed,
-    scaffold,
-    version,
-)
+
+#: Subcommand name -> ``module:attribute`` holding its ``click.Command``.
+#:
+#: Imported on demand rather than up front. Registering the subcommands used to
+#: mean importing all eleven command modules, and one of them (``download``)
+#: pulls in ``requests`` -- ~190 ms of the ~290 ms it took to import this
+#: module, paid by every invocation including ``karyoscope --version`` and
+#: every ``annotate`` run, for an HTTP library they never touch.
+#:
+#: ``--help`` still imports everything, because Click asks each command for its
+#: short help to build the listing. That is the one path where the old cost
+#: remains; it is not a regression, and avoiding it would mean duplicating each
+#: command's summary here, where it could drift from the docstring it mirrors.
+_LAZY_COMMANDS: dict[str, str] = {
+    "download": "karyoscope.commands.download:cmd",
+    "register": "karyoscope.commands.register:cmd",
+    "build": "karyoscope.commands.build:cmd",
+    "annotate": "karyoscope.commands.annotate:cmd",
+    "scaffold": "karyoscope.commands.scaffold:cmd",
+    "remap-bed": "karyoscope.commands.remap_bed:cmd",
+    "bin": "karyoscope.commands.bin_cmd:cmd",
+    "centromeres": "karyoscope.commands.centromeres:cmd",
+    "karyotype": "karyoscope.commands.karyotype:cmd",
+    "info": "karyoscope.commands.info:cmd",
+    "version": "karyoscope.commands.version:cmd",
+}
 
 CONTEXT_SETTINGS = {
     "help_option_names": ["-h", "--help"],
@@ -67,6 +81,22 @@ class _KaryoscopeGroup(click.Group):
     Catching it here covers every subcommand, including ones that don't
     (yet) run their own space check.
     """
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        """Every subcommand, without importing any of them."""
+        return sorted({*super().list_commands(ctx), *_LAZY_COMMANDS})
+
+    def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
+        """Resolve one subcommand, importing only its module."""
+        cmd = super().get_command(ctx, name)
+        if cmd is not None:
+            return cmd
+        target = _LAZY_COMMANDS.get(name)
+        if target is None:
+            return None
+        module_name, _, attribute = target.partition(":")
+        module = importlib.import_module(module_name)
+        return getattr(module, attribute)
 
     def invoke(self, ctx: click.Context) -> object:
         try:
@@ -165,17 +195,6 @@ def main(ctx: click.Context, verbose: int, quiet: bool) -> None:
 
 
 # Register subcommands. The order here determines the order in `--help`.
-main.add_command(download.cmd, name="download")
-main.add_command(register.cmd, name="register")
-main.add_command(build.cmd, name="build")
-main.add_command(annotate.cmd, name="annotate")
-main.add_command(scaffold.cmd, name="scaffold")
-main.add_command(remap_bed.cmd, name="remap-bed")
-main.add_command(bin_cmd.cmd, name="bin")
-main.add_command(centromeres.cmd, name="centromeres")
-main.add_command(karyotype.cmd, name="karyotype")
-main.add_command(info.cmd, name="info")
-main.add_command(version.cmd, name="version")
 
 
 if __name__ == "__main__":
