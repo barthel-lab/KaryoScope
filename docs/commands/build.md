@@ -104,7 +104,7 @@ labels, one swatch — legible, just redundant).
 | `--background NAME=LABEL` | Gap-fill label for a feature set (default `background`). Repeatable. |
 | `--hierarchy NAME=PATH` | Edge-list (`child parent`) hierarchy for a feature set. Repeatable. |
 | `--priority NAME=PATH` | Priority file for a feature set; enables priority mode. Repeatable. |
-| `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`. Repeatable. |
+| `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, optionally with a 4th `legend_group` column ([Grouping the legend](#grouping-the-legend)). Repeatable. |
 | `--flatten` | Pre-flatten overlapping BED regions to one label per base. |
 | `--variable-k` | Build a variable-k index (queryable at any k ≤ s, e.g. a k-sweep). Not combinable with `--priority`. |
 | `--spec FILE` | Build-spec YAML (alternative to `--id`/`--sequence`/`--feature-set`). |

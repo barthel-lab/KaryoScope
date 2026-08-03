@@ -1,5 +1,12 @@
 # Examples
 
+## [`karyotypes/`](karyotypes/) — reference plots to compare against
+
+Karyotype plots for six assemblies — CHM13, HG002, the HG008 tumour/normal
+pair, an HPRC population sample, and Arabidopsis — with notes on what each one
+shows and what to look for in your own output. Start there if you have run
+`karyoscope karyotype` and want to know whether the result looks right.
+
 ## `run_demo.sh` — quick demo / install smoke test
 
 Runs the full KaryoScope annotation step end to end in a few seconds, using the
