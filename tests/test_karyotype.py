@@ -10,6 +10,7 @@ from typing import ClassVar
 import pytest
 from click.testing import CliRunner
 
+import karyoscope.core.karyotype as karyotype_mod
 from karyoscope.cli import main
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.karyotype import (
@@ -661,6 +662,133 @@ class TestLegend:
         # rA should appear as a legend label; rB should not.
         assert text.count("rA") >= 1
         assert "rB" not in text
+
+    def test_legend_collapses_features_sharing_a_group(self, tmp_path: Path) -> None:
+        # The motivating case: the CHM13 cytoband database has 833 features in
+        # a handful of colours, and the legend silently truncated to the ~51
+        # that fit the canvas. Grouping collapses them to one row per group.
+        length = 3_000_000
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=length)],
+            binned_bed={
+                "chr1_h1_a": [
+                    (0, 1_000_000, "p11.1"),
+                    (1_000_000, 2_000_000, "q21.3"),
+                    (2_000_000, length, "p13.2"),
+                ]
+            },
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"p11.1": "#000000", "q21.3": "#000000", "p13.2": "#ffffff"},
+            legend_groups={"p11.1": "gpos100", "q21.3": "gpos100", "p13.2": "gneg"},
+            mode="genome",
+            output_path=out,
+            show_title=False,
+        )
+        text = out.read_text()
+        # Group labels replace the per-feature labels entirely.
+        assert "gpos100" in text
+        assert "gneg" in text
+        assert "p11.1" not in text
+        assert "q21.3" not in text
+        assert "p13.2" not in text
+
+    def test_legend_ungrouped_without_groups(self, tmp_path: Path) -> None:
+        # A database with no legend_group column (every one shipped before the
+        # option existed) must keep its per-feature legend unchanged.
+        length = 2_000_000
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=length)],
+            binned_bed={"chr1_h1_a": [(0, 1_000_000, "rA"), (1_000_000, length, "rB")]},
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"rA": "#2ca02c", "rB": "#d62728"},
+            mode="genome",
+            output_path=out,
+            show_title=False,
+        )
+        text = out.read_text()
+        assert "rA" in text
+        assert "rB" in text
+
+    def test_outlines_drawn_on_dark_background(self, tmp_path: Path) -> None:
+        # Outlines were white-background-only and hardcoded black, so a dark
+        # plot got no sequence border -- and a black-filled cytoband then
+        # merged into the backdrop. The outline must contrast with the page.
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=1000)],
+            binned_bed={"chr1_h1_a": [(0, 1000, "gpos100")]},
+        )
+        outs = {}
+        for bg in ("white", "black"):
+            p = tmp_path / f"{bg}.svg"
+            render_karyotype(
+                [ri],
+                colors={"gpos100": "#000000"},
+                mode="genome",
+                output_path=p,
+                show_title=False,
+                background_color=bg,
+            )
+            outs[bg] = p.read_text()
+        # Dark theme strokes white, light theme strokes black -- and neither
+        # leaves the sequence unbordered.
+        assert 'stroke="#FFFFFF"' in outs["black"]
+        assert 'stroke="#000000"' in outs["white"]
+
+    def test_no_hardcoded_black_strokes_remain(self) -> None:
+        # The regression this guards: strokes that ignore the theme. Every
+        # stroke in the module must derive from outline_color/text_color.
+        src = Path(karyotype_mod.__file__).read_text()
+        assert 'stroke="black"' not in src
+
+    def test_legend_omits_subpixel_features(self, tmp_path: Path) -> None:
+        # A feature whose entire drawn extent is a fraction of a pixel cannot
+        # be found in the figure, so a legend row for it only sends the reader
+        # hunting for a colour that was never visibly rendered. Mirrors the
+        # observed CHM13 case: a 48 bp `categorized` tail on a 248 Mb chr1.
+        length = 248_387_298
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=length)],
+            binned_bed={
+                "chr1_h1_a": [(0, length - 48, "chr1"), (length - 48, length, "categorized")]
+            },
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"chr1": "#2ca02c", "categorized": "#B0C4DE"},
+            mode="genome",
+            output_path=out,
+            show_title=False,
+        )
+        text = out.read_text()
+        assert "chr1" in text
+        assert "categorized" not in text
+
+    def test_legend_keeps_small_but_visible_features(self, tmp_path: Path) -> None:
+        # The filter is on visibility, not smallness: a feature occupying a few
+        # percent of a chromosome is easily visible and must keep its row.
+        length = 1_000_000
+        ri = RenderInput(
+            map_rows=[_row("chr1_h1_a", chrom="chr1", hap="hap1", length=length)],
+            binned_bed={"chr1_h1_a": [(0, 950_000, "rA"), (950_000, length, "rB")]},
+        )
+        out = tmp_path / "x.svg"
+        render_karyotype(
+            [ri],
+            colors={"rA": "#2ca02c", "rB": "#d62728"},
+            mode="genome",
+            output_path=out,
+            show_title=False,
+        )
+        text = out.read_text()
+        assert "rA" in text
+        assert "rB" in text
 
     def test_no_legend_suppresses_legend(self, tmp_path: Path) -> None:
         ri = RenderInput(

@@ -110,13 +110,30 @@ def write_feature_set_hierarchy_txt(path: Path, edges: Sequence[tuple[str, str]]
             out.write(f"{child}\t{parent}\n")
 
 
-def write_colors_tsv(path: Path, rows: Sequence[tuple[str, str, str]]) -> None:
-    """Write the ``feature_set <tab> feature <tab> color`` file."""
+def write_colors_tsv(
+    path: Path, rows: Sequence[tuple[str, str, str] | tuple[str, str, str, str]]
+) -> None:
+    """Write the ``feature_set <tab> feature <tab> color`` file.
+
+    Rows may carry an optional 4th ``legend_group`` element. The column is
+    emitted only when at least one row actually declares a group, so a build
+    that doesn't ask for grouping produces the same 3-column file it always
+    did -- which matters because every database shipped before the column
+    existed is 3-column, and readers accept exactly 3 or exactly 4.
+    """
+    normalised = [(r[0], r[1], r[2], r[3] if len(r) > 3 else "") for r in rows]
+    with_groups = any(group for *_, group in normalised)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as out:
-        out.write("feature_set\tfeature\tcolor\n")
-        for feature_set, feature, color in rows:
-            out.write(f"{feature_set}\t{feature}\t{color}\n")
+        if with_groups:
+            out.write("feature_set\tfeature\tcolor\tlegend_group\n")
+            for feature_set, feature, color, group in normalised:
+                out.write(f"{feature_set}\t{feature}\t{color}\t{group}\n")
+        else:
+            out.write("feature_set\tfeature\tcolor\n")
+            for feature_set, feature, color, _ in normalised:
+                out.write(f"{feature_set}\t{feature}\t{color}\n")
 
 
 def write_priorities_file(path: Path, priorities: Mapping[str, int]) -> None:

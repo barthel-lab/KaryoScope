@@ -10,7 +10,9 @@ from karyoscope.core.io.colors import (
     ColorsError,
     colors_for_set,
     parse_colors,
+    parse_colors_and_groups,
     validate_colors,
+    validate_legend_groups,
 )
 from karyoscope.core.io.hierarchy import Hierarchy, HierarchyRow
 
@@ -69,6 +71,108 @@ class TestParseColors:
         p.write_text("feature_set\tfeature\tcolor\nchromosome\tchr1\t\n")
         with pytest.raises(ColorsError, match="non-empty"):
             parse_colors(p)
+
+
+class TestParseColorsAndGroups:
+    """The optional 4th ``legend_group`` column.
+
+    Databases shipped before the column existed are 3-column, so the parser
+    must accept exactly 3 or exactly 4 and nothing in between -- a 3-column
+    file has to keep parsing byte-identically.
+    """
+
+    def test_three_column_file_declares_no_groups(self, tmp_path: Path) -> None:
+        p = tmp_path / "colors.txt"
+        p.write_text(
+            "feature_set\tfeature\tcolor\nchromosome\tchr1\t#1f77b4\nchromosome\tchr2\t#ff7f0e\n"
+        )
+        colors, groups = parse_colors_and_groups(p)
+        assert colors == {"chromosome": {"chr1": "#1f77b4", "chr2": "#ff7f0e"}}
+        assert groups == {}
+
+    def test_four_column_file_collects_groups(self, tmp_path: Path) -> None:
+        p = tmp_path / "colors.txt"
+        p.write_text(
+            "feature_set\tfeature\tcolor\tlegend_group\n"
+            "cytoband\tp11.1\t#000000\tgpos100\n"
+            "cytoband\tq21.3\t#000000\tgpos100\n"
+            "cytoband\tp13.2\t#ffffff\tgneg\n"
+        )
+        colors, groups = parse_colors_and_groups(p)
+        assert colors["cytoband"] == {
+            "p11.1": "#000000",
+            "q21.3": "#000000",
+            "p13.2": "#ffffff",
+        }
+        assert groups == {"cytoband": {"p11.1": "gpos100", "q21.3": "gpos100", "p13.2": "gneg"}}
+
+    def test_parse_colors_ignores_the_group_column(self, tmp_path: Path) -> None:
+        # The many callers that only want colours must be unaffected by the
+        # column's presence.
+        p = tmp_path / "colors.txt"
+        p.write_text(
+            "feature_set\tfeature\tcolor\tlegend_group\ncytoband\tp11.1\t#000000\tgpos100\n"
+        )
+        assert parse_colors(p) == {"cytoband": {"p11.1": "#000000"}}
+
+    def test_blank_group_is_not_a_group(self, tmp_path: Path) -> None:
+        # An empty 4th cell means "ungrouped", not a group named "".
+        p = tmp_path / "colors.txt"
+        p.write_text(
+            "feature_set\tfeature\tcolor\tlegend_group\n"
+            "region\trA\t#2ca02c\t\n"
+            "region\trB\t#d62728\tsat\n"
+        )
+        _, groups = parse_colors_and_groups(p)
+        assert groups == {"region": {"rB": "sat"}}
+
+    def test_five_column_header_rejected(self, tmp_path: Path) -> None:
+        p = tmp_path / "colors.txt"
+        p.write_text(
+            "feature_set\tfeature\tcolor\tlegend_group\textra\nregion\trA\t#2ca02c\tsat\tx\n"
+        )
+        with pytest.raises(ColorsError, match="unexpected header"):
+            parse_colors_and_groups(p)
+
+    def test_row_must_match_the_declared_column_count(self, tmp_path: Path) -> None:
+        # A 4-column header with a 3-column row is a malformed file, not an
+        # implicitly ungrouped feature.
+        p = tmp_path / "colors.txt"
+        p.write_text("feature_set\tfeature\tcolor\tlegend_group\nregion\trA\t#2ca02c\n")
+        with pytest.raises(ColorsError, match="expected 4 tab-separated columns"):
+            parse_colors_and_groups(p)
+
+
+class TestValidateLegendGroups:
+    """One legend row is one swatch, so a group must not span two colours."""
+
+    def test_consistent_groups_pass(self) -> None:
+        colors = {"cytoband": {"p11.1": "#000000", "q21.3": "#000000"}}
+        groups = {"cytoband": {"p11.1": "gpos100", "q21.3": "gpos100"}}
+        assert validate_legend_groups(colors, groups) == []
+
+    def test_three_column_file_has_nothing_to_validate(self) -> None:
+        assert validate_legend_groups({"region": {"rA": "#2ca02c"}}, {}) == []
+
+    def test_group_spanning_two_colours_flagged(self) -> None:
+        colors = {"cytoband": {"p11.1": "#000000", "q21.3": "#ffffff"}}
+        groups = {"cytoband": {"p11.1": "gpos100", "q21.3": "gpos100"}}
+        issues = validate_legend_groups(colors, groups)
+        assert len(issues) == 1
+        assert "gpos100" in issues[0]
+        assert "#000000" in issues[0] and "#ffffff" in issues[0]
+
+    def test_two_groups_may_share_a_colour(self) -> None:
+        # Legible (two labels, one swatch), just redundant -- deliberately allowed.
+        colors = {"cytoband": {"a": "#000000", "b": "#000000"}}
+        groups = {"cytoband": {"a": "gpos100", "b": "gpos75"}}
+        assert validate_legend_groups(colors, groups) == []
+
+    def test_missing_colour_is_not_this_validator_s_business(self) -> None:
+        # validate_colors reports absent colours; this one must not double-report.
+        colors: dict[str, dict[str, str]] = {"cytoband": {}}
+        groups = {"cytoband": {"p11.1": "gpos100"}}
+        assert validate_legend_groups(colors, groups) == []
 
 
 class TestColorsForSet:

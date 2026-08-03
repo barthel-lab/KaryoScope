@@ -134,6 +134,16 @@ _CENTROMERE_TARGET_PX = 1000
 #: instead of a fixed 10 Mbp that's a third of the chromosome).
 _SCALE_BAR_TARGET_PX = 40
 
+#: Minimum total drawn height (px) for a feature to earn a legend row. A feature
+#: whose entire rendered extent is a fraction of one pixel cannot be found in the
+#: figure, so a legend entry for it only sends the reader hunting for a colour
+#: that was never visibly drawn. The motivating case: the trailing ``k-1`` bases
+#: of a contig begin no complete k-mer, and the last few k-mer starts can stay
+#: ambiguous all the way up to the hierarchy root -- on CHM13 that is a single
+#: 48 bp ``categorized`` interval at the end of chr1, roughly 1/5000 of a pixel
+#: at genome scale, which nonetheless earned a full legend row.
+_LEGEND_MIN_DRAWN_PX = 0.5
+
 
 def _nice_round(value: float) -> int:
     """Nearest 'nice' 1/2/5 x 10^n number (for scale-bar lengths)."""
@@ -705,13 +715,28 @@ def render_karyotype(
     # Walk the binned BEDs once (filtered to seen_sequences only) to
     # collect every feature label that will be drawn. Used for both
     # legend ordering and dynamic width sizing.
-    features_in_data: set[str] = set()
+    # Accumulate each feature's total drawn extent, not merely its presence,
+    # so sub-pixel features can be kept out of the legend (see
+    # :data:`_LEGEND_MIN_DRAWN_PX`).
+    drawn_bp: dict[str, int] = {}
     for ri in inputs:
         for seq, intervals in ri.binned_bed.items():
             if seq not in seen_sequences:
                 continue
-            for _, _, feature in intervals:
-                features_in_data.add(feature)
+            for start, stop, feature in intervals:
+                drawn_bp[feature] = drawn_bp.get(feature, 0) + max(0, stop - start)
+
+    features_in_data = {
+        feature for feature, bp in drawn_bp.items() if bp * pixels_per_pos >= _LEGEND_MIN_DRAWN_PX
+    }
+    dropped = len(drawn_bp) - len(features_in_data)
+    if dropped:
+        logger.info(
+            "legend: omitted %d feature(s) drawn below %.2g px (%s)",
+            dropped,
+            _LEGEND_MIN_DRAWN_PX,
+            ", ".join(sorted(set(drawn_bp) - features_in_data)),
+        )
 
     # Legend sort: see :func:`_legend_sort_key` for the full rule.
     # Briefly: chromosomes (chr*) at the top in natural order, then
