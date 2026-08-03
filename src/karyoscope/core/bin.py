@@ -127,6 +127,14 @@ def _best_feature(counts: dict[str, int], leaf_set: set[str] | None, bin_size: i
 # --- merger ---------------------------------------------------------
 
 
+#: A trailing partial bin shorter than this fraction of ``bin_size`` is treated
+#: as a remainder rather than a bin of its own, and folded into the preceding
+#: row. Half a bin is the natural cutoff: below it, the runt's bp can never
+#: outweigh a full neighbouring bin anyway, so emitting it separately only
+#: manufactures a spurious short segment at the end of a sequence.
+_RUNT_BIN_FRACTION = 0.5
+
+
 class _Coalescer:
     """Forward (chrom,start,end,feature) records to a sink, merging adjacent same-label rows.
 
@@ -152,6 +160,20 @@ class _Coalescer:
         self._start = start
         self._end = end
         self._feature = feature
+
+    def absorb(self, chrom: str, start: int, end: int) -> bool:
+        """Extend the pending row to ``end``, keeping its own label.
+
+        Used for a runt trailing bin (see :data:`_RUNT_BIN_FRACTION`), whose
+        few bp are folded into the preceding row rather than emitted as a bin
+        in their own right. Returns False when there is no abutting pending
+        row to extend (e.g. the runt is the only bin on its chromosome), in
+        which case the caller emits it normally rather than dropping data.
+        """
+        if self._chrom != chrom or start != self._end:
+            return False
+        self._end = end
+        return True
 
     def flush(self) -> None:
         if self._chrom is None:
@@ -188,20 +210,41 @@ def _drive(
     current_chrom: str | None = None
     current_max_end = 0
 
-    def _flush_bin(b_idx: int) -> None:
+    def _flush_bin(b_idx: int, *, is_final: bool = False) -> None:
         counts = active.pop(b_idx)
-        best = _best_feature(counts, leaf_set, bin_size)
         start = b_idx * bin_size
         end = start + bin_size
         if end > current_max_end:
             end = current_max_end
-        if end > start:
-            coalescer.add(current_chrom, start, end, best)  # type: ignore[arg-type]
+        if end <= start:
+            return
+        # A trailing partial bin far shorter than bin_size is a remainder, not
+        # a bin, yet it casts a label vote of equal standing to a full one --
+        # so a few bp can outvote hundreds of kb. This is not a rare edge: the
+        # genome view picks bin_size = round(longest_seq / 250), which leaves
+        # the longest sequence with a remainder of order tens of bp every time.
+        # On CHM13 that produced a lone 48 bp `categorized` row at the end of
+        # chr1. Fold it into the preceding row instead. (Merging its counts
+        # into the previous bin's tally would be equivalent in practice: a
+        # runt is under half a bin by definition, so it cannot outweigh one.)
+        if (
+            is_final
+            and (end - start) < bin_size * _RUNT_BIN_FRACTION
+            and coalescer.absorb(current_chrom, start, end)  # type: ignore[arg-type]
+        ):
+            return
+        best = _best_feature(counts, leaf_set, bin_size)
+        coalescer.add(current_chrom, start, end, best)  # type: ignore[arg-type]
+
+    def _drain() -> None:
+        """Flush every queued bin, marking the last one as the chromosome's final bin."""
+        while order:
+            b_idx = order.popleft()
+            _flush_bin(b_idx, is_final=not order)
 
     for chrom, start, end, feature in records:
         if chrom != current_chrom:
-            while order:
-                _flush_bin(order.popleft())
+            _drain()
             coalescer.flush()
             current_chrom = chrom
             current_max_end = 0
@@ -242,8 +285,7 @@ def _drive(
                         order.append(b_idx)
                     bucket[feature] = bucket.get(feature, 0) + ov
 
-    while order:
-        _flush_bin(order.popleft())
+    _drain()
     coalescer.flush()
 
 
