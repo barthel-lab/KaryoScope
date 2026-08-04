@@ -197,7 +197,7 @@ karyoscope info HKS_human_CHM13_v2
 
 All four feature sets reproduce the shipped database's inputs exactly.
 
-The one deliberate difference throughout is `chrM`. The original BEDs gave it a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. Using `exclude:` is better — a label claims the sequence for that feature set, whereas `exclude:` leaves it genuinely uncovered so it reads as `none` everywhere.
+The one difference throughout is `chrM`. The original BEDs gave it a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. This recipe uses `exclude:`. A label claims the sequence for that feature set; `exclude:` leaves it uncovered, so it reads as `none` everywhere.
 
 ## See also
 

@@ -153,8 +153,8 @@ def verify(
 ) -> None:
     """Check every band label is a hierarchy node with a clean path to the root.
 
-    Cheap to do here and much cheaper than discovering it part-way through a
-    multi-hour ``build``.
+    Run before anything is written, so a malformed tree is reported here rather
+    than during the build.
     """
     children = [c for c, _p in edges]
     duplicates = {c for c in children if children.count(c) > 1}

@@ -23,11 +23,11 @@ For **gzipped** files, compare the checksum of the *decompressed* content as wel
 zcat <file.gz> | sha256sum
 ```
 
-This matters more than it looks. Re-compressing a file changes its bytes without changing a single base, so a `.gz` checksum mismatch may mean nothing at all — while a matching *content* checksum is proof. The CHM13 genome is exactly this case: the copy these databases were built from was re-bgzipped locally, so its `.gz` never matched upstream.
+Re-compressing a file changes its bytes without changing a base, so a `.gz` checksum mismatch does not by itself indicate different content, while a matching content checksum does indicate the same content. The CHM13 genome is such a case: the copy these databases were built from was re-bgzipped locally, so its `.gz` does not match upstream.
 
-## Two traps worth knowing about
+## Before substituting an input
 
-**The same annotation is often published more than once, in more than one form.** Two real examples, both of which silently produce a *different* feature set rather than an error:
+**The same annotation is often published more than once, in more than one form.** Two examples, each of which produces a *different* feature set rather than an error:
 
 - The T2T bucket's `chm13v2.0_RepeatMasker_4.1.2p1.2022Apr14.bed` and UCSC's `chm13v2.0_rmsk.bb` are the same RepeatMasker run. The first lists one row per *fragment*; the second joins fragments into blocked records. The CHM13 `repeat` set uses the second.
 - The Col-CEN gene annotation exists as GTF-style attributes on GitHub and GFF3-style on TAIR. Same content; only the punctuation differs.
@@ -51,4 +51,4 @@ Every other hierarchy and priority file in these recipes is written by `prep-bed
 
 ## A note on exact reproduction
 
-These recipes rebuild the feature sets, and the BEDs they produce are byte-identical to the ones the shipped databases were built from — with one deliberate exception, described in each recipe: the shipped BEDs label the mitochondrion with a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. The recipes use `exclude:`, which is better: a label claims the sequence for the feature set, whereas `exclude:` leaves it genuinely uncovered so it reads as `none` everywhere.
+These recipes rebuild the feature sets, and the BEDs they produce are byte-identical to the ones the shipped databases were built from — with one deliberate exception, described in each recipe: the shipped BEDs label the mitochondrion with a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. The recipes use `exclude:`. A label claims the sequence for the feature set; `exclude:` leaves it uncovered, so it reads as `none` everywhere.

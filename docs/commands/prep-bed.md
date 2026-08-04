@@ -18,7 +18,7 @@ karyoscope prep-bed satellite    --input FILE --lengths FAI --output BED --hiera
 
 `build` starts from a final labelled BED. `prep-bed` produces one from the annotation formats those BEDs usually come from, so that step is a documented command rather than a bespoke script per dataset.
 
-There is one subcommand **per source format**, not per feature set. Unrelated formats produce the same kind of set — RepeatMasker output and an EDTA GFF3 both yield a `repeat` set but share no parsing at all — so keying on the format is what lets each subcommand carry exactly the options that apply to it, with no flags that are silently ignored depending on the input.
+There is one subcommand **per source format**, not per feature set. Unrelated formats produce the same kind of set — RepeatMasker output and an EDTA GFF3 both yield a `repeat` set but share no parsing at all — so keying on the format lets each subcommand carry exactly the options that apply to it, with no flags that are ignored depending on the input.
 
 | Subcommand | Input | Produces |
 | --- | --- | --- |
@@ -43,7 +43,7 @@ It does not gap-fill, flatten overlaps, or drop sequences. `build` already owns 
 
 The exceptions are `censat` and `satellite`, which do tile. That tiling is *semantic*, not a gap-fill: `p_arm` and `q_arm` have to be told apart, and only the annotation knows where the centromere is. `build`'s gap-fill has exactly one label and could not make that distinction.
 
-Sequences a set deliberately does not cover — `_alt`/`_random`/`_fix` scaffolds, `chrUn_*` contigs, organelles — are reported for the spec's top-level `exclude:` rather than given a placeholder label. Older hand-written sets used a literal `exclude` label for this; that predates `build`'s real `exclude:` list, and a placeholder label is worse because it claims the sequence for the feature set instead of leaving it uncovered.
+Sequences a set deliberately does not cover — `_alt`/`_random`/`_fix` scaffolds, `chrUn_*` contigs, organelles — are reported for the spec's top-level `exclude:` rather than given a placeholder label. Older hand-written sets used a literal `exclude` label for this, which predates `build`'s `exclude:` list. A label claims the sequence for the feature set; `exclude:` leaves it uncovered.
 
 ### Matching seqids to your assembly
 
@@ -58,7 +58,7 @@ Annotation seqids often differ from the assembly's. Two options, on every subcom
 
 `--hierarchy` is written wherever the source format implies one. `--colors` and `--priority` are optional and produced only when you name an output path.
 
-Colours are emitted only where an established KaryoScope palette exists — `repeatmasker`, `gff-gene` and `cytoband`. For those, the palette reproduces the shipped reference databases. For `edta` there is no such convention, so no colours are written and `build` assigns them, which beats an invented palette.
+Colours are emitted only where an established KaryoScope palette exists — `repeatmasker`, `gff-gene` and `cytoband`. For those, the palette reproduces the shipped reference databases. For `edta` there is no such convention, so no colours are written and `build` assigns them.
 
 Where a set has many leaves in few colours, the colours file also fills in `legend_group` (the optional 4th column) so the legend collapses. `cytoband` groups by Giemsa stain, turning several hundred bands into nine legend rows; `repeatmasker` groups the five RNA leaves, which share one colour. See [`build`'s legend section](build.md#grouping-the-legend).
 
@@ -94,11 +94,11 @@ Run `karyoscope prep-bed SUBCOMMAND --help` for the full list.
 
 ### `repeatmasker`
 
-Reads either the native `.out` table or the UCSC BED repackaging of it, detected from the file's own content and reported in the output. Sniffing is safe here in a way it would not be in `build`: both are the *same tool's* output, and the choice is reported rather than silently assumed.
+Reads either the native `.out` table or the UCSC BED repackaging of it. The dialect is detected from the file's own content and named in the output.
 
 Leaves are the RepeatMasker classes, with the `?` uncertainty marker stripped (`DNA?` is still `DNA`).
 
-A class the converter has no leaf for is labelled `other_repeat` and reported. It is deliberately **not** folded into `Unknown`: that is a real RepeatMasker class, meaning "RepeatMasker could not classify this element", and a class *we* cannot place is a different claim — the annotation is confident, we are the ones without a leaf for it. Nor is it dropped, which would leave those bases to the `nonrepeat` gap-fill and assert the opposite of what the annotation says. `other_repeat` joins the hierarchy and the palette only when something actually lands on it, so a file whose classes are all recognised produces the reference tree unchanged.
+A class the converter has no leaf for is labelled `other_repeat` and reported. It is not folded into `Unknown`, which is a real RepeatMasker class meaning the element could not be classified — a distinct case from a class this converter has no leaf for. It is also not dropped, which would leave those bases to the `nonrepeat` gap-fill. `other_repeat` joins the hierarchy and the palette only when something lands on it, so a file whose classes are all recognised produces the reference tree unchanged.
 
 ### `gff-gene`
 
@@ -114,9 +114,9 @@ The result tiles every sequence in `--lengths`, so the stanza sets `background: 
 
 Band labels keep their chromosome (`chr1` + `p36.33` → `1p36.33`) so no label is ambiguous across chromosomes, and the hierarchy nests three deep: chromosome → band group → band. A band with no sub-band (`1p33`) hangs directly off its chromosome.
 
-UCSC ships the band column bare in both shapes — the 5-column golden-path table and the 6-column `cytoBandMapped` BED, where the qualified name sits in a *separate* column that is ignored and rebuilt, so one code path serves both. A redistributed file that puts the qualified name in column 4 directly is also handled: a band already beginning with its own chromosome is left alone rather than becoming `11p36.33`. Bare cytogenetic bands always start with the arm, `p` or `q`, which is what makes the two safe to tell apart.
+UCSC ships the band column bare in both shapes — the 5-column golden-path table and the 6-column `cytoBandMapped` BED, where the qualified name sits in a *separate* column that is ignored and rebuilt, so one code path serves both. A file that puts the qualified name in column 4 directly is also handled: a band already beginning with its own chromosome is left alone, rather than becoming `11p36.33`. Bare cytogenetic bands always start with the arm, `p` or `q`, which distinguishes the two cases.
 
-The hierarchy is checked before anything is written — every band must be a node with a clean path to the root, and no label may be both a band and a group. That is far cheaper than discovering it part-way through a multi-hour `build`.
+The hierarchy is checked before anything is written: every band must be a node with a clean path to the root, and no label may be both a band and a group.
 
 ### `censat`
 
@@ -132,7 +132,7 @@ Sequences with no CenSat annotation at all are left uncovered and reported for `
 
 Monomers within `--merge-gap` coalesce into bands; the default bridges the 1–2 bp monomer-boundary artefacts tandem-repeat finders emit without swallowing real interior insertions, which run to kilobases. Bands then cluster within `--cluster-gap` and the **densest** cluster is taken as the centromere core — a raw min-to-max extent would be dragged across the arm by scattered pericentromeric remnants.
 
-Arms are assigned by coordinate, so this assumes the assembly is oriented short-arm-first. The labels `p_arm` and `q_arm` are load-bearing: `centromere_detection` treats anything else as the centromere catch-all.
+Arms are assigned by coordinate, so this assumes the assembly is oriented short-arm-first. Keep the labels `p_arm` and `q_arm`: `centromere_detection` treats anything else as the centromere catch-all.
 
 Input coordinates follow the file suffix — `.gff`/`.gff3` are read 1-based inclusive, anything else 0-based half-open.
 

@@ -2,7 +2,7 @@
 
 Rebuild the *Arabidopsis thaliana* Col-CEN (T2T v1.2) database in full: `chromosome`, `region`, `repeat` and `gene`.
 
-This is the whole database, and it is the cheap one — a 135 Mb genome, about 50 s to build at `-t 16` and ~6 GB peak RSS. It is the best recipe to try first, and a worked example of building KaryoScope for a non-human organism.
+A 135 Mb genome: about 50 s to build at `-t 16`, ~6 GB peak RSS. Also a worked example of building KaryoScope for a non-human organism.
 
 **Requirements:** `karyoscope`, `samtools`, `hks`.
 
@@ -68,7 +68,7 @@ sha256sum ath_region.bed
 
 `prep-bed` writes the hierarchy file itself — there is nothing to supply.
 
-Three things are worth understanding here, because each is a general problem rather than an Arabidopsis quirk:
+Three details, none of them specific to Arabidopsis:
 
 - **`--rename-prefix` is required.** This file names sequences `Col-CEN_chr1`, the genome names them `Chr1`. Without the rewrite nothing matches and the feature set comes out empty.
 - **It is a monomer catalog, not a feature annotation.** Unlike human CenSat it says only "CEN180 monomer here", 66,131 times. `prep-bed satellite` merges monomers within `--merge-gap` (default 10 bp, which bridges the 1–2 bp monomer-boundary artefacts tandem-repeat finders emit without swallowing real kilobase-scale insertions), then takes the densest cluster of bands as the centromere. A raw min-to-max extent would be dragged across the arm by scattered pericentromeric remnants.
@@ -98,7 +98,7 @@ sha256sum ath_repeat.bed
 
 EDTA's `Classification=` vocabulary aliases each superfamily under both spelled-out and Wicker three-letter names — `DNA/HAT` and `DNA/DTA` are both hAT — so `prep-bed` normalises them to one leaf per superfamily, keeping the BED labels and the hierarchy leaves consistent by construction.
 
-No colours file is emitted: there is no established KaryoScope palette for the EDTA vocabulary, and `build`'s automatic assignment beats an invented one.
+No colours file is emitted: there is no established KaryoScope palette for the EDTA vocabulary, so `build` assigns them.
 
 ## 5. `gene` — Araport11
 
@@ -179,7 +179,7 @@ downloaded files: all four BEDs match the checksums given here, and all five
 index files — the shared base index and one per feature set — come out
 bit-identical to the database in use.
 
-The `region` set's arm labels are load-bearing: centromere detection reads anything that is not `p_arm`/`q_arm`/`arm`/`telomere`/`novel` as the centromere catch-all, so `CEN180` and `cen_gap` must be leaves.
+Centromere detection reads anything that is not `p_arm`/`q_arm`/`arm`/`telomere`/`novel` as the centromere catch-all, so `CEN180` and `cen_gap` must be leaves.
 
 ## 7. Render a karyotype
 
