@@ -114,6 +114,35 @@ class Hierarchy:
             out.add(row.parent)
         return out
 
+    def nodes_in_order(self, feature_set: str) -> list[str]:
+        """Return every node in ``feature_set`` in hierarchy order: roots, then
+        each child in edge order.
+
+        The ordered counterpart to :meth:`nodes`. Anything written out per node
+        must use this rather than iterating the set, or the row order varies
+        between runs — Python randomises string hashing, so a rebuild from
+        identical inputs produced a differently-ordered ``colors.tsv``. Row
+        order is also load-bearing: legend groups are ordered by first
+        appearance in ``colors.tsv``, so hierarchy order is what makes that
+        ordering meaningful (for cytoband, the Giemsa intensity progression)
+        instead of arbitrary.
+        """
+        rows = self.rows_in(feature_set)
+        children = {row.child for row in rows}
+        ordered: list[str] = []
+        seen: set[str] = set()
+        # Roots first: a parent that is never a child. Well-formed sets have
+        # exactly one, but this does not depend on that.
+        for row in rows:
+            if row.parent not in children and row.parent not in seen:
+                ordered.append(row.parent)
+                seen.add(row.parent)
+        for row in rows:
+            if row.child not in seen:
+                ordered.append(row.child)
+                seen.add(row.child)
+        return ordered
+
     def count_by_feature_set(self) -> dict[str, int]:
         """Return ``{feature_set: row_count}`` for every feature set."""
         counts: dict[str, int] = {}

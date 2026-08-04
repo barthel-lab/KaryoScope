@@ -261,7 +261,9 @@ def _prepare_feature_set(
             + "\n  ".join(issues)
         )
 
-    nodes = hierarchy.nodes(fs.name)
+    # Ordered, not the node *set*: this list determines colors.tsv's row order,
+    # which must be reproducible across rebuilds and drives legend-group order.
+    nodes = hierarchy.nodes_in_order(fs.name)
 
     # -- colours --
     provided, provided_groups = _parse_set_colors(fs.colors) if fs.colors is not None else ({}, {})
