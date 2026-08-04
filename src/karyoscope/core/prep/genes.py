@@ -56,17 +56,34 @@ _GFF3_PARENT = re.compile(r"(?:^|;)\s*Parent=([^;]+)")
 def transcript_ids(attributes: str) -> list[str]:
     """Extract the transcript(s) an exon belongs to, from GFF3 or GTF attributes.
 
-    GFF3 exons point at their transcript with ``Parent=`` (possibly a
-    comma-separated list, when one exon is shared by several transcripts); GTF
-    exons carry ``transcript_id "..."``. Both are tried, so no ``--format``
-    flag is needed to tell the two dialects of the same file apart.
+    Tries three forms, so no ``--format`` flag is needed to tell dialects apart:
+    ``transcript_id=...`` (GFF3 syntax), ``transcript_id "..."`` (GTF syntax),
+    and finally ``Parent=`` (canonical GFF3, possibly comma-separated when one
+    exon is shared by several transcripts).
+
+    ``transcript_id`` wins over ``Parent`` when both are present, and that
+    precedence is load-bearing. In canonical GFF3 an exon's ``Parent`` is its
+    mRNA, but Liftoff-style output sets ``Parent`` to the **gene** while giving
+    the transcript in ``transcript_id`` — the same file content is published
+    both ways. Preferring ``Parent`` there would group every transcript of a
+    gene together, and introns derived from a merged exon list span the gaps
+    *between* transcripts, inflating intron at intergenic's expense. That is
+    the defect this converter exists to avoid.
     """
+    attrs = dict(_GTF_ATTR.findall(attributes))
+    tid = attrs.get("transcript_id") or _gff3_attr(attributes, "transcript_id")
+    if tid:
+        return [tid]
     parent = _GFF3_PARENT.search(attributes)
     if parent:
         return [p.strip() for p in parent.group(1).split(",") if p.strip()]
-    attrs = dict(_GTF_ATTR.findall(attributes))
-    tid = attrs.get("transcript_id")
-    return [tid] if tid else []
+    return []
+
+
+def _gff3_attr(attributes: str, key: str) -> str | None:
+    """Value of a GFF3 ``key=value`` attribute, or ``None``."""
+    match = re.search(rf"(?:^|;)\s*{re.escape(key)}=([^;]+)", attributes)
+    return match.group(1).strip() if match else None
 
 
 def _partition(

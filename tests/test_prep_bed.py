@@ -250,6 +250,7 @@ chr1\tsrc\texon\t301\t400\t.\t+\t.\tID=e2;Parent=transcript:t1
 
 
 def _run_gene(tmp_path: Path, text: str, fai: Path, **kwargs: object) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source = tmp_path / "genes.gff3"
     source.write_text(text)
     output = tmp_path / "gene.bed"
@@ -268,6 +269,35 @@ def test_transcript_ids_reads_both_attribute_dialects() -> None:
     assert genes_prep.transcript_ids('transcript_id "t1"; gene_id "g1";') == ["t1"]
     assert genes_prep.transcript_ids("Parent=a,b") == ["a", "b"]
     assert genes_prep.transcript_ids("nothing_useful") == []
+
+
+def test_transcript_id_beats_parent_when_parent_is_the_gene() -> None:
+    """Liftoff-style output sets Parent to the GENE and names the transcript in
+    transcript_id. Preferring Parent there merges a gene's transcripts, and
+    introns derived from a merged exon list span the gaps between them."""
+    liftoff_gff3 = "transcript_id=AT1G01010.1;gene_id=AT1G01010;Parent=AT1G01010;ID=exon_1"
+    liftoff_gtf = 'transcript_id "AT1G01010.1"; gene_id "AT1G01010"; Parent "AT1G01010";'
+    assert genes_prep.transcript_ids(liftoff_gff3) == ["AT1G01010.1"]
+    assert genes_prep.transcript_ids(liftoff_gtf) == ["AT1G01010.1"]
+
+
+def test_the_two_published_syntaxes_of_one_annotation_agree(tmp_path: Path, fai: Path) -> None:
+    """The Col-CEN gene annotation is published with GTF-style attributes on
+    GitHub and GFF3-style on TAIR. Same content, so the same feature set."""
+    gtf_style = (
+        'chr1\tLiftoff\texon\t101\t200\t.\t+\t.\ttranscript_id "g1.1"; gene_id "g1"; Parent "g1";\n'
+        'chr1\tLiftoff\texon\t401\t500\t.\t+\t.\ttranscript_id "g1.2"; gene_id "g1"; Parent "g1";\n'
+    )
+    gff3_style = (
+        "chr1\tLiftoff\texon\t101\t200\t.\t+\t.\ttranscript_id=g1.1;gene_id=g1;Parent=g1\n"
+        "chr1\tLiftoff\texon\t401\t500\t.\t+\t.\ttranscript_id=g1.2;gene_id=g1;Parent=g1\n"
+    )
+    a = _run_gene(tmp_path / "a", gtf_style, fai)
+    b = _run_gene(tmp_path / "b", gff3_style, fai)
+    assert a.read_text() == b.read_text()
+    # Two single-exon transcripts of one gene: the gap is intergenic, not intron.
+    labels = {(r[1], r[2]): r[3] for r in bed_rows(a) if r[0] == "chr1"}
+    assert labels[("200", "400")] == "intergenic"
 
 
 @pytest.mark.parametrize("text", [GTF, GFF3], ids=["gtf", "gff3"])
