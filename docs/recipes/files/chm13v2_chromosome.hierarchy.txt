@@ -1,0 +1,31 @@
+# Curated grouping of the CHM13v2.0 chromosomes by centromere position.
+# Human cytogenetics, not derivable from a .fai -- pass to build as 'hierarchy:'.
+autosome	categorized
+acrocentric	autosome
+chr13	acrocentric
+chr14	acrocentric
+chr15	acrocentric
+chr21	acrocentric
+chr22	acrocentric
+metacentric	autosome
+chr1	metacentric
+chr3	metacentric
+chr16	metacentric
+chr19	metacentric
+chr20	metacentric
+submetacentric	autosome
+chr2	submetacentric
+chr4	submetacentric
+chr5	submetacentric
+chr6	submetacentric
+chr7	submetacentric
+chr8	submetacentric
+chr9	submetacentric
+chr10	submetacentric
+chr11	submetacentric
+chr12	submetacentric
+chr17	submetacentric
+chr18	submetacentric
+sex	categorized
+chrX	sex
+chrY	sex

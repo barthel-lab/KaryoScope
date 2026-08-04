@@ -1,0 +1,8 @@
+# Curated grouping of the Col-CEN chromosomes: the five nuclear chromosomes.
+# The organelles ChrM/ChrC are excluded at build time, not grouped here.
+nuclear	categorized
+Chr1	nuclear
+Chr2	nuclear
+Chr3	nuclear
+Chr4	nuclear
+Chr5	nuclear

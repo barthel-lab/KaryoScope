@@ -20,13 +20,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged; only the order of the rows.
 
 ### Added
+- **`docs/recipes/` — reproducible recipes for the shipped databases.** One page
+  each for `HKS_human_CHM13_v2` (`chromosome`, `region`, `repeat`, `gene`) and
+  `HKS_arabidopsis_ColCEN` (all four sets), giving the exact download URL for
+  every input, a SHA-256 for the file and for its decompressed content, the
+  `prep-bed` command that converts it, a checksum for the resulting BED, and the
+  build spec that assembles them.
+
+  Inputs that cannot be derived ship alongside in `docs/recipes/files/`: the
+  curated chromosome groupings, the repeat priority order, and the RefSeq
+  accession map.
+
+  Both recipes reproduce their databases. The Arabidopsis one has been run end
+  to end from its published URLs and produces bit-identical index files; the
+  CHM13 feature-set BEDs are byte-identical to those the shipped database was
+  built from.
+
+- **`karyoscope prep-bed`, converting source annotations into feature-set BEDs.**
+  `build` starts from a final labelled BED; producing that BED previously needed
+  a script per dataset. There is now one subcommand per *source format*:
+  `repeatmasker` (native `.out` or the UCSC BED repackaging), `edta`,
+  `gff-gene` (GFF3 or GTF), `cytoband` (UCSC golden-path or `cytoBandMapped`),
+  `censat`, `fai`, and `satellite`. Formats are the unit rather than feature-set
+  names because unrelated formats yield the same kind of set: RepeatMasker
+  output and an EDTA GFF3 both produce a `repeat` set but share no parsing.
+
+  Each writes its BED and hierarchy and prints the matching `feature_sets:`
+  stanza on **stdout**, with progress and warnings on stderr, so the stanza can
+  be appended straight to a build spec. Optional `--colors` writes the reference
+  palette with `legend_group` filled in, so a cytoband set arrives with its
+  legend already collapsed to nine stain rows.
+
+  `prep-bed` does not gap-fill, flatten overlaps, or drop sequences: `build`
+  owns `background:`, `flatten:` and `exclude:`. Sequences a set does not cover
+  are reported for the spec's `exclude:` rather than given a placeholder
+  `exclude` *label*. `censat` and `satellite` tile, because separating `p_arm`
+  from `q_arm` needs the centromere position. A RepeatMasker class the converter
+  has no leaf for is labelled `other_repeat`, keeping it distinct from
+  RepeatMasker's own `Unknown` class.
+
+  See [prep-bed](docs/commands/prep-bed.md).
+
+### Fixed
+- **`HKS_arabidopsis_ColCEN` regenerated — its `gene` set labelled intergenic
+  regions as intron.** The set had been built by deriving introns from a
+  chromosome-wide exon list, which treats every gap between neighbouring genes
+  as an intron: 8,325 such spans, reporting 42.0% of the genome as intron
+  against 20.6%, and 21.6% intergenic against 43.0%. The database is rebuilt and
+  now at 1.2.0. `HKS_human_CHM13_v2` was unaffected.
+
+  `prep-bed gff-gene` derives introns from each transcript's own consecutive
+  exons, and where transcripts disagree the more specific label wins
+  (`exon` > `intron` > `intergenic`).
+
 - **`colors.tsv` gains an optional 4th column, `legend_group`, and `build`
   carries it through.** A feature set with hundreds of leaves in a handful of
-  colours produced a legend that dwarfed the figure — and worse, silently
-  truncated to whatever fit the canvas. The CHM13 cytoband database has 833
-  features and the legend drew 51 of them, showing 6% of what was present with
-  no indication the rest were dropped. Features sharing a `legend_group` now
-  collapse to one legend row: 833 entries become 9, labelled by Giemsa stain.
+  colours produced a legend that dwarfed the figure and was truncated to
+  whatever fit the canvas, with no indication that rows had been dropped. The
+  CHM13 cytoband database has 833 features and the legend drew 51 of them.
+  Features sharing a `legend_group` now collapse to one legend row: 833 entries
+  become 9, labelled by Giemsa stain.
 
   The column is optional and the header must be exactly 3 or exactly 4 columns,
   so every existing database parses unchanged and keeps its per-feature legend
@@ -35,8 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supply and the file the database ships have the same shape; it is emitted only
   when at least one feature declares a group, leaving ungrouped builds
   byte-identical. Because a legend row is one swatch and one label, `build`
-  fails if a group spans two colours — there would be no well-defined swatch,
-  and the figure would silently misrepresent the rest of the group. See
+  fails if a group spans two colours, since there is no well-defined swatch for
+  such a group. See
   [build → Grouping the legend](docs/commands/build.md#grouping-the-legend).
 
 - **`examples/karyotypes/`** — reference karyotype plots for six assemblies
@@ -45,11 +98,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against.
 
 ### Changed
+- **`build` documentation restructured, and the variable-k description
+  corrected.** The "mode A / mode B" naming is gone: BED plus a genome is
+  described as the input, and the per-feature-FASTA form now sits in the
+  build-spec section where it is actually usable. Hierarchy, priorities and
+  colours each have a reference section that the options table links to, and
+  overlap resolution is shown worked through — a hierarchy, a BED, and the label
+  a shared k-mer ends up with, with and without priorities.
+
+  Two claims were wrong. Priorities are applied when the index is built, not at
+  query time. And `kmer.max_size` read as a range one may query within: on a
+  fixed-k index it equals `kmer.size`, and that single length is the only one
+  `annotate` accepts. Since HKS rejects priorities together with variable-k, a
+  priority-resolved database is necessarily fixed-k — now stated in `build`,
+  `annotate` and `info`.
+
 - **CLI subcommands are imported on demand, cutting startup from ~290 ms to
   ~70 ms.** Registering the eleven subcommands meant importing all eleven
   command modules, and one of them (`download`) pulls in `requests` — about
-  190 ms of that 290 ms, paid by every invocation, for an HTTP library most
-  commands never touch. `karyoscope --help` still imports everything, because
+  190 ms of that 290 ms, paid by every invocation regardless of whether the
+  command used it. `karyoscope --help` still imports everything, because
   Click asks each command for its short help to build the listing; every other
   path now imports only the command being run.
 
@@ -78,9 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there are zero hardcoded `stroke="black"` left.
 
   Separately, the legend now omits features whose entire drawn extent is under
-  half a pixel. Such a feature cannot be found in the figure, so a legend row
-  for it only sends the reader hunting for a colour that was never visibly
-  rendered.
+  half a pixel, since a legend row for such a feature names a colour that is not
+  visibly present in the figure.
 
 - **`bin` no longer emits a runt trailing bin.** A trailing partial bin cast a
   label vote of equal standing to a full one, so a handful of bases could

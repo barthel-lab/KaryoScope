@@ -13,7 +13,7 @@ karyoscope build --spec build.yaml [OPTIONS]
 
 `build` produces a complete, registry-ready [HKS](https://github.com/jnalanko/HKS) database — the same layout `download`/`register` expect (`manifest.yaml`, `hierarchy.tsv`, `colors.tsv`, and an `index/` directory) — from a reference genome and one or more feature-set BED files. It runs the HKS `build-base` and `add-feature-set` construction steps for you, gap-fills unannotated regions with a named background feature, derives the label hierarchy and colours, writes the manifest, and records the result in `installed.json`.
 
-The command's contract begins at a **final per-feature-set BED** whose 4th column is the **feature label**: a leaf of that feature set's hierarchy. Turning raw annotation sources (RepeatMasker, censat, GENCODE, …) into that BED is up to you — see the worked example under [Preparing a feature-set BED](#preparing-a-feature-set-bed).
+The command's contract begins at a **final per-feature-set BED** whose 4th column is the **feature label**: a leaf of that feature set's hierarchy. Turning raw annotation sources (RepeatMasker, censat, GENCODE, …) into that BED is [`karyoscope prep-bed`](prep-bed.md)'s job — see [Preparing a feature-set BED](#preparing-a-feature-set-bed).
 
 ## Required inputs
 
@@ -21,11 +21,11 @@ Only two inputs are required — a genome and at least one annotation BED:
 
 | Input | Required | What it is |
 | --- | --- | --- |
-| **Genome FASTA** (`--sequence`) | **Yes**, for BED (mode A) feature sets | The assembly your annotations are in coordinates of; plain or bgzipped. If a `.fai` is missing, `build` creates one with `samtools faidx`. |
+| **Genome FASTA** (`--sequence`) | **Yes** | The assembly your annotations are in coordinates of; plain or bgzipped. If a `.fai` is missing, `build` creates one with `samtools faidx`. |
 | **Feature-set BED** (`--feature-set NAME=BED`) | **Yes**, at least one | A BED whose **4th column is the feature label** — a leaf of this feature set's hierarchy. With no hierarchy file, each distinct label simply becomes its own leaf. Repeat the flag for more sets. Overlaps are allowed and gaps are filled automatically. |
-| Hierarchy (`--hierarchy NAME=PATH`) | No | `child<tab>parent` edge list. Without one, every leaf becomes a child of the root `categorized` (a flat star). |
-| Priorities (`--priority NAME=PATH`) | No | Resolves which label wins a k-mer claimed by several. In its 3-column `child priority parent` form it **also supplies the hierarchy**, so one file covers both. |
-| Colours (`--colors NAME=PATH`) | No | `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, with an optional 4th `legend_group` column (see [Grouping the legend](#grouping-the-legend)). Without one, a distinct palette is generated per leaf. |
+| Hierarchy (`--hierarchy NAME=PATH`) | No | `child<tab>parent` edge list. Without one, every leaf becomes a child of the root `categorized` (a flat star). See [Hierarchy](#hierarchy). |
+| Priorities (`--priority NAME=PATH`) | No | Resolves which label wins a k-mer claimed by several. In its 3-column `child priority parent` form it **also supplies the hierarchy**, so one file covers both. See [Priorities](#priorities). |
+| Colours (`--colors NAME=PATH`) | No | `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, with an optional 4th `legend_group` column. Without one, a distinct palette is generated per leaf. See [Colours](#colours). |
 | Background label (`--background NAME=LABEL`) | No | Names the gap-fill leaf (default `background`). |
 
 Nothing else is needed. In particular there is **no** alignment step, no pre-existing index, and no per-feature FASTA files — `build` slices those out of the genome itself.
@@ -38,38 +38,103 @@ karyoscope build --id HKS_mygenome --sequence genome.fa.gz --feature-set repeat=
 
 For what this costs in time, memory, and disk, see [Resource requirements](#resource-requirements).
 
-### Input modes
+### Hierarchy
 
-Each feature set is one of:
+An edge list, `child<tab>parent`, one edge per line, rooted at `categorized`.
+Every label appearing in the BED must be a node in it. Without a hierarchy file
+each distinct BED label becomes a child of the root — a flat star, under which
+every shared k-mer resolves to `categorized`.
 
-- **BED (mode A):** `--feature-set NAME=annot.bed` together with a shared `--sequence` genome. The genome is sliced into one FASTA per feature label (each region extended by `k-1` bp so every k-mer that starts in the region is captured). Gaps are filled with a background leaf (see below).
-- **FASTAs (mode B, spec file only):** a feature set entry with `fastas:` (one file per feature) or `per_seq_file:` (one sequence per feature). No genome slicing and no gap-fill.
+The hierarchy also drives smoothing and rendering: `bin` and `karyotype` prefer
+leaf labels, so anything you want drawn must be a leaf rather than an interior
+node.
 
-### Overlaps, priorities, and variable-k
+### How labels are resolved
 
-HKS resolves a k-mer that belongs to several labels via its hierarchy, so **overlapping BED regions are allowed** — you do not need a non-overlapping partition. To control which label wins an overlap, supply a **priority file** for the set (`--priority NAME=file`); HKS then keeps the higher-priority (lower integer) label per k-mer, climbing to the common ancestor only on ties. This is the per-k-mer equivalent of pre-flattening the BED, so it usually replaces it. If you *do* want a hard flattened partition, `--flatten` collapses overlaps to one label per base before indexing.
+HKS indexes **k-mers**, not coordinates. A feature set's BED is sliced into one
+FASTA per label, and a k-mer is claimed by every label whose sequence contains
+it. Two consequences follow:
 
-The priority file accepts either the 3-column `child priority parent` form (which also supplies the hierarchy) or the 2-column `name priority` form. Within any group of siblings, priorities must be either all equal or all distinct (an HKS requirement, checked up front).
+- Overlapping BED regions are fine; any set of labelled regions works.
+- The same k-mer sequence occurring in two different regions is claimed by both
+  **whether or not those regions overlap in coordinates** — including regions on
+  different chromosomes.
 
-By default — no priority file — a set is built as a plain **fixed-k** labeling, which is exactly what `annotate` queries at (k = s). This is the recommended default for a production database.
+Where a k-mer has more than one claimant, the label is the claimants' **lowest
+common ancestor** in the hierarchy, unless priorities say otherwise.
 
-`--variable-k` (or per set, `variable_k: true` in the spec) instead builds an index that can be queried at **any k ≤ s from a single build** — useful for a k-sweep, e.g. checking that results are stable across k without rebuilding. It works from BED (mode A) input: because HKS variable-k needs a dummy node for each feature sequence's start, the base index is built from the per-feature FASTAs `build` already generates (the genome slices), not from the whole genome. `--variable-k` is mutually exclusive with `--priority`, and it produces a larger index, so use it when you actually need multi-k queries. The manifest's `kmer.type` is set to `variable` when every feature set is variable-k.
+Take this hierarchy and BED:
 
-### Background (gap-fill) feature
+```
+# repeat.hierarchy.txt          # repeat.bed
+LINE        Transposon          chr1  100  200  LINE
+SINE        Transposon          chr1  150  250  SINE
+Transposon  categorized
+```
 
-Bases that no feature annotates are, by default, filled with a **background** leaf so they render as a real feature rather than as `novel` (HKS's `none`, meaning "k-mer not in the reference at all"). The background label defaults to `background`; name it per set with `--background NAME=LABEL` (e.g. `--background repeat=nonrepeat`). It is attached under the hierarchy root and coloured grey (`#808080`). Set `background: null` in the spec file to disable gap-fill for a set. Where a BED already tiles the whole genome, no background records are produced.
+A k-mer found only in 100–150 is `LINE`; one found only in 200–250 is `SINE`.
+One found in both labels' sequence — anywhere — is `Transposon`, the lowest
+common ancestor. Under a flat hierarchy that ancestor is the root,
+`categorized`; a hierarchy is what lets a shared k-mer resolve to something more
+specific.
 
-### Defaults
+### Priorities
 
-- No hierarchy for a set → a flat star: every leaf is a child of the root, `categorized`.
-- No colours → an auto-generated distinct palette per leaf; grouping/root nodes are `#B0C4DE`, background is `#808080`. Provide your own with `--colors NAME=file` (`feature<tab>color`, or the full `feature_set<tab>feature<tab>color`).
-- `features.tsv` is **not** produced: the HKS backend reads label names from the index and never uses it.
+A priority file overrides the common-ancestor rule: the claimant with the
+**lowest priority number wins**, and the ancestor is used only when the top
+claimants tie.
 
-### Grouping the legend
+```
+# repeat.priority.txt
+LINE        1  Transposon
+SINE        2  Transposon
+Transposon  1  categorized
+```
+
+With that file, the shared k-mer above is `LINE` rather than `Transposon`.
+
+Both priorities and `--flatten` resolve competing claims when the index is
+built, but at different granularity. `--flatten` picks a winner per *base*
+before the k-mers are extracted, so the losing label is gone. Priorities keep
+every claim and resolve per *k-mer*, which is the finer of the two and does not
+depend on the regions overlapping in coordinates.
+
+The file takes either form:
+
+| Form | Columns | Also supplies the hierarchy? |
+| --- | --- | --- |
+| 3-column | `child priority parent` | Yes — one file covers both |
+| 2-column | `name priority` | No — pass `--hierarchy` separately |
+
+**Within any group of siblings, priorities must be either all equal or all
+distinct.** This is an HKS requirement (a mix makes its priority-aware ancestor
+operation non-associative) and is checked before the build starts:
+
+```
+LINE  1  Transposon      LINE  1  Transposon      LINE  1  Transposon
+SINE  1  Transposon      SINE  2  Transposon      SINE  1  Transposon
+LTR   1  Transposon      LTR   3  Transposon      LTR   2  Transposon
+      valid                    valid                    rejected
+```
+
+Interior nodes need priorities only to satisfy that rule; they are never
+assigned to a k-mer directly.
+
+### Colours
+
+`feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, with an
+optional 4th `legend_group` column. Without a colours file, `build` generates a
+distinct palette per leaf; interior nodes are `#B0C4DE` and the background leaf
+is `#808080`.
+
+Rows are written to the database's `colors.tsv` in hierarchy order — each root,
+then every child in edge order.
+
+#### Grouping the legend
 
 A feature set with hundreds of leaves in a handful of colours produces a legend
-that dwarfs the figure. To collapse it, add an optional 4th column,
-`legend_group`, to the colours file you pass with `--colors`:
+that dwarfs the figure. Features sharing a `legend_group` collapse to **one
+legend row**, labelled by the group:
 
 ```
 feature_set	feature	color	legend_group
@@ -78,35 +143,74 @@ cytoband	q21.3	#000000	gpos100
 cytoband	p13.2	#ffffff	gneg
 ```
 
-Features sharing a `legend_group` collapse to **one legend row**, labelled by
-the group. A blank cell means "ungrouped" — that feature keeps its own row. For
-the CHM13 cytoband database this turns 833 legend entries into 9, labelled by
-Giemsa stain.
+A blank cell means "ungrouped" — that feature keeps its own row. For the CHM13
+cytoband database this turns 833 legend entries into 9, labelled by Giemsa
+stain. Groups appear in the legend in order of first appearance in `colors.tsv`.
 
 `build` carries the column through to the database's `colors.tsv`, so the file
 you supply and the file the database ships have the same shape. The column is
-written **only if at least one feature declares a group**, so a build that
-doesn't ask for grouping produces the same 3-column file as before.
+written only if at least one feature declares a group, so a build that doesn't
+ask for grouping produces the same 3-column file as before.
 
-Because a legend row is one swatch and one label, **every feature in a group
-must share a colour** — otherwise there is no well-defined swatch and the figure
-would silently misrepresent the rest. `build` checks this and fails if a group
-spans two colours. The reverse is fine: two groups may share a colour (two
-labels, one swatch — legible, just redundant).
+A legend row is one swatch and one label, so **every feature in a group must
+share a colour**; `build` fails if a group spans two. Two groups may share a
+colour, which is legal and merely redundant.
+
+### Background (gap-fill) feature
+
+Bases that no feature annotates are, by default, filled with a **background**
+leaf so they render as a real feature rather than as `novel` (HKS's `none`,
+meaning "k-mer not in the reference at all"). The background label defaults to
+`background`; name it per set with `--background NAME=LABEL` (e.g.
+`--background repeat=nonrepeat`). It is attached under the hierarchy root and
+coloured grey (`#808080`). Set `background: null` in the spec file to disable
+gap-fill for a set. Where a BED already tiles the genome, no background records
+are produced.
+
+### Fixed-k and variable-k
+
+By default a database is **fixed-k**: the index answers exactly one k-mer
+length, the `s` it was built with, and that is what `annotate` queries at. This
+is the recommended default for a production database.
+
+`--variable-k` (per set, `variable_k: true`) instead builds an index that
+answers **any k ≤ s from a single build**, for a k-sweep. Three things to know
+before using it:
+
+- **It cannot be combined with priorities.** HKS rejects the combination, so a
+  priority-resolved database is necessarily fixed-k. `build` checks this up
+  front.
+- **The base index is built differently.** Variable-k needs a dummy node per
+  feature sequence start, so the base is built from the per-feature FASTAs
+  rather than from the genome. With feature sets that tile the genome, its input
+  is roughly one genome copy *per set* — six tiling sets over a 3.1 Gb genome
+  means ~19 Gb of input rather than 3.1 Gb.
+- **The index is larger.**
+
+In the manifest, `kmer.type` is `variable` only when every feature set is
+variable-k. `kmer.max_size` is the largest queryable k, which on a fixed-k
+index equals `kmer.size` — it is **not** a range you may query within. On a
+fixed-k database `annotate --k` accepts only `kmer.size` and rejects anything
+else.
+
+### Defaults
+
+- No hierarchy for a set → a flat star: every leaf is a child of the root, `categorized`.
+- No colours → an auto-generated distinct palette per leaf.
 
 ## Options
 
 | Option | Description |
 | --- | --- |
 | `--id TEXT` | Database id (also the directory name). Required unless `--spec`. |
-| `--sequence FILE` | Genome FASTA (plain or bgzipped). Required for BED (mode A) feature sets. |
+| `--sequence FILE` | Genome FASTA (plain or bgzipped). Required for BED feature sets. |
 | `--feature-set NAME=BED` | A feature set as `NAME=annotation.bed` (4th column = the feature label, a leaf of its hierarchy). Repeatable. |
 | `--background NAME=LABEL` | Gap-fill label for a feature set (default `background`). Repeatable. |
-| `--hierarchy NAME=PATH` | Edge-list (`child parent`) hierarchy for a feature set. Repeatable. |
-| `--priority NAME=PATH` | Priority file for a feature set; enables priority mode. Repeatable. |
-| `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, optionally with a 4th `legend_group` column ([Grouping the legend](#grouping-the-legend)). Repeatable. |
-| `--flatten` | Pre-flatten overlapping BED regions to one label per base. |
-| `--variable-k` | Build a variable-k index (queryable at any k ≤ s, e.g. a k-sweep). Not combinable with `--priority`. |
+| `--hierarchy NAME=PATH` | Edge-list (`child parent`) hierarchy for a feature set ([Hierarchy](#hierarchy)). Repeatable. |
+| `--priority NAME=PATH` | Priority file for a feature set ([Priorities](#priorities)); enables priority mode. Repeatable. |
+| `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, optionally with a 4th `legend_group` column ([Colours](#colours)). Repeatable. |
+| `--flatten` | Pre-flatten overlapping BED regions to one label per base ([Priorities](#priorities)). |
+| `--variable-k` | Build a variable-k index, queryable at any k ≤ s ([Fixed-k and variable-k](#fixed-k-and-variable-k)). Not combinable with `--priority`. |
 | `--spec FILE` | Build-spec YAML (alternative to `--id`/`--sequence`/`--feature-set`). |
 | `--db-version TEXT` | Database version, semver (default `1.0.0`). |
 | `-s`, `--s INTEGER` | Maximum query length / k-mer size (default `31`). |
@@ -147,6 +251,23 @@ smoothing: { recommended_window_bp: 1000 }     # optional
 
 Relative paths in the spec are resolved against the spec file's directory.
 
+### Feature sets from FASTAs instead of a BED
+
+A feature set can name its sequences directly rather than being sliced out of a
+genome. This form is spec-only, and replaces `bed:` with one of:
+
+```yaml
+feature_sets:
+  - name: marker
+    fastas: [/path/markerA.fa, /path/markerB.fa]   # one file per feature
+  - name: probe
+    per_seq_file: /path/probes.fa                  # one sequence per feature
+```
+
+There is no coordinate system here, so `background:` and `flatten:` do not
+apply and are rejected. `--sequence` is needed only if some *other*
+feature set uses `bed:`.
+
 ## Excluding sequences
 
 The **`chromosome` feature set declares the karyotype chromosomes** — its leaves are what `karyotype` lays out, and (unless a chromosome is present in the sample) an empty column is drawn for each. So keep **non-karyotype sequences out of the `chromosome` set**: organelles (`ChrM`, `ChrC`, …), unplaced contigs, decoys, and the like.
@@ -185,9 +306,13 @@ done
 
 ## Preparing a feature-set BED
 
-`build` starts from a final BED; producing one is dataset-specific. A typical recipe is: take a reference annotation source (RepeatMasker, censat, GENCODE, EDTA, a satellite-monomer catalog, …), reduce it to a BED whose 4th column is the feature label, optionally priority-merge overlaps, and hand that BED to `build`. Overlaps and gaps are fine — `build` gap-fills automatically and HKS resolves overlaps per k-mer.
+`build` starts from a final BED whose 4th column is the feature label. Overlaps and gaps are fine — `build` gap-fills automatically and HKS resolves overlaps per k-mer.
 
-> **Planned: `karyoscope prep-bed`.** Turning those raw annotation sources into a final labelled BED — GFF3/GTF gene models into exon/intron/intergenic, RepeatMasker/EDTA tables into labelled repeat BEDs with a hierarchy, satellite monomer files into merged array bands — is the main friction in building a database today, and each source currently needs its own conversion. A dedicated `karyoscope prep-bed` helper for these common conversions is planned. It will be a **separate subcommand**, not folded into `build`: `build`'s contract stays "a final labelled BED", so it never has to sniff and guess at raw file formats.
+Use [`karyoscope prep-bed`](prep-bed.md) to produce that BED from the formats annotation usually arrives in: RepeatMasker and EDTA tables, GFF3/GTF gene models, UCSC cytoband tables, satellite monomer catalogs, and a plain `.fai`. It writes the BED and hierarchy and prints the `feature_sets:` stanza to paste (or append) here.
+
+For complete worked examples, see the [database recipes](../recipes/).
+
+`prep-bed` is a **separate subcommand** rather than a mode of `build`. That keeps `build`'s input contract to one thing — a final labelled BED — so it reads a single known format instead of identifying whichever the source annotation happened to use. It also keeps gap-filling, flattening and sequence exclusion in one place: `background:`, `flatten:` and `exclude:` below.
 
 ## Resource requirements
 
@@ -211,23 +336,25 @@ Measured runs, all with `-t 16` on one cluster node. Wall time is the whole comm
 > k=41, 51 and 61 is measurement noise, not a real effect of k — see below.
 > **Request ~1.5x the figure here**, e.g. 128 GB for a human build at k≤31.
 
-Three things follow, and the first two are easy to get wrong:
+Three things follow:
 
-### `--mem-gigas` is not a memory cap
+### `--mem-gigas` sets the SBWT construction budget
 
-It is the budget handed to SBWT construction, not a ceiling on the process. Every human-scale row above used `mem_gigas: 32` and still peaked far higher. **Do not size a job from `--mem-gigas`** — size it from this table, or use `--external-memory` (below).
+It is the allowance handed to the SBWT construction step, and total process memory runs well above it: every human-scale row above used `mem_gigas: 32` and peaked far higher. **Size a job from the table above**, or from `--external-memory` (below).
 
 ### Peak memory doubles above k=32, and is otherwise flat
 
-Peak RSS tracks *number of distinct k-mers × bytes per k-mer*, and has almost nothing to do with the size of the database produced — the k=11 build peaked at 72 GB while emitting a 19 MB index. The bytes-per-k-mer term is a step function: SBWT packs a k-mer into `⌈k/32⌉` 64-bit words, **padded**, so cost jumps at k=32, 64, 96, 128 and is flat between. That is why k=11/21/31 all sit near 70 GB and k=41/51/61 all sit near 148 GB — a k=41 k-mer occupies the same 16 bytes as a k=64 one.
+Peak RSS tracks *number of distinct k-mers × bytes per k-mer*; the size of the database produced is unrelated — the k=11 build peaked at 72 GB while emitting a 19 MB index. The bytes-per-k-mer term is a step function: SBWT packs a k-mer into `⌈k/32⌉` 64-bit words, **padded**, so cost jumps at k=32, 64, 96, 128 and is flat between. That is why k=11/21/31 all sit near 70 GB and k=41/51/61 all sit near 148 GB — a k=41 k-mer occupies the same 16 bytes as a k=64 one.
 
 Measured across the six builds above: roughly 70–82 GB for every k ≤ 31, and roughly 147–170 GB for every k ≥ 41 — flat within each band, with the spread inside a band being measurement noise rather than an effect of k.
 
 Practical consequence: **k ≤ 31 costs about half the RAM of k > 32**, and within a band, raising k is nearly free in memory.
 
-### Low on RAM? Use `--external-memory`, not fewer threads
+### `--external-memory` is the lever on a memory-limited machine
 
-Lowering `--threads` does **not** reduce peak memory — it only makes the build slower. `--external-memory DIR` is the lever, switching to the disk-based construction algorithm. Both measured on the CHM13 v2 six-set build at k=31:
+`--external-memory DIR` switches base-index construction to a disk-based algorithm: a **5.7× smaller memory footprint for ~1.4× the wall time**, producing the same index. It is what makes a human-scale build feasible on a workstation rather than a cluster node. Point `DIR` at a filesystem with room for the intermediates.
+
+`--threads` controls speed rather than memory. Both measured on the CHM13 v2 six-set build at k=31:
 
 | | Peak RSS | Wall |
 | --- | --- | --- |
@@ -236,10 +363,7 @@ Lowering `--threads` does **not** reduce peak memory — it only makes the build
 | `-t 1` | 74.8 GB | 1 h 40 m |
 | `-t 16 --external-memory` | **13.8 GB** | 32 m 27 s |
 
-Dropping from 16 threads to 1 costs **4.2x the wall time to save 4% of the
-memory** — so threads are not the lever, even at the extreme.
-
-`--external-memory` gives a **5.7× smaller memory footprint for ~1.4× the wall time**, and produces the same index. This is what makes a human-scale build feasible on a workstation rather than a cluster node. Point `DIR` at a filesystem with room for the intermediates.
+Dropping from 16 threads to 1 costs **4.2× the wall time and saves 4% of the memory**, so the thread count is worth setting for speed alone.
 
 ### Disk
 

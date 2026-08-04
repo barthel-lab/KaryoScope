@@ -10,7 +10,7 @@ karyoscope annotate -i INPUT [OPTIONS]
 
 ## Description
 
-`karyoscope annotate` assigns every k-mer in the input to a feature in a single alignment-free pass, by querying the database's KMC index via the bundled `get_featureIDs` helper. It produces one BED per feature set, and by default writes BOTH a "presmoothed" (raw) and a "smoothed" (hierarchy-smoothed) BED for each feature set. k-mers that are not present in the index render as `novel`. Input may be FASTA, FASTQ, or BAM. The expensive k-mer-query step is resumable across reruns, so an interrupted (for example, OOM-killed) run can resume straight into smoothing.
+`karyoscope annotate` assigns every k-mer in the input to a feature in a single alignment-free pass, by querying the database's index. The backend follows the database: an HKS-index database (e.g. `HKS_human_CHM13_v2`) is queried with `hks`, and a KMC-index database with the bundled `get_featureIDs` helper. It produces one BED per feature set, and by default writes BOTH a "presmoothed" (raw) and a "smoothed" (hierarchy-smoothed) BED for each feature set. k-mers that are not present in the index render as `novel`. Input may be FASTA, FASTQ, or BAM. The expensive k-mer-query step is resumable across reruns, so an interrupted (for example, OOM-killed) run can resume straight into smoothing.
 
 ## Options
 
@@ -22,7 +22,7 @@ karyoscope annotate -i INPUT [OPTIONS]
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
 | `--feature-set TEXT` | Restrict output to this feature set. Repeatable. Default: all feature sets declared in the database's manifest. |
 | `-t`, `--threads INTEGER` | Threads for both k-mer querying and smoothing. `0` means auto-detect. [default: `0`] |
-| `--k INTEGER` | Query k-mer length. Defaults to the database's k. Only a variable-k HKS index (built with `karyoscope build --variable-k`) accepts a value other than its k — use it for a k-sweep. Outputs are tagged `.k<k>` so runs into one directory don't collide. |
+| `--k INTEGER` | Query k-mer length. Defaults to the database's k. Only a variable-k HKS index (built with `karyoscope build --variable-k`) accepts a value other than its k — use it for a k-sweep; on a fixed-k index any other value is an error. A database built with priorities is always fixed-k. Outputs are tagged `.k<k>` so runs into one directory don't collide. |
 | `--smooth` / `--no-smooth` | Produce the hierarchy-smoothed BED in addition to the presmoothed BED. [default: `smooth`] |
 | `--keep-presmoothed` / `--no-keep-presmoothed` | Keep the presmoothed BED. Pass `--no-keep-presmoothed` to write only the smoothed output. [default: `keep-presmoothed`] |
 | `--keep-intermediates` | Keep the combined `.featureIDs.bed` from the C++ step (useful for debugging). |
@@ -56,7 +56,7 @@ Each BED's 4th column is the human-readable feature name. k-mers absent from the
 
 Smoothing promotes short noisy intervals (especially short `novel` runs flanked by specific features) to the lowest common ancestor of their flankers in the feature set's hierarchy.
 
-For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, a single haplotype peaks at ~10 GB (request ≥ 16 GB) and a combined diploid assembly such as HG002 v1.1 peaks at ~17 GB (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. The **KMC backend** peaks at ~30–35 GB (request ≥ 50 GB). HG002 runs in ~20–30 min at `-t 16`.
+For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, the peak is set by the index rather than the input — the shared base index plus one feature set's labeling at a time — so it is ~10 GB whether you annotate a single haplotype or a combined diploid assembly such as HG002 v1.1 (request ≥ 16 GB). The **KMC backend** peaks at ~30–35 GB (request ≥ 50 GB). HG002 runs in ~20–30 min at `-t 16`.
 
 ## Progress output
 

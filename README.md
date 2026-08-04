@@ -20,7 +20,7 @@
 
 > ℹ️ **KaryoScope follows [semantic versioning](https://semver.org); v1.0.0 is the first stable release.** The command-line interface is stable: deprecations ship with warnings and a back-compatible transition, and any breaking change will come with a major-version bump. The project is being prepared for journal submission, and new features continue to land between releases — see the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/barthel-lab/KaryoScope/releases).
 
-> 🚀 **New in v2.0.0.** An [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend now runs alongside KMC — annotating a human haplotype **~2.5–3× faster at about a third of the memory** — and a new [`karyoscope build`](docs/commands/build.md) command constructs a ready-to-use database from any genome and per-feature-set BEDs. Both are additive: existing KMC databases and workflows are unchanged. See the [CHANGELOG](CHANGELOG.md).
+> 🚀 **New in v2.2.0.** [`karyoscope prep-bed`](docs/commands/prep-bed.md) converts source annotations — RepeatMasker, EDTA, GFF3/GTF gene models, CenSat, satellite catalogs, a plain `.fai` — into the feature-set BEDs [`karyoscope build`](docs/commands/build.md) consumes, so building a database no longer needs a script per dataset. [`docs/recipes/`](docs/recipes/) rebuilds the shipped human and *Arabidopsis* databases end to end, from download URL to built index. [`examples/karyotypes/`](examples/karyotypes/) collects reference karyotype plots for six assemblies to compare your own output against. Legends can now be collapsed with a `legend_group` column. See the [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -28,14 +28,14 @@
 
 KaryoScope is an alignment-free annotation tool that assigns each *k*-mer in a query assembly or sequencing read to a feature drawn from one or more user-defined hierarchical feature sets, producing a base-pair resolution annotation in a single pass. Because a feature set is simply any tiling of a reference with labelled regions, KaryoScope is extensible to arbitrary annotation sources, from satellite catalogs and repeat libraries to cytobands, FISH-probe coordinates, and structural-variant breakpoints.
 
-A pre-built database for the human genome is distributed alongside the tool, derived from T2T-CHM13v2.0 with six feature sets covering chromosome of origin, satellite composition, interspersed repeats, subtelomeric structure, gene boundaries, and acrocentric-specific features. From these annotations, KaryoScope produces karyotype visualizations and cytogenetic reports without ever performing read alignment. Additional databases can be built for any reference genome or community-curated annotation source, and pre-built databases are shared through the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry).
+A pre-built database for the human genome is distributed alongside the tool, derived from T2T-CHM13v2.0 with six feature sets covering chromosome of origin, satellite composition, interspersed repeats, subtelomeric structure, gene boundaries, and acrocentric-specific features. From these annotations, KaryoScope produces karyotype visualizations and cytogenetic reports without ever performing read alignment. Additional databases can be built for any reference genome or community-curated annotation source. [`karyoscope prep-bed`](docs/commands/prep-bed.md) converts the annotation into labelled feature-set BEDs and [`karyoscope build`](docs/commands/build.md) indexes them; [`docs/recipes/`](docs/recipes/) works both steps through for the human and *Arabidopsis* databases. Databases built this way can be published to, and installed from, the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry).
 
 <!-- TODO: hero figure of a KaryoScope output, e.g. the HG008T karyotype -->
 <!-- <p align="center"><img src="assets/hero_karyotype.png" alt="Example KaryoScope karyotype" width="800"/></p> -->
 
 ### Why alignment-free?
 
-- **Pangenome-scale throughput.** Annotates a single feature set on a complete human haplotype in ~8 minutes on a standard workstation, or the full six-feature-set pipeline for a diploid sample in ~30 minutes at 16 threads — scaling to cohorts of hundreds of phased assemblies. The [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend, now available alongside KMC, annotates all six feature sets for a human haplotype in ~7–9 minutes at a ~10 GB memory peak — roughly 2.5–3× faster than KMC and about a third of the RAM (measured at 16 threads on the T2T-CHM13v2.0, HG008N, and HG008T assemblies).
+- **Pangenome-scale throughput.** On the [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend, one `annotate` run covering all six feature sets finishes a complete human haplotype in **~7–9 minutes at a ~10 GB memory peak**, at 16 threads — scaling to cohorts of hundreds of phased assemblies. The original KMC backend does the same work in ~17–22 minutes at ~30–35 GB, so HKS is roughly 2.5–3× faster on about a third of the RAM. (Measured at 16 threads on T2T-CHM13v2.0, HG008N and HG008T, as a single sequential run of the whole pipeline — assignment plus smoothing for every feature set.)
 - **Base-pair resolution across the entire genome.** Performs well in the satellite-dense centromeres, subtelomeres, and acrocentric short arms where alignment-based pipelines suffer from reference bias and ambiguous mappings.
 - **Multiple feature classes in a single pass.** The same *k*-mer can carry labels across feature sets simultaneously, so a single position can be annotated as belonging to a specific chromosome, satellite family, repeat class, and gene at once.
 - **Extensible.** Any annotation that tiles a reference of interest can serve as a feature set.
@@ -73,8 +73,10 @@ A pre-built database for the human genome is distributed alongside the tool, der
 **Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Resource needs scale with the input:
 
 - **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
-- **Human whole-genome inputs (KMC backend):** loading the KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads). We recommend ≥ 50 GB RAM and ≥ 16 CPU cores for human-scale runs. A single human haplotype's six-feature-set run takes ~17–22 minutes at 16 threads. See [Disk space](#disk-space) for storage.
-- **Human whole-genome inputs (HKS backend):** `annotate` holds the index (~10 GB, fixed) plus per-query buffering that grows with how much sequence one lookup processes at once, so the memory you should request depends on the input shape. A **single haplotype** peaks at **~10 GB** (request ≥ 16 GB) and finishes in **~7–9 minutes** at 16 threads. A **combined diploid assembly** — both haplotypes in one file, e.g. HG002 v1.1 — peaks at **~17 GB** (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. Measured at 16 threads on T2T-CHM13v2.0, HG008N, HG008T, and HG002 v1.1.
+- **Human whole-genome inputs (HKS backend, recommended):** `annotate`'s peak is set by the index, not by the input. It holds the shared base index (6.0 GiB) plus one feature set's labeling at a time (the largest is 3.0 GiB), so the peak is **~10 GB whatever you annotate** — a single haplotype and a combined diploid assembly measure the same. **Request ≥ 16 GB.** A single haplotype's six-feature-set run takes **~7–9 minutes** at 16 threads; a combined diploid is roughly twice that. Measured on T2T-CHM13v2.0, HG008N, HG008T and HG002 v1.1. See [Disk space](#disk-space) for storage.
+
+  Memory barely moves with `--threads`, so there is no reason to hold threads back to save RAM. What *does* vary by machine is the index load: 9 GB is read per feature set, and if there is enough free RAM for the page cache to hold it, the second and later feature sets load in ~2 s instead of ~25 s. On a memory-tight machine expect every load to be cold.
+- **Human whole-genome inputs (KMC backend):** loading the KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads), so we recommend ≥ 50 GB RAM and ≥ 16 CPU cores. A single haplotype's six-feature-set run takes ~17–22 minutes at 16 threads.
 
 ### Disk space
 
@@ -82,8 +84,8 @@ Databases are large, and the archive is **not** deleted until extraction finishe
 
 | Database | Backend | Download (`.tar.gz`) | On disk after install | **Free space to install** |
 |---|---|---|---|---|
-| `KS_human_CHM13_v2` (default) | KMC | 16.3 GB | 17.2 GB | **~34 GB** |
 | `HKS_human_CHM13_v2` | HKS | 13.3 GB | 22.7 GB | **~36 GB** |
+| `KS_human_CHM13_v2` (default) | KMC | 16.3 GB | 17.2 GB | **~34 GB** |
 
 The HKS archive compresses far better than the KMC one, so its download is the *smaller* of the two while its installed footprint is the larger. Once the install completes the archive is removed and only the "on disk" column remains occupied.
 
@@ -218,11 +220,12 @@ This walkthrough uses the [HG002 v1.1 T2T diploid assembly](https://s3-us-west-2
 
 <!-- TODO(hks-default): this Quick start uses the default `karyoscope download`,
      which currently installs the KMC KS_human_CHM13_v2 database (hence the KMC
-     name in the output filenames below and the ~17 GB / KMC RAM figures). When
+     name in the output filenames below and the KMC RAM figures). When
      the registry default flips to HKS_human_CHM13_v2 (after KMC removal + the
      conda recipe guarantees `hks` on every install), switch this walkthrough to
      HKS: the output names become HKS_human_CHM13_v2 and the RAM guidance drops
-     to the HKS figures (~16-24 GB). Keep it on KMC until then. -->
+     to the HKS figure (~16 GB, since the peak is the index and not the
+     input). Keep it on KMC until then. -->
 
 ```bash
 # 1. Download the recommended human reference database (one-time).
@@ -235,13 +238,15 @@ karyoscope download
 #    Skip if you already have your own assembly to annotate.
 curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
-# 3. Annotate the assembly. Recommended: at least 16 threads and, for the
-#    HKS backend, ≥ 24 GB of RAM — HG002 v1.1 is a combined diploid
-#    assembly and its annotate peaks at ~17 GB (a single haplotype peaks
-#    at ~10 GB and fits 16 GB). The KMC backend needs ≥ 50 GB. HG002 runs
-#    in ~20-30 min at -t 16.
-#    Needs ~34 GB free in results/ -- six feature sets over a 6 Gbp
-#    diploid assembly. --no-bgzip keeps the per-feature-set BEDs as plain
+# 3. Annotate the assembly. This runs against the KMC database installed
+#    in step 1, so budget for the KMC backend: it peaks at ~30-35 GB, so
+#    request >= 50 GB of RAM, with at least 16 threads. A single haplotype
+#    takes ~17-22 min at -t 16; HG002 v1.1 is a combined diploid, so expect
+#    roughly twice that.
+#    Allow ~34 GB free in results/ for six feature sets over this 6 Gbp
+#    assembly, plus headroom for the combined-BED intermediate the KMC
+#    backend writes alongside them. See "Disk space" above.
+#    --no-bgzip keeps the per-feature-set BEDs as plain
 #    text for easy inspection; drop it to get the default bgzipped
 #    outputs (which shrink the result but not the peak, since compression
 #    runs after every BED has been written).
@@ -279,6 +284,7 @@ Pass `--format pdf` or `--format png` (repeatable) to additionally produce those
 |---|---|
 | [`karyoscope download`](docs/commands/download.md) | Acquire pre-built databases |
 | [`karyoscope register`](docs/commands/register.md) | Register a locally-placed database so commands can use it |
+| [`karyoscope prep-bed`](docs/commands/prep-bed.md) | Convert a source annotation into a feature-set BED |
 | [`karyoscope build`](docs/commands/build.md) | Build an HKS database from a genome and per-feature-set BEDs |
 | [`karyoscope annotate`](docs/commands/annotate.md) | Annotate sequences with *k*-mer features |
 | [`karyoscope scaffold`](docs/commands/scaffold.md) | Order, orient, and rename assembly contigs |
@@ -295,6 +301,13 @@ Run `karyoscope <command> --help` for full options on any command.
 
 Per-command reference pages live under [`docs/commands/`](docs/commands/) — one page per subcommand, linked from the [Commands](#commands) table above. The `--help` output of each command (`karyoscope <command> --help`) remains the authoritative, always-current reference.
 
+Beyond the per-command pages:
+
+| Where | What |
+|---|---|
+| [`docs/recipes/`](docs/recipes/) | Rebuild the shipped human and *Arabidopsis* databases from published sources — every download URL and checksum, the `prep-bed` command for each feature set, and the build spec. |
+| [`examples/karyotypes/`](examples/karyotypes/) | Reference karyotype plots for six assemblies (CHM13, HG002, an HG008 tumour/normal pair, an HPRC population sample, and *Arabidopsis*), with notes on what each shows and the commands that produced them. |
+
 ## Databases
 
 KaryoScope works with pre-built databases distributed via the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry). The current default is `KS_human_CHM13_v2` (17.2 GB installed; see [Disk space](#disk-space) for the free space needed to install it), built from the T2T-CHM13v2.0 reference.
@@ -306,7 +319,9 @@ karyoscope download --list           # download and on-disk size for each
 karyoscope download --info <ID>      # ...plus the free space needed to install
 ```
 
-You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; producing that BED from raw annotation sources (GFF3/GTF, RepeatMasker/EDTA, satellite catalogs) is currently a manual, source-specific step, and a dedicated `karyoscope prep-bed` helper to automate it is [planned](docs/commands/build.md#preparing-a-feature-set-bed).
+You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; [`karyoscope prep-bed`](docs/commands/prep-bed.md) produces one from the formats annotation usually arrives in — RepeatMasker and EDTA tables, GFF3/GTF gene models, UCSC cytoband tables, satellite catalogs, and a plain `.fai` — and prints the build-spec stanza to go with it.
+
+For complete worked examples — every download URL, checksum, conversion and build spec — see [docs/recipes/](docs/recipes/), which rebuilds the human CHM13v2 and *Arabidopsis* Col-CEN databases from published sources.
 
 ## Pre-computed annotations
 
