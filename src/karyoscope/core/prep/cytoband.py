@@ -72,6 +72,25 @@ def short_name(seqid: str) -> str:
     return seqid[3:] if seqid.startswith("chr") else seqid
 
 
+def full_band_name(seqid: str, band: str) -> str:
+    """Qualify a band with its chromosome, unless it already is.
+
+    UCSC ships the band column bare (``p36.33``) in both the 5-column
+    golden-path table and the 6-column ``cytoBandMapped`` BED — the latter
+    carries the qualified name in a *separate* column, which we ignore and
+    rebuild, so one code path serves both. But a redistributed or hand-cut file
+    may put the qualified name in column 4 directly, and blindly prefixing that
+    would give ``11p36.33``.
+
+    Bare cytogenetic bands always begin with the arm, ``p`` or ``q``, so a band
+    that instead begins with its own chromosome name is already qualified.
+    """
+    prefix = short_name(seqid)
+    if band.startswith(prefix) and band[len(prefix) :].startswith(("p", "q")):
+        return band
+    return f"{prefix}{band}"
+
+
 def band_group(fullname: str) -> str | None:
     """Group node for a band, or ``None`` when it has no sub-band.
 
@@ -189,9 +208,8 @@ def from_ucsc(
         if seqid not in bands_by_seqid:
             unbanded.append(seqid)
             continue
-        prefix = short_name(seqid)
         chrom_bands[seqid] = [
-            (start, end, f"{prefix}{band}", stain)
+            (start, end, full_band_name(seqid, band), stain)
             for start, end, band, stain in bands_by_seqid[seqid]
         ]
     if not chrom_bands:

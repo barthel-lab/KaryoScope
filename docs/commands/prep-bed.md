@@ -114,6 +114,8 @@ The result tiles every sequence in `--lengths`, so the stanza sets `background: 
 
 Band labels keep their chromosome (`chr1` + `p36.33` → `1p36.33`) so no label is ambiguous across chromosomes, and the hierarchy nests three deep: chromosome → band group → band. A band with no sub-band (`1p33`) hangs directly off its chromosome.
 
+UCSC ships the band column bare in both shapes — the 5-column golden-path table and the 6-column `cytoBandMapped` BED, where the qualified name sits in a *separate* column that is ignored and rebuilt, so one code path serves both. A redistributed file that puts the qualified name in column 4 directly is also handled: a band already beginning with its own chromosome is left alone rather than becoming `11p36.33`. Bare cytogenetic bands always start with the arm, `p` or `q`, which is what makes the two safe to tell apart.
+
 The hierarchy is checked before anything is written — every band must be a node with a clean path to the root, and no label may be both a band and a group. That is far cheaper than discovering it part-way through a multi-hour `build`.
 
 ### `censat`

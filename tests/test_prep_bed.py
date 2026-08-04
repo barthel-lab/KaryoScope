@@ -693,3 +693,42 @@ def test_a_bad_rename_prefix_is_a_clean_error_not_a_traceback(
     assert result.exit_code != 0
     assert "OLD:NEW" in result.output
     assert "Traceback" not in result.output
+
+
+def test_full_band_name_qualifies_a_bare_band() -> None:
+    assert cytoband_prep.full_band_name("chr1", "p36.33") == "1p36.33"
+    assert cytoband_prep.full_band_name("chr11", "q13.4") == "11q13.4"
+    assert cytoband_prep.full_band_name("chrX", "p22.33") == "Xp22.33"
+
+
+def test_full_band_name_does_not_double_prefix_an_already_qualified_band() -> None:
+    """A redistributed file may put the qualified name in column 4; prefixing
+    that again would give 11p36.33."""
+    assert cytoband_prep.full_band_name("chr1", "1p36.33") == "1p36.33"
+    assert cytoband_prep.full_band_name("chr11", "11q13.4") == "11q13.4"
+    assert cytoband_prep.full_band_name("chrX", "Xp22.33") == "Xp22.33"
+    # chr1's bands and chr11's must not be confused by a prefix test alone.
+    assert cytoband_prep.full_band_name("chr1", "1p36.33") != "11p36.33"
+
+
+def test_cytoband_accepts_both_the_bare_and_qualified_column_4(tmp_path: Path, fai: Path) -> None:
+    """The 5-column golden-path table and a file carrying qualified names must
+    produce the same feature set."""
+    bare = tmp_path / "bare.txt"
+    bare.write_text("chr1\t0\t1000\tp36.33\tgneg\nchr1\t1000\t2000\tq11.1\tgpos25\n")
+    qualified = tmp_path / "qualified.txt"
+    qualified.write_text("chr1\t0\t1000\t1p36.33\tgneg\nchr1\t1000\t2000\t1q11.1\tgpos25\n")
+
+    outputs = []
+    for i, source in enumerate((bare, qualified)):
+        out = tmp_path / f"c{i}.bed"
+        cytoband_prep.from_ucsc(
+            input_path=source,
+            lengths=fai,
+            output=out,
+            hierarchy=tmp_path / f"c{i}.tsv",
+            primary_pattern=r"^chr1$",
+        )
+        outputs.append(out.read_text())
+    assert outputs[0] == outputs[1]
+    assert "1p36.33" in outputs[0] and "11p36.33" not in outputs[0]
