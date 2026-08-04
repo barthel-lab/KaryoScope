@@ -86,6 +86,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against.
 
 ### Changed
+- **`build` documentation restructured, and the variable-k description
+  corrected.** The "mode A / mode B" naming is gone: BED plus a genome is
+  described as the input, and the per-feature-FASTA form now sits in the
+  build-spec section where it is actually usable. Hierarchy, priorities and
+  colours each have a reference section that the options table links to, and
+  overlap resolution is shown worked through — a hierarchy, a BED, and the label
+  a shared k-mer ends up with, with and without priorities.
+
+  Two claims were wrong. Priorities are applied when the index is built, not at
+  query time. And `kmer.max_size` read as a range one may query within: on a
+  fixed-k index it equals `kmer.size`, and that single length is the only one
+  `annotate` accepts. Since HKS rejects priorities together with variable-k, a
+  priority-resolved database is necessarily fixed-k — now stated in `build`,
+  `annotate` and `info`.
+
 - **CLI subcommands are imported on demand, cutting startup from ~290 ms to
   ~70 ms.** Registering the eleven subcommands meant importing all eleven
   command modules, and one of them (`download`) pulls in `requests` — about

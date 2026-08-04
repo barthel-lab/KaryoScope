@@ -51,6 +51,12 @@ KS_dummy_test_v1
     region: 6 edges
 ```
 
+`k-mer` reports the query length, the index type, and the largest queryable
+length. On a `fixed` index — the default, and what a priority-resolved database
+is necessarily built as — `max` equals `size` and that one length is the only
+one `annotate` accepts. `max` is a range you may query within only when `type`
+is `variable`. See [build → Fixed-k and variable-k](build.md#fixed-k-and-variable-k).
+
 ## See also
 
 - [`karyoscope download`](download.md) — install databases
