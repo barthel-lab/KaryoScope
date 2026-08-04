@@ -61,11 +61,26 @@ RM_CLASS_TO_LEAF = {
 #: own. Dropped rather than labelled, so ``build``'s gap-fill covers them.
 RM_DROP_CLASSES = frozenset({"ARTEFACT", "Artefact"})
 
-#: Leaf for a class absent from :data:`RM_CLASS_TO_LEAF`. RepeatMasker's own
-#: catch-all is ``Unknown``, so unrecognised classes join it rather than being
-#: skipped — skipping would leave those bases to the ``nonrepeat`` gap-fill,
-#: which asserts the opposite of what the annotation says.
-RM_FALLBACK_LEAF = "Unknown"
+#: Leaf for a class absent from :data:`RM_CLASS_TO_LEAF`.
+#:
+#: Deliberately **not** ``Unknown``: that is a real RepeatMasker class (22,523
+#: records in CHM13 v2) meaning "RepeatMasker could not classify this element".
+#: A class we have no leaf for is a different claim — the annotation is
+#: confident and we are the ones unable to place it — and folding the two
+#: together would overstate what the source said.
+#:
+#: Nor are such rows dropped: that would leave their bases to the ``nonrepeat``
+#: gap-fill, asserting the opposite of what the annotation says. They get their
+#: own leaf, added to the hierarchy and palette only when actually used, so a
+#: file whose classes are all recognised produces the reference tree unchanged.
+RM_FALLBACK_LEAF = "other_repeat"
+
+#: Where the fallback leaf attaches — the subtree root, because nothing is
+#: known about whether such an element is interspersed.
+RM_FALLBACK_PARENT = "repeat"
+
+#: Colour for the fallback leaf, distinct from every colour in the palette.
+RM_FALLBACK_COLOR = "#9E4F9E"
 
 #: ``child parent`` edges of the shipped CHM13 v2 ``repeat`` tree, root last.
 RM_HIERARCHY: list[Edge] = [
@@ -204,15 +219,23 @@ def from_repeatmasker(
     rename = rename or SeqidRewriter()
     records, seen_classes, dialect = _parse_repeatmasker(input_path, rename)
 
+    # Carry the fallback leaf only when something landed on it, so a file whose
+    # classes are all recognised produces the reference hierarchy unchanged.
+    edges = list(RM_HIERARCHY)
+    if any(leaf == RM_FALLBACK_LEAF for _c, _s, _e, leaf in records):
+        edges.append((RM_FALLBACK_LEAF, RM_FALLBACK_PARENT))
+
     n_records = write_bed(output, records)
-    n_edges = write_hierarchy(hierarchy, RM_HIERARCHY)
+    n_edges = write_hierarchy(hierarchy, edges)
     n_colors = 0
     if colors is not None:
-        rows: list[ColorRow] = [(node, *RM_COLORS[node]) for node, _p in RM_HIERARCHY]
+        rows: list[ColorRow] = [
+            (node, *RM_COLORS.get(node, (RM_FALLBACK_COLOR, ""))) for node, _p in edges
+        ]
         rows.append((background, RM_BACKGROUND_COLOR, ""))
         n_colors = write_colors(colors, name, rows)
     if priority is not None:
-        write_priority(priority, RM_HIERARCHY)
+        write_priority(priority, edges)
 
     notes = [f"read {input_path} as the RepeatMasker '{dialect}' dialect"]
     unmapped = sorted(
@@ -221,8 +244,9 @@ def from_repeatmasker(
     if unmapped:
         total = sum(seen_classes[c] for c in unmapped)
         notes.append(
-            f"{len(unmapped)} unrecognised class(es) ({total:,} rows) labelled "
-            f"{RM_FALLBACK_LEAF}: {', '.join(unmapped)}"
+            f"{len(unmapped)} class(es) ({total:,} rows) have no leaf of their own and "
+            f"were labelled {RM_FALLBACK_LEAF!r} — this is NOT RepeatMasker's own "
+            f"'Unknown' class: {', '.join(unmapped)}"
         )
     dropped = sorted(c for c in seen_classes if c in RM_DROP_CLASSES)
     if dropped:

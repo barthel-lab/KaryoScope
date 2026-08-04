@@ -121,7 +121,7 @@ sha256sum ath_gene.bed
 # 52e8059b9275f65135495d6406b5d7bb5be3758935754cc58ced5aa49fbcd142   (284,461 rows)
 ```
 
-`prep-bed` writes a hierarchy file too, but the build spec below leaves it out: `exon`/`intron`/`intergenic` is a flat star that `build` derives on its own, and omitting it is how the shipped database was built.
+`prep-bed` writes the hierarchy file itself — there is nothing to supply.
 
 Two notes:
 
@@ -133,7 +133,7 @@ Two notes:
 ```yaml
 # build.yaml
 id: HKS_arabidopsis_ColCEN
-version: "1.1.0"
+version: "1.2.0"
 sequence: Col-CEN_v1.2.fasta.gz
 kmer:
   s: 31
@@ -159,6 +159,7 @@ feature_sets:
     background: nonrepeat
   - name: gene
     bed: ath_gene.bed
+    hierarchy: ath_gene.tsv
     background: null            # exon/intron/intergenic tiles every base
 roles:
   chromosome_assignment: chromosome

@@ -106,7 +106,7 @@ sha256sum chm13_repeat.bed
 
 `prep-bed` writes the hierarchy and colours files itself — there is nothing to supply.
 
-RepeatMasker names each element `name#class/family`, as in `L1MA#LINE/L1`. `prep-bed` keeps the class, giving the 15 leaves the hierarchy names, and a class it does not recognise becomes `Unknown` rather than being dropped — so those bases are never mistaken for non-repeat. The colours file groups the five RNA leaves into a single legend row, since they share a colour.
+RepeatMasker names each element `name#class/family`, as in `L1MA#LINE/L1`. `prep-bed` keeps the class, giving the 15 leaves the hierarchy names. The colours file groups the five RNA leaves into a single legend row, since they share a colour.
 
 Repeat annotations overlap heavily, and this database resolves that by assigning each base to the highest-priority class. The priority order is provided, and passed to [the build](#6-build) below:
 

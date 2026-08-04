@@ -165,13 +165,46 @@ def test_repeatmasker_bed_dialect_gives_the_same_labels(tmp_path: Path) -> None:
     assert from_out.read_text() == from_bed.read_text()
 
 
-def test_repeatmasker_labels_unknown_classes_rather_than_dropping_them(tmp_path: Path) -> None:
+def test_repeatmasker_labels_unmapped_classes_rather_than_dropping_them(tmp_path: Path) -> None:
     """Dropping them would leave those bases to the nonrepeat gap-fill, asserting
     the opposite of what the annotation says."""
     result, output = _run_rm(tmp_path, RM_OUT, "rm.out")
     labels = [row[3] for row in bed_rows(output)]
-    assert labels == ["LINE", "SINE", "Simple_repeat", "Unknown"]
+    assert labels == ["LINE", "SINE", "Simple_repeat", "other_repeat"]
     assert any("Novel_class" in note for note in result.notes)
+
+
+def test_an_unmapped_class_is_not_folded_into_repeatmaskers_own_unknown(
+    tmp_path: Path,
+) -> None:
+    """`Unknown` is a real RepeatMasker class meaning "could not classify this".
+    A class we have no leaf for is a different claim, and must not borrow it."""
+    text = RM_OUT + "  100  1.0 0.0 0.0  chr1  401 450 (550) + X  Unknown  1 50 (0) 5\n"
+    result, output = _run_rm(tmp_path, text, "rm.out")
+    labels = [row[3] for row in bed_rows(output)]
+    assert "Unknown" in labels  # the genuine class survives as itself
+    assert "other_repeat" in labels  # the unmapped one is kept separate
+    assert labels.count("Unknown") == 1
+    assert any("NOT RepeatMasker" in note for note in result.notes)
+
+
+def test_the_fallback_leaf_appears_only_when_it_is_used(tmp_path: Path) -> None:
+    """Otherwise every file would gain a node the reference tree does not have."""
+    clean = "\n".join(line for line in RM_OUT.splitlines() if "Novel_class" not in line)
+    _, _out = _run_rm(tmp_path / "clean", clean, "rm.out")
+    edges = (tmp_path / "clean" / "repeat.tsv").read_text()
+    assert "other_repeat" not in edges
+
+    _run_rm(tmp_path / "dirty", RM_OUT, "rm.out")
+    assert "other_repeat\trepeat" in (tmp_path / "dirty" / "repeat.tsv").read_text()
+
+
+def test_the_fallback_leaf_gets_a_colour_when_present(tmp_path: Path) -> None:
+    colors = tmp_path / "colors.tsv"
+    _run_rm(tmp_path, RM_OUT, "rm.out", colors=colors)
+    rows = {ln.split("\t")[1]: ln.split("\t")[2] for ln in colors.read_text().splitlines()[1:]}
+    assert rows["other_repeat"] == repeats_prep.RM_FALLBACK_COLOR
+    assert rows["other_repeat"] != rows["Unknown"]
 
 
 def test_repeatmasker_strips_the_uncertainty_marker(tmp_path: Path) -> None:
@@ -200,8 +233,11 @@ def test_repeatmasker_hierarchy_covers_every_leaf_it_can_emit(tmp_path: Path) ->
     """A leaf missing from the hierarchy fails the build, so check it here."""
     nodes = {child for child, _parent in repeats_prep.RM_HIERARCHY}
     assert set(repeats_prep.RM_CLASS_TO_LEAF.values()) <= nodes
-    assert repeats_prep.RM_FALLBACK_LEAF in nodes
     assert set(repeats_prep.RM_COLORS) == nodes
+    # The fallback is attached on demand, so it is deliberately NOT in the base
+    # tree -- but its parent must be.
+    assert repeats_prep.RM_FALLBACK_LEAF not in nodes
+    assert repeats_prep.RM_FALLBACK_PARENT in nodes
 
 
 # -- EDTA -------------------------------------------------------------

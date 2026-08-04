@@ -96,7 +96,9 @@ Run `karyoscope prep-bed SUBCOMMAND --help` for the full list.
 
 Reads either the native `.out` table or the UCSC BED repackaging of it, detected from the file's own content and reported in the output. Sniffing is safe here in a way it would not be in `build`: both are the *same tool's* output, and the choice is reported rather than silently assumed.
 
-Leaves are the RepeatMasker classes, with the `?` uncertainty marker stripped (`DNA?` is still `DNA`). A class the converter does not recognise is labelled `Unknown` — RepeatMasker's own catch-all — and reported, rather than dropped. Dropping it would leave those bases to the `nonrepeat` gap-fill, which asserts the opposite of what the annotation says.
+Leaves are the RepeatMasker classes, with the `?` uncertainty marker stripped (`DNA?` is still `DNA`).
+
+A class the converter has no leaf for is labelled `other_repeat` and reported. It is deliberately **not** folded into `Unknown`: that is a real RepeatMasker class, meaning "RepeatMasker could not classify this element", and a class *we* cannot place is a different claim — the annotation is confident, we are the ones without a leaf for it. Nor is it dropped, which would leave those bases to the `nonrepeat` gap-fill and assert the opposite of what the annotation says. `other_repeat` joins the hierarchy and the palette only when something actually lands on it, so a file whose classes are all recognised produces the reference tree unchanged.
 
 ### `gff-gene`
 

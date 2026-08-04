@@ -66,6 +66,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (4,636,653 records).
 
 ### Fixed
+- **`prep-bed repeatmasker` no longer folds unmappable classes into `Unknown`.**
+  `Unknown` is a real RepeatMasker class — 22,523 records in CHM13 v2 — meaning
+  "RepeatMasker could not classify this element". Using it as the fallback for a
+  class *we* have no leaf for conflated two different claims: one where the
+  annotation is uncertain, one where the annotation is confident and we are the
+  ones unable to place it. Such rows now get their own `other_repeat` leaf, which
+  joins the hierarchy and palette only when something actually lands on it — so a
+  file whose classes are all recognised, including the CHM13 v2 input, produces
+  byte-identical output to before. They are still not dropped: that would leave
+  their bases to the `nonrepeat` gap-fill and assert the opposite of what the
+  annotation says.
+
 - **`prep-bed gff-gene` derives introns per transcript, not per chromosome.**
   The *A. thaliana* Col-CEN `gene.bed` used to build that database labels 8,325
   spans `intron` that lie inside no gene at all — gaps between neighbouring
