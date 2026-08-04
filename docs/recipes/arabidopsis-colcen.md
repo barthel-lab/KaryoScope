@@ -35,7 +35,7 @@ sha256sum ath_chromosome.bed
 
 The organelles are excluded at build time rather than filtered here, so every feature set agrees about which sequences exist.
 
-Grouping the five nuclear chromosomes is curation — nothing in a `.fai` says which sequences are nuclear — so it is provided rather than derived:
+Grouping the five nuclear chromosomes is curation — nothing in a `.fai` says which sequences are nuclear — so it is provided rather than derived, and passed to [the build](#6-build) below:
 
 ```bash
 cp docs/recipes/files/colcen_chromosome.hierarchy.txt .
@@ -43,7 +43,7 @@ cp docs/recipes/files/colcen_chromosome.hierarchy.txt .
 
 ## 3. `region` — CEN180 centromeric satellite
 
-The CEN180 monomer catalog comes from TAIR. Note the endpoint: `/download/file?path=…` is the *web page*, and returns an HTML shell. The file itself is served from `/api/download-files/download?filePath=…`.
+The CEN180 monomer catalog comes from TAIR.
 
 ```bash
 curl -L -o ColCEN_CEN180.gff3 \
@@ -68,11 +68,10 @@ sha256sum ath_region.bed
 
 `prep-bed` writes the hierarchy file itself — there is nothing to supply.
 
-Three details, none of them specific to Arabidopsis:
+Two details:
 
-- **`--rename-prefix` is required.** This file names sequences `Col-CEN_chr1`, the genome names them `Chr1`. Without the rewrite nothing matches and the feature set comes out empty.
-- **It is a monomer catalog, not a feature annotation.** Unlike human CenSat it says only "CEN180 monomer here", 66,131 times. `prep-bed satellite` merges monomers within `--merge-gap` (default 10 bp, which bridges the 1–2 bp monomer-boundary artefacts tandem-repeat finders emit without swallowing real kilobase-scale insertions), then takes the densest cluster of bands as the centromere. A raw min-to-max extent would be dragged across the arm by scattered pericentromeric remnants.
-- **The file has an uncommented header row.** `prep-bed` skips rows whose coordinates are not integers, so it is handled — but `grep -v '^#'` alone would let a junk record through.
+- **`--rename-prefix` is required here.** This file names sequences `Col-CEN_chr1` where the genome names them `Chr1`. Without the rewrite nothing matches and the feature set comes out empty. Any annotation whose seqids differ from the assembly needs this, or `--seqid-map`.
+- **This is a catalog of monomers, not of features.** It marks each CEN180 repeat unit individually, 66,131 times, and says nothing about where the centromere is. `prep-bed satellite` merges nearby monomers into bands (`--merge-gap`) and takes the densest cluster of bands as the centromere core (`--cluster-gap`); everything else becomes `p_arm` or `q_arm`. Human CenSat, by contrast, names its features directly, which is why it has a converter of its own.
 
 Arms are assigned by coordinate, which assumes short-arm-first orientation.
 
