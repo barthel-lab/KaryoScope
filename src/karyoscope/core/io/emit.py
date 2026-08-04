@@ -71,17 +71,21 @@ def assign_colors(
     4. Every other node (internal / root grouping node) is
        :data:`STRUCTURAL_COLOR`.
 
-    Returns ``{node: hex}`` covering all of ``nodes``.
+    Returns ``{node: hex}`` covering all of ``nodes``, **keyed in the order
+    ``nodes`` was given** — callers write ``colors.tsv`` straight from this, so
+    iterating a set here would make the file's row order vary between runs.
+    Pass :meth:`Hierarchy.nodes_in_order`, not :meth:`Hierarchy.nodes`.
     """
     provided = dict(provided or {})
-    node_set = set(nodes)
 
     auto_leaves = [leaf for leaf in leaves if leaf not in provided and leaf != background]
     palette = auto_palette(len(auto_leaves))
     leaf_colors = dict(zip(auto_leaves, palette, strict=True))
 
     out: dict[str, str] = {}
-    for node in node_set:
+    for node in nodes:
+        if node in out:
+            continue
         if node in provided:
             out[node] = provided[node]
         elif background is not None and node == background:

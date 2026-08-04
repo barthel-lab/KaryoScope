@@ -173,3 +173,43 @@ class TestBuildParseSetColors:
         colors, groups = build_mod._parse_set_colors(p)
         assert set(colors) == {"rA", "rB"}
         assert groups == {"rB": "sat"}
+
+
+def test_nodes_in_order_puts_the_root_first_then_children_in_edge_order() -> None:
+    """colors.tsv is written straight from this order, so it must be the
+    hierarchy's, not a set's."""
+    from karyoscope.core.io.hierarchy import Hierarchy, HierarchyRow
+
+    hier = Hierarchy(
+        rows=[
+            HierarchyRow("cytoband", "1", "categorized"),
+            HierarchyRow("cytoband", "1p36", "1"),
+            HierarchyRow("cytoband", "1p36.33", "1p36"),
+            HierarchyRow("cytoband", "1p33", "1"),
+        ]
+    )
+    assert hier.nodes_in_order("cytoband") == [
+        "categorized",
+        "1",
+        "1p36",
+        "1p36.33",
+        "1p33",
+    ]
+    assert set(hier.nodes_in_order("cytoband")) == hier.nodes("cytoband")
+
+
+def test_assign_colors_preserves_the_node_order_it_was_given() -> None:
+    """A rebuild from identical inputs must produce an identically-ordered
+    colors.tsv; iterating a set here made row order vary with the hash seed."""
+    from karyoscope.core.io import emit as emit_mod
+
+    nodes = ["categorized", "exon", "intron", "intergenic"]
+    colors = emit_mod.assign_colors(nodes=nodes, leaves=["exon", "intron", "intergenic"])
+    assert list(colors) == nodes
+
+
+def test_assign_colors_tolerates_a_repeated_node() -> None:
+    from karyoscope.core.io import emit as emit_mod
+
+    colors = emit_mod.assign_colors(nodes=["a", "b", "a"], leaves=["a", "b"])
+    assert list(colors) == ["a", "b"]

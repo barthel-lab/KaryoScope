@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`colors.tsv` row order is now reproducible, and follows the hierarchy.**
+  `build` wrote one row per node by iterating `Hierarchy.nodes()`, which returns
+  a **set** — so Python's per-run string hash randomisation reordered the file,
+  and rebuilding a database from byte-identical inputs produced a
+  byte-different `colors.tsv`. Row order is emitted in hierarchy order instead
+  (each root, then every child in edge order), which is also what makes legend
+  groups meaningful: they are ordered by first appearance in `colors.tsv`, so
+  for a cytoband set that ordering is now the Giemsa intensity progression
+  rather than whatever the hash seed produced. Colour *assignments* are
+  unchanged; only the order of the rows.
+
 ### Added
 - **`colors.tsv` gains an optional 4th column, `legend_group`, and `build`
   carries it through.** A feature set with hundreds of leaves in a handful of
