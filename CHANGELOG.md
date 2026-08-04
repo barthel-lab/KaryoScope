@@ -21,9 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows rather than joined blocks) and would silently build a different feature
   set — the real source is UCSC's `chm13v2.0_rmsk.bb` — and the Col-CEN gene
   annotation is published in two attribute syntaxes that were not interchangeable
-  until this release. The Arabidopsis recipe has been run end to end from its own
-  URLs: all four BEDs match their published checksums and all five index files
-  come out bit-identical to the database in use.
+  until this release.
+
+  Both recipes reproduce their databases exactly. The Arabidopsis one has been
+  run end to end from its own URLs: all four BEDs match their published
+  checksums and all five index files come out bit-identical to the database in
+  use. For CHM13 all four BEDs are byte-identical to the files the shipped
+  database was built from, and applying the published repeat priority order via
+  `flatten: true` reproduces its flattened `repeat` set to the row —
+  4,423,197 rows, identical. The priority order recorded in the original build
+  script is *not* the one that was used and does not reproduce it; the correct
+  order ships as `docs/recipes/files/chm13v2_repeat.priority.txt`.
 
 - **`karyoscope prep-bed`, converting source annotations into feature-set BEDs.**
   `build` starts from a final labelled BED, and producing that BED was the last

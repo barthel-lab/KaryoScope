@@ -36,13 +36,19 @@ This is why every input here is pinned by checksum rather than by name.
 
 **A file's coordinates belong to a specific assembly.** An annotation built on a different version of "the same" genome produces coordinates that are in-bounds and plausible but subtly wrong. If you substitute an input, verify the assembly identity by comparing per-sequence sequence md5, not by spot-checking that a feature lands somewhere sensible.
 
-## What these recipes do not cover
+## Supporting files
 
-- The `cytoband` databases.
-- The CHM13 `acrocentric` and `subtelomeric` feature sets.
+[`files/`](files/) holds the few inputs that nothing derives, because they encode curation or a naming convention rather than data:
+
+| File | Used by |
+| --- | --- |
+| `chm13v2_chromosome.hierarchy.txt` | which human chromosomes are metacentric / submetacentric / acrocentric / sex |
+| `colcen_chromosome.hierarchy.txt` | which Col-CEN sequences are nuclear |
+| `chm13v2_repeat.priority.txt` | the published order in which repeat classes win an overlap |
+| `chm13v2_refseq_to_chr.tsv` | RefSeq accession → chromosome name |
+
+Every other hierarchy and priority file in these recipes is written by `prep-bed` as it converts, so there is nothing to supply.
 
 ## A note on exact reproduction
 
 These recipes rebuild the feature sets, and the BEDs they produce are byte-identical to the ones the shipped databases were built from — with one deliberate exception, described in each recipe: the shipped BEDs label the mitochondrion with a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. The recipes use `exclude:`, which is better: a label claims the sequence for the feature set, whereas `exclude:` leaves it genuinely uncovered so it reads as `none` everywhere.
-
-The CHM13 `repeat` set has one further difference, noted in that recipe.

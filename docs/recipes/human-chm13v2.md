@@ -2,10 +2,12 @@
 
 Rebuild the human T2T-CHM13v2.0 database's `chromosome`, `region`, `repeat` and `gene` feature sets from published sources.
 
-> The shipped database also carries `acrocentric` and `subtelomeric` feature sets and a separate `cytoband` database. Those are outside this recipe.
+> The shipped database also carries `acrocentric` and `subtelomeric` feature sets, which are outside this recipe.
 
 **Requirements:** `karyoscope`, `samtools`, `hks`, and UCSC's [`bigBedToBed`](https://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bigBedToBed).
 **Cost:** roughly 25 GB of downloads, ~1 GB of intermediates, and a build that takes minutes at `-t 16` but needs substantial RAM — see [Resource requirements](../commands/build.md#resource-requirements).
+
+Three files in [`files/`](files/) are used below. They are shipped because nothing derives them: two encode curation (which chromosomes are acrocentric; which repeat class outranks which) and one is an accession mapping.
 
 ## 1. Genome
 
@@ -33,28 +35,40 @@ One record per sequence, labelled with its own name. Derived from the `.fai`, so
 karyoscope prep-bed fai \
     --lengths CHM13.fasta.gz.fai \
     --output chm13_chromosome.bed
+
+sha256sum chm13_chromosome.bed
+# da23139f348285a17085e264f8fac86644327965c647a12ced3ad810ea7e1827   (25 rows)
 ```
 
-<sub>`chm13_chromosome.bed` → `da23139f348285a17085e264f8fac86644327965c647a12ced3ad810ea7e1827` (25 rows)</sub>
+The shipped database groups these by centromere position — metacentric, submetacentric, acrocentric, sex. That is human cytogenetics and cannot be read off a `.fai`, so it is provided rather than derived:
 
-The shipped database groups these sequences by centromere position (metacentric / submetacentric / acrocentric / sex). That grouping is human cytogenetic curation and cannot be read off a `.fai`, so `prep-bed` does not invent it — write it by hand as a `child<TAB>parent` file and pass it as `hierarchy:` if you want it.
+```bash
+cp docs/recipes/files/chm13v2_chromosome.hierarchy.txt .
+```
 
 ## 3. `region` — centromeric satellites
 
 ```bash
 curl -L -o chm13v2.0.cenSatv2.1.bed \
   https://raw.githubusercontent.com/hloucks/CenSatData/refs/heads/main/CHM13/chm13v2.0.cenSatv2.1.bed
-# sha256: c6f35d83e4b28f33807c2f65df76b78444f246aa9fb82a3c262bde35e6a6a78c
 
+sha256sum chm13v2.0.cenSatv2.1.bed
+# c6f35d83e4b28f33807c2f65df76b78444f246aa9fb82a3c262bde35e6a6a78c
+```
+
+```bash
 karyoscope prep-bed censat \
     --input chm13v2.0.cenSatv2.1.bed \
     --lengths CHM13.fasta.gz.fai \
     --output chm13_region.bed \
     --hierarchy chm13_region.tsv \
     --priority chm13_region.priority.txt
+
+sha256sum chm13_region.bed
+# c3b0959f9221d89a854e680186589e428c101eb4de069e1c2dab01fb58540bd3   (3,452 rows)
 ```
 
-<sub>`chm13_region.bed` → `c3b0959f9221d89a854e680186589e428c101eb4de069e1c2dab01fb58540bd3` (3,452 rows)</sub>
+`prep-bed` writes the hierarchy and priority files itself — there is nothing to supply.
 
 CenSat labels every feature with the specific arrays it contains — `gSat(TAR1)`, `hor(S1C10H1-B)` — several hundred distinct values. `prep-bed` keeps the part before the parenthesis, giving the 14 leaves the hierarchy names, then labels everything else `p_arm` or `q_arm` by which side of the centromere it falls on. The centromere comes from the `ct` (centromeric transition) features that bracket it.
 
@@ -67,52 +81,70 @@ The source is the UCSC bigBed, **not** the similarly-named BED in the T2T annota
 ```bash
 curl -L -o chm13v2.0_rmsk.bb \
   https://hgdownload.soe.ucsc.edu/gbdb/hs1/t2tRepeatMasker/chm13v2.0_rmsk.bb
-# sha256: 92dfe2d85113752ebf140d9424d5979e56de64718a40b5c2374e1c1c454482f0
 
+sha256sum chm13v2.0_rmsk.bb
+# 92dfe2d85113752ebf140d9424d5979e56de64718a40b5c2374e1c1c454482f0
+```
+
+```bash
 bigBedToBed chm13v2.0_rmsk.bb CHM13.RepeatMasker.bed
-# sha256: e061ca26b34aa9e9c0b6cbc70f0d6faefd123000af6cd2716b9452e4d717b0ed  (4,636,653 rows)
 
+sha256sum CHM13.RepeatMasker.bed
+# e061ca26b34aa9e9c0b6cbc70f0d6faefd123000af6cd2716b9452e4d717b0ed   (4,636,653 rows)
+```
+
+```bash
 karyoscope prep-bed repeatmasker \
     --input CHM13.RepeatMasker.bed \
     --output chm13_repeat.bed \
     --hierarchy chm13_repeat.tsv \
     --colors chm13_repeat.colors.tsv
+
+sha256sum chm13_repeat.bed
+# 067d8020ec3480aafb30a9ff07280c1b2cb8ed58174d895212ebf9b2b96fc10e   (4,636,653 rows)
 ```
 
-<sub>`chm13_repeat.bed` → `067d8020ec3480aafb30a9ff07280c1b2cb8ed58174d895212ebf9b2b96fc10e` (4,636,653 rows)</sub>
+Leaves are the 15 RepeatMasker classes. The emitted colours file groups the five RNA leaves into a single legend row, since they share a colour.
 
-Leaves are the 15 RepeatMasker classes. `build` adds the `nonrepeat` gap-fill. The emitted colours file groups the five RNA leaves into a single legend row, since they share a colour.
+Repeat annotations overlap heavily, and this database resolves that by assigning each base to the highest-priority class. The order is published curation, so it is provided:
 
-**This is the one set that does not reproduce the shipped database exactly.** The shipped `repeat` set was additionally flattened to one label per base by a priority-ordered merge before indexing. That step predates the HKS backend, which resolves overlaps per k-mer through the hierarchy and makes pre-flattening unnecessary — so this recipe omits it, and the result is an equivalent but not byte-identical index. To reproduce the shipped set exactly you would need to re-apply that merge with the order `D20S16,rRNA,scRNA,snRNA,tRNA,RC,Retroposon,DNA,LTR,SINE,LINE,Unknown`.
+```bash
+cp docs/recipes/files/chm13v2_repeat.priority.txt .
+```
+
+```
+rRNA, scRNA, snRNA, srpRNA, tRNA, Satellite, RC, Retroposon, DNA, LTR, SINE, LINE,
+Simple_repeat, Low_complexity, Unknown          (highest priority first)
+```
+
+The build spec applies it with `flatten: true`. That file is 3-column, so it supplies the hierarchy as well — `chm13_repeat.tsv` from the step above is the same tree without the ranking, and the spec does not need it.
 
 ## 5. `gene` — RefSeq
 
 ```bash
 curl -L -o CHM13.gtf.gz \
   https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/009/914/755/GCF_009914755.1_T2T-CHM13v2.0/GCF_009914755.1_T2T-CHM13v2.0_genomic.gtf.gz
-# sha256: fd8a27c06da23b4defc140d1bb03f5f0eb8b5ba780eeee6730617fe709c6a16e
+
+sha256sum CHM13.gtf.gz
+# fd8a27c06da23b4defc140d1bb03f5f0eb8b5ba780eeee6730617fe709c6a16e
 ```
 
 RefSeq names sequences by accession (`NC_060925.1`), so it needs a mapping to the assembly's `chr` names:
 
 ```bash
-python - > refseq_to_chr.tsv <<'EOF'
-names = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY"]
-for i, name in enumerate(names):
-    print(f"NC_0609{25 + i}.1\t{name}")
-print("NC_012920.1\tchrM")
-EOF
+cp docs/recipes/files/chm13v2_refseq_to_chr.tsv .
 
 karyoscope prep-bed gff-gene \
     --input CHM13.gtf.gz \
     --lengths CHM13.fasta.gz.fai \
-    --seqid-map refseq_to_chr.tsv \
+    --seqid-map chm13v2_refseq_to_chr.tsv \
     --output chm13_gene.bed \
     --hierarchy chm13_gene.tsv \
     --colors chm13_gene.colors.tsv
-```
 
-<sub>`chm13_gene.bed` → `03ae30a1a9c90a574b96eb4dfaa34a0c834ef51f5b3eec4181f39d4e8c9063e9` (612,909 rows)</sub>
+sha256sum chm13_gene.bed
+# 03ae30a1a9c90a574b96eb4dfaa34a0c834ef51f5b3eec4181f39d4e8c9063e9   (612,909 rows)
+```
 
 Introns are derived per transcript from that transcript's own consecutive exons; where transcripts disagree, `exon` beats `intron` beats `intergenic`. The result tiles every sequence, so the set needs no gap-fill.
 
@@ -134,14 +166,16 @@ exclude: [chrM]
 feature_sets:
   - name: chromosome
     bed: chm13_chromosome.bed
+    hierarchy: chm13v2_chromosome.hierarchy.txt
     background: null            # one record per sequence already tiles everything
   - name: region
     bed: chm13_region.bed
-    priority: chm13_region.priority.txt
+    priority: chm13_region.priority.txt   # 3-column: supplies the hierarchy too
     background: null            # the arm split already tiles every base
   - name: repeat
     bed: chm13_repeat.bed
-    hierarchy: chm13_repeat.tsv
+    priority: chm13v2_repeat.priority.txt # 3-column: supplies the hierarchy too
+    flatten: true               # one class per base, by the order above
     colors: chm13_repeat.colors.tsv
     background: nonrepeat
   - name: gene
@@ -162,7 +196,9 @@ karyoscope build --spec build.yaml
 karyoscope info HKS_human_CHM13_v2
 ```
 
-`region` uses `priority:` rather than `hierarchy:` because the CenSat priority file is the 3-column form, which supplies both.
+All four feature sets reproduce the shipped database's inputs exactly. For `repeat`, flattening the BED above by the published order and gap-filling with `nonrepeat` was checked against the file the database was built from: 4,423,197 rows, identical.
+
+The one deliberate difference throughout is `chrM`. The original BEDs gave it a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. Using `exclude:` is better — a label claims the sequence for that feature set, whereas `exclude:` leaves it genuinely uncovered so it reads as `none` everywhere.
 
 ## See also
 
