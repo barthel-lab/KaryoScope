@@ -10,7 +10,7 @@ karyoscope annotate -i INPUT [OPTIONS]
 
 ## Description
 
-`karyoscope annotate` assigns every k-mer in the input to a feature in a single alignment-free pass, by querying the database's KMC index via the bundled `get_featureIDs` helper. It produces one BED per feature set, and by default writes BOTH a "presmoothed" (raw) and a "smoothed" (hierarchy-smoothed) BED for each feature set. k-mers that are not present in the index render as `novel`. Input may be FASTA, FASTQ, or BAM. The expensive k-mer-query step is resumable across reruns, so an interrupted (for example, OOM-killed) run can resume straight into smoothing.
+`karyoscope annotate` assigns every k-mer in the input to a feature in a single alignment-free pass, by querying the database's index. The backend follows the database: an HKS-index database (e.g. `HKS_human_CHM13_v2`) is queried with `hks`, and a KMC-index database with the bundled `get_featureIDs` helper. It produces one BED per feature set, and by default writes BOTH a "presmoothed" (raw) and a "smoothed" (hierarchy-smoothed) BED for each feature set. k-mers that are not present in the index render as `novel`. Input may be FASTA, FASTQ, or BAM. The expensive k-mer-query step is resumable across reruns, so an interrupted (for example, OOM-killed) run can resume straight into smoothing.
 
 ## Options
 
