@@ -14,7 +14,8 @@ karyoscope karyotype -i hap1=asm.hap1.fa.gz -i hap2=asm.hap2.fa.gz \
 ```
 
 All human plots use the shipped `HKS_human_CHM13_v2` database. Arabidopsis uses
-a database built locally with [`karyoscope build`](../../docs/commands/build.md).
+`HKS_arabidopsis_ColCEN`, which you can build yourself by following the
+[Col-CEN recipe](../../docs/recipes/arabidopsis-colcen.md).
 
 ## The three views
 
@@ -45,7 +46,7 @@ cap stands out.
 | [HG008N](hg008n.genome.chromosome.png) | HG008N v6.3 | Diploid normal — the control half of a tumour/normal pair. |
 | [HG008T](hg008t.genome.chromosome.png) | HG008T v3.2 | Matched tumour. Extensive somatic rearrangement. |
 | [NA19185](na19185.genome.chromosome.png) | HPRC release 2 | A routine population assembly, not curated to T2T. |
-| [Arabidopsis](arabidopsis.genome.chromosome.png) | Col-CEN v1.2 | Non-human, non-mammalian, own database. |
+| [Arabidopsis](arabidopsis.genome.chromosome.png) | Col-CEN v1.2 | Non-human, non-mammalian, own database ([recipe](../../docs/recipes/arabidopsis-colcen.md)). |
 
 ### CHM13 — the baseline
 
@@ -95,9 +96,12 @@ probably look like** — the curated assemblies are the exception, not the norm.
 
 ### Arabidopsis — a non-human genome and a user-built database
 
-Five chromosomes, annotated against `HKS_arabidopsis_ColCEN`, built from a
-genome plus BED files with [`karyoscope build`](../../docs/commands/build.md).
-It demonstrates that nothing in the method is human-specific.
+Five chromosomes, annotated against `HKS_arabidopsis_ColCEN`. It demonstrates
+that nothing in the method is human-specific. The
+[Col-CEN recipe](../../docs/recipes/arabidopsis-colcen.md) builds that database
+from published sources — every download URL and checksum, the `prep-bed` command
+for each of the four feature sets, and the build spec — so this plot is
+reproducible end to end rather than resting on a database only we have.
 
 Two things differ from the human examples, both instructive:
 
@@ -135,6 +139,8 @@ karyoscope karyotype -i hap1=NA19185_hap1_hprc_r2_v1.0.1.fa.gz \
     --sex unknown --format svg --format png -t 16 -o out/
 
 # Arabidopsis — a locally built database, and the plant telomere motif
+#   --db-root is only needed if you built into a non-default database root;
+#   `karyoscope build` registers into the default one.
 karyoscope karyotype -i Col-CEN_v1.2=Col-CEN_v1.2.fasta.gz \
     --db HKS_arabidopsis_ColCEN --db-root /path/to/your/db \
     --sample-label Col-CEN_v1.2 --telo-motif CCCTAAA \
@@ -142,9 +148,10 @@ karyoscope karyotype -i Col-CEN_v1.2=Col-CEN_v1.2.fasta.gz \
 ```
 
 The exact assemblies are named in the table above. The human plots use the
-shipped `HKS_human_CHM13_v2`; the Arabidopsis one needs a database you build
-yourself with [`karyoscope build`](../../docs/commands/build.md), so
-`--db-root` has to point wherever you built it.
+shipped `HKS_human_CHM13_v2`; the Arabidopsis one needs `HKS_arabidopsis_ColCEN`,
+which the [Col-CEN recipe](../../docs/recipes/arabidopsis-colcen.md) builds from
+published sources. Follow that recipe and the database registers into your
+default database root, so `--db-root` is only needed if you built it elsewhere.
 
 Rendering is deterministic given the same assembly, database, and KaryoScope
 version — so a rebuild reproduces these images, with the caveat that changes to
