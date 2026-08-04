@@ -55,7 +55,7 @@ HKS indexes **k-mers**, not coordinates. A feature set's BED is sliced into one
 FASTA per label, and a k-mer is claimed by every label whose sequence contains
 it. Two consequences follow:
 
-- Overlapping BED regions are fine. You do not need a non-overlapping partition.
+- Overlapping BED regions are fine; any set of labelled regions works.
 - The same k-mer sequence occurring in two different regions is claimed by both
   **whether or not those regions overlap in coordinates** — including regions on
   different chromosomes.
@@ -197,7 +197,6 @@ else.
 
 - No hierarchy for a set → a flat star: every leaf is a child of the root, `categorized`.
 - No colours → an auto-generated distinct palette per leaf.
-- `features.tsv` is **not** produced: the HKS backend reads label names from the index and never uses it.
 
 ## Options
 
@@ -266,7 +265,7 @@ feature_sets:
 ```
 
 There is no coordinate system here, so `background:` and `flatten:` do not
-apply and are rejected. `--sequence` is not required unless some *other*
+apply and are rejected. `--sequence` is needed only if some *other*
 feature set uses `bed:`.
 
 ## Excluding sequences
@@ -313,7 +312,7 @@ Use [`karyoscope prep-bed`](prep-bed.md) to produce that BED from the formats an
 
 For complete worked examples, see the [database recipes](../recipes/).
 
-`prep-bed` is deliberately a **separate subcommand** rather than something `build` does for you: `build`'s contract stays "a final labelled BED", so it never has to sniff and guess at raw file formats. For the same reason `prep-bed` never gap-fills, flattens or drops sequences — `background:`, `flatten:` and `exclude:` below already do that, and doing it in both places would mean two places to get it wrong.
+`prep-bed` is a **separate subcommand** rather than a mode of `build`. That keeps `build`'s input contract to one thing — a final labelled BED — so it reads a single known format instead of identifying whichever the source annotation happened to use. It also keeps gap-filling, flattening and sequence exclusion in one place: `background:`, `flatten:` and `exclude:` below.
 
 ## Resource requirements
 
@@ -337,23 +336,25 @@ Measured runs, all with `-t 16` on one cluster node. Wall time is the whole comm
 > k=41, 51 and 61 is measurement noise, not a real effect of k — see below.
 > **Request ~1.5x the figure here**, e.g. 128 GB for a human build at k≤31.
 
-Three things follow, and the first two are easy to get wrong:
+Three things follow:
 
-### `--mem-gigas` is not a memory cap
+### `--mem-gigas` sets the SBWT construction budget
 
-It is the budget handed to SBWT construction, not a ceiling on the process. Every human-scale row above used `mem_gigas: 32` and still peaked far higher. **Do not size a job from `--mem-gigas`** — size it from this table, or use `--external-memory` (below).
+It is the allowance handed to the SBWT construction step, and total process memory runs well above it: every human-scale row above used `mem_gigas: 32` and peaked far higher. **Size a job from the table above**, or from `--external-memory` (below).
 
 ### Peak memory doubles above k=32, and is otherwise flat
 
-Peak RSS tracks *number of distinct k-mers × bytes per k-mer*, and has almost nothing to do with the size of the database produced — the k=11 build peaked at 72 GB while emitting a 19 MB index. The bytes-per-k-mer term is a step function: SBWT packs a k-mer into `⌈k/32⌉` 64-bit words, **padded**, so cost jumps at k=32, 64, 96, 128 and is flat between. That is why k=11/21/31 all sit near 70 GB and k=41/51/61 all sit near 148 GB — a k=41 k-mer occupies the same 16 bytes as a k=64 one.
+Peak RSS tracks *number of distinct k-mers × bytes per k-mer*; the size of the database produced is unrelated — the k=11 build peaked at 72 GB while emitting a 19 MB index. The bytes-per-k-mer term is a step function: SBWT packs a k-mer into `⌈k/32⌉` 64-bit words, **padded**, so cost jumps at k=32, 64, 96, 128 and is flat between. That is why k=11/21/31 all sit near 70 GB and k=41/51/61 all sit near 148 GB — a k=41 k-mer occupies the same 16 bytes as a k=64 one.
 
 Measured across the six builds above: roughly 70–82 GB for every k ≤ 31, and roughly 147–170 GB for every k ≥ 41 — flat within each band, with the spread inside a band being measurement noise rather than an effect of k.
 
 Practical consequence: **k ≤ 31 costs about half the RAM of k > 32**, and within a band, raising k is nearly free in memory.
 
-### Low on RAM? Use `--external-memory`, not fewer threads
+### `--external-memory` is the lever on a memory-limited machine
 
-Lowering `--threads` does **not** reduce peak memory — it only makes the build slower. `--external-memory DIR` is the lever, switching to the disk-based construction algorithm. Both measured on the CHM13 v2 six-set build at k=31:
+`--external-memory DIR` switches base-index construction to a disk-based algorithm: a **5.7× smaller memory footprint for ~1.4× the wall time**, producing the same index. It is what makes a human-scale build feasible on a workstation rather than a cluster node. Point `DIR` at a filesystem with room for the intermediates.
+
+`--threads` controls speed rather than memory. Both measured on the CHM13 v2 six-set build at k=31:
 
 | | Peak RSS | Wall |
 | --- | --- | --- |
@@ -362,10 +363,7 @@ Lowering `--threads` does **not** reduce peak memory — it only makes the build
 | `-t 1` | 74.8 GB | 1 h 40 m |
 | `-t 16 --external-memory` | **13.8 GB** | 32 m 27 s |
 
-Dropping from 16 threads to 1 costs **4.2x the wall time to save 4% of the
-memory** — so threads are not the lever, even at the extreme.
-
-`--external-memory` gives a **5.7× smaller memory footprint for ~1.4× the wall time**, and produces the same index. This is what makes a human-scale build feasible on a workstation rather than a cluster node. Point `DIR` at a filesystem with room for the intermediates.
+Dropping from 16 threads to 1 costs **4.2× the wall time and saves 4% of the memory**, so the thread count is worth setting for speed alone.
 
 ### Disk
 
