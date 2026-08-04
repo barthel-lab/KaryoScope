@@ -166,3 +166,4 @@ karyoscope build --spec build.yaml
 ## See also
 
 - [`karyoscope build`](build.md) — turn these BEDs into an HKS database.
+- [Database recipes](../recipes/) — end-to-end worked examples, from download URL to built database.

@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`docs/recipes/` — reproducible recipes for the shipped databases.** One page
+  each for `HKS_human_CHM13_v2` (`chromosome`, `region`, `repeat`, `gene`) and
+  `HKS_arabidopsis_ColCEN` (all four sets), giving the exact download URL for
+  every input, a SHA-256 for the file and for its decompressed content, the
+  `prep-bed` command that converts it, a checksum for the resulting BED, and the
+  build spec that assembles them.
+
+  Every URL was verified by downloading it and comparing checksums, which turned
+  up two traps worth the exercise: the RepeatMasker URL recorded in the original
+  build script serves a *different representation* of the same run (per-fragment
+  rows rather than joined blocks) and would silently build a different feature
+  set — the real source is UCSC's `chm13v2.0_rmsk.bb` — and the Col-CEN gene
+  annotation is published in two attribute syntaxes that were not interchangeable
+  until this release. The Arabidopsis recipe has been run end to end from its own
+  URLs: all four BEDs match their published checksums and all five index files
+  come out bit-identical to the database in use.
+
 - **`karyoscope prep-bed`, converting source annotations into feature-set BEDs.**
   `build` starts from a final labelled BED, and producing that BED was the last
   step with no command behind it — every dataset needed its own script. There is

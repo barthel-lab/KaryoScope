@@ -309,6 +309,8 @@ karyoscope download --info <ID>      # ...plus the free space needed to install
 
 You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; [`karyoscope prep-bed`](docs/commands/prep-bed.md) produces one from the formats annotation usually arrives in — RepeatMasker and EDTA tables, GFF3/GTF gene models, UCSC cytoband tables, satellite catalogs, and a plain `.fai` — and prints the build-spec stanza to go with it.
 
+For complete worked examples — every download URL, checksum, conversion and build spec — see [docs/recipes/](docs/recipes/), which rebuilds the human CHM13v2 and *Arabidopsis* Col-CEN databases from published sources.
+
 ## Pre-computed annotations
 
 KaryoScope outputs for the [HPRC Release 2](https://humanpangenome.org/) pangenome samples are hosted by the Human Pangenome Reference Consortium at the [`TGen_HPRCv2_KaryoScope` S3 bucket](https://s3-us-west-2.amazonaws.com/human-pangenomics/index.html?prefix=submissions/B5FC8EB1-5B2A-49FE-8421-6D938943DFC9--TGen_HPRCv2_KaryoScope/). Use these to explore HPRC karyotypes without running the pipeline yourself, or as references for downstream analysis.

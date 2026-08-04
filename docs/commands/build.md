@@ -189,6 +189,8 @@ done
 
 Use [`karyoscope prep-bed`](prep-bed.md) to produce that BED from the formats annotation usually arrives in: RepeatMasker and EDTA tables, GFF3/GTF gene models, UCSC cytoband tables, satellite monomer catalogs, and a plain `.fai`. It writes the BED and hierarchy and prints the `feature_sets:` stanza to paste (or append) here.
 
+For complete worked examples, see the [database recipes](../recipes/).
+
 `prep-bed` is deliberately a **separate subcommand** rather than something `build` does for you: `build`'s contract stays "a final labelled BED", so it never has to sniff and guess at raw file formats. For the same reason `prep-bed` never gap-fills, flattens or drops sequences — `background:`, `flatten:` and `exclude:` below already do that, and doing it in both places would mean two places to get it wrong.
 
 ## Resource requirements
