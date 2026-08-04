@@ -238,13 +238,15 @@ karyoscope download
 #    Skip if you already have your own assembly to annotate.
 curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
-# 3. Annotate the assembly. Recommended: at least 16 threads and, for the
-#    HKS backend, ≥ 16 GB of RAM — annotate's peak is set by the index it
-#    holds (~10 GB) rather than by the input, so a combined diploid and a
-#    single haplotype need the same. The KMC backend needs ≥ 50 GB. HG002
-#    runs in ~20-30 min at -t 16.
-#    Needs ~34 GB free in results/ -- six feature sets over a 6 Gbp
-#    diploid assembly. --no-bgzip keeps the per-feature-set BEDs as plain
+# 3. Annotate the assembly. This runs against the KMC database installed
+#    in step 1, so budget for the KMC backend: it peaks at ~30-35 GB, so
+#    request >= 50 GB of RAM, with at least 16 threads. A single haplotype
+#    takes ~17-22 min at -t 16; HG002 v1.1 is a combined diploid, so expect
+#    roughly twice that.
+#    Allow ~34 GB free in results/ for six feature sets over this 6 Gbp
+#    assembly, plus headroom for the combined-BED intermediate the KMC
+#    backend writes alongside them. See "Disk space" above.
+#    --no-bgzip keeps the per-feature-set BEDs as plain
 #    text for easy inspection; drop it to get the default bgzipped
 #    outputs (which shrink the result but not the peak, since compression
 #    runs after every BED has been written).
