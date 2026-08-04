@@ -40,7 +40,7 @@ sha256sum chm13_chromosome.bed
 # da23139f348285a17085e264f8fac86644327965c647a12ced3ad810ea7e1827   (25 rows)
 ```
 
-The shipped database groups these by centromere position — metacentric, submetacentric, acrocentric, sex. That is human cytogenetics and cannot be read off a `.fai`, so it is provided rather than derived:
+The shipped database groups these by centromere position — metacentric, submetacentric, acrocentric, sex. That is human cytogenetics and cannot be read off a `.fai`, so it is provided rather than derived, and passed to [the build](#6-build) below:
 
 ```bash
 cp docs/recipes/files/chm13v2_chromosome.hierarchy.txt .
@@ -104,20 +104,15 @@ sha256sum chm13_repeat.bed
 # 067d8020ec3480aafb30a9ff07280c1b2cb8ed58174d895212ebf9b2b96fc10e   (4,636,653 rows)
 ```
 
-Leaves are the 15 RepeatMasker classes. The emitted colours file groups the five RNA leaves into a single legend row, since they share a colour.
+`prep-bed` writes the hierarchy and colours files itself — there is nothing to supply.
 
-Repeat annotations overlap heavily, and this database resolves that by assigning each base to the highest-priority class. The order is published curation, so it is provided:
+RepeatMasker names each element `name#class/family`, as in `L1MA#LINE/L1`. `prep-bed` keeps the class, giving the 15 leaves the hierarchy names, and a class it does not recognise becomes `Unknown` rather than being dropped — so those bases are never mistaken for non-repeat. The colours file groups the five RNA leaves into a single legend row, since they share a colour.
+
+Repeat annotations overlap heavily, and this database resolves that by assigning each base to the highest-priority class. The priority order is provided, and passed to [the build](#6-build) below:
 
 ```bash
 cp docs/recipes/files/chm13v2_repeat.priority.txt .
 ```
-
-```
-rRNA, scRNA, snRNA, srpRNA, tRNA, Satellite, RC, Retroposon, DNA, LTR, SINE, LINE,
-Simple_repeat, Low_complexity, Unknown          (highest priority first)
-```
-
-The build spec applies it with `flatten: true`. That file is 3-column, so it supplies the hierarchy as well — `chm13_repeat.tsv` from the step above is the same tree without the ranking, and the spec does not need it.
 
 ## 5. `gene` — RefSeq
 
@@ -146,6 +141,8 @@ sha256sum chm13_gene.bed
 # 03ae30a1a9c90a574b96eb4dfaa34a0c834ef51f5b3eec4181f39d4e8c9063e9   (612,909 rows)
 ```
 
+`prep-bed` writes the hierarchy and colours files itself — there is nothing to supply.
+
 Introns are derived per transcript from that transcript's own consecutive exons; where transcripts disagree, `exon` beats `intron` beats `intergenic`. The result tiles every sequence, so the set needs no gap-fill.
 
 ## 6. Build
@@ -170,12 +167,14 @@ feature_sets:
     background: null            # one record per sequence already tiles everything
   - name: region
     bed: chm13_region.bed
-    priority: chm13_region.priority.txt   # 3-column: supplies the hierarchy too
+    hierarchy: chm13_region.tsv
+    priority: chm13_region.priority.txt
     background: null            # the arm split already tiles every base
   - name: repeat
     bed: chm13_repeat.bed
-    priority: chm13v2_repeat.priority.txt # 3-column: supplies the hierarchy too
-    flatten: true               # one class per base, by the order above
+    hierarchy: chm13_repeat.tsv
+    priority: chm13v2_repeat.priority.txt
+    flatten: true               # one class per base, by the priority order
     colors: chm13_repeat.colors.tsv
     background: nonrepeat
   - name: gene
@@ -196,7 +195,7 @@ karyoscope build --spec build.yaml
 karyoscope info HKS_human_CHM13_v2
 ```
 
-All four feature sets reproduce the shipped database's inputs exactly. For `repeat`, flattening the BED above by the published order and gap-filling with `nonrepeat` was checked against the file the database was built from: 4,423,197 rows, identical.
+All four feature sets reproduce the shipped database's inputs exactly.
 
 The one deliberate difference throughout is `chrM`. The original BEDs gave it a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. Using `exclude:` is better — a label claims the sequence for that feature set, whereas `exclude:` leaves it genuinely uncovered so it reads as `none` everywhere.
 

@@ -66,7 +66,7 @@ sha256sum ath_region.bed
 # 339e5e7e6a74bc6c41adb3b0972f3e02d0b695051909030e685f2e2abdcc7a7d   (2,041 rows)
 ```
 
-`prep-bed` writes the hierarchy itself — there is nothing to supply.
+`prep-bed` writes the hierarchy file itself — there is nothing to supply.
 
 Three things are worth understanding here, because each is a general problem rather than an Arabidopsis quirk:
 
@@ -121,6 +121,8 @@ sha256sum ath_gene.bed
 # 52e8059b9275f65135495d6406b5d7bb5be3758935754cc58ced5aa49fbcd142   (284,461 rows)
 ```
 
+`prep-bed` writes a hierarchy file too, but the build spec below leaves it out: `exon`/`intron`/`intergenic` is a flat star that `build` derives on its own, and omitting it is how the shipped database was built.
+
 Two notes:
 
 - Despite the `.gff3` extension this file uses **GTF-style attributes** (`transcript_id "AT1G01010";`). `prep-bed` reads both syntaxes, so it needs no flag. TAIR publishes the same annotation with true GFF3 attributes as `ColCEN_GENES_Araport11.gff3.gz`; either produces this identical output.
@@ -156,8 +158,8 @@ feature_sets:
     hierarchy: ath_repeat.tsv
     background: nonrepeat
   - name: gene
-    bed: ath_gene.bed            # no hierarchy: the three labels are a flat star,
-    background: null             # which build derives on its own
+    bed: ath_gene.bed
+    background: null            # exon/intron/intergenic tiles every base
 roles:
   chromosome_assignment: chromosome
   region_assignment: region
