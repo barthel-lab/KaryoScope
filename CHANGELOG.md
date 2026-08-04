@@ -15,86 +15,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prep-bed` command that converts it, a checksum for the resulting BED, and the
   build spec that assembles them.
 
-  Every URL was verified by downloading it and comparing checksums, which turned
-  up two traps worth the exercise: the RepeatMasker URL recorded in the original
-  build script serves a *different representation* of the same run (per-fragment
-  rows rather than joined blocks) and would silently build a different feature
-  set — the real source is UCSC's `chm13v2.0_rmsk.bb` — and the Col-CEN gene
-  annotation is published in two attribute syntaxes that were not interchangeable
-  until this release.
+  Inputs that cannot be derived ship alongside in `docs/recipes/files/`: the
+  curated chromosome groupings, the repeat priority order, and the RefSeq
+  accession map.
 
-  Both recipes reproduce their databases exactly. The Arabidopsis one has been
-  run end to end from its own URLs: all four BEDs match their published
-  checksums and all five index files come out bit-identical to the database in
-  use. For CHM13 all four BEDs are byte-identical to the files the shipped
-  database was built from, and applying the published repeat priority order via
-  `flatten: true` reproduces its flattened `repeat` set to the row —
-  4,423,197 rows, identical. The priority order recorded in the original build
-  script is *not* the one that was used and does not reproduce it; the correct
-  order ships as `docs/recipes/files/chm13v2_repeat.priority.txt`.
+  Both recipes reproduce their databases. The Arabidopsis one has been run end
+  to end from its published URLs and produces bit-identical index files; the
+  CHM13 feature-set BEDs are byte-identical to those the shipped database was
+  built from.
 
 - **`karyoscope prep-bed`, converting source annotations into feature-set BEDs.**
-  `build` starts from a final labelled BED, and producing that BED was the last
-  step with no command behind it — every dataset needed its own script. There is
-  now one subcommand per *source format*: `repeatmasker` (native `.out` or the
-  UCSC BED repackaging), `edta`, `gff-gene` (GFF3 or GTF), `cytoband` (UCSC
-  golden-path or `cytoBandMapped`), `fai`, and `satellite`. Keying on the format
-  rather than on the output name is what keeps the options honest — RepeatMasker
-  output and an EDTA GFF3 both yield a `repeat` set but share no parsing, so a
-  single command would have to carry flags that are valid for only some inputs.
+  `build` starts from a final labelled BED; producing that BED previously needed
+  a script per dataset. There is now one subcommand per *source format*:
+  `repeatmasker` (native `.out` or the UCSC BED repackaging), `edta`,
+  `gff-gene` (GFF3 or GTF), `cytoband` (UCSC golden-path or `cytoBandMapped`),
+  `censat`, `fai`, and `satellite`. Formats are the unit rather than feature-set
+  names because unrelated formats yield the same kind of set: RepeatMasker
+  output and an EDTA GFF3 both produce a `repeat` set but share no parsing.
 
   Each writes its BED and hierarchy and prints the matching `feature_sets:`
   stanza on **stdout**, with progress and warnings on stderr, so the stanza can
-  be appended straight to a build spec. Optional `--colors` reproduces the
-  reference palettes and fills in `legend_group`, so a cytoband set arrives with
-  its legend already collapsed to nine stain rows rather than needing the
-  database edited by hand afterwards.
+  be appended straight to a build spec. Optional `--colors` writes the reference
+  palette with `legend_group` filled in, so a cytoband set arrives with its
+  legend already collapsed to nine stain rows.
 
-  `prep-bed` deliberately does not gap-fill, flatten overlaps, or drop
-  sequences: `build` already owns `background:`, `flatten:` and `exclude:`, and
-  duplicating them would mean two places to get them wrong. Sequences a set does
-  not cover are reported for the spec's `exclude:` rather than given a
-  placeholder `exclude` *label*, which older hand-written sets used — a label
-  claims the sequence for the feature set instead of leaving it uncovered.
-  The one converter that tiles is `satellite`, because telling `p_arm` from
-  `q_arm` needs the centromere position and a gap-fill has only one label.
+  `prep-bed` does not gap-fill, flatten overlaps, or drop sequences: `build`
+  owns `background:`, `flatten:` and `exclude:`. Sequences a set does not cover
+  are reported for the spec's `exclude:` rather than given a placeholder
+  `exclude` *label*. `censat` and `satellite` tile, because separating `p_arm`
+  from `q_arm` needs the centromere position. A RepeatMasker class the converter
+  has no leaf for is labelled `other_repeat`, keeping it distinct from
+  RepeatMasker's own `Unknown` class.
 
-  Verified by re-deriving the reference feature sets from their original inputs:
-  the `edta`, `fai`, `satellite`, `cytoband` and `gff-gene` outputs are
-  byte-identical to the files the bespoke scripts produced, including the CHM13
-  human gene set (612,908 records) and the whole CHM13 RepeatMasker set
-  (4,636,653 records).
+  See [prep-bed](docs/commands/prep-bed.md).
 
 ### Fixed
-- **`prep-bed repeatmasker` no longer folds unmappable classes into `Unknown`.**
-  `Unknown` is a real RepeatMasker class — 22,523 records in CHM13 v2 — meaning
-  "RepeatMasker could not classify this element". Using it as the fallback for a
-  class *we* have no leaf for conflated two different claims: one where the
-  annotation is uncertain, one where the annotation is confident and we are the
-  ones unable to place it. Such rows now get their own `other_repeat` leaf, which
-  joins the hierarchy and palette only when something actually lands on it — so a
-  file whose classes are all recognised, including the CHM13 v2 input, produces
-  byte-identical output to before. They are still not dropped: that would leave
-  their bases to the `nonrepeat` gap-fill and assert the opposite of what the
-  annotation says.
+- **`HKS_arabidopsis_ColCEN` regenerated — its `gene` set labelled intergenic
+  regions as intron.** The set had been built by deriving introns from a
+  chromosome-wide exon list, which treats every gap between neighbouring genes
+  as an intron: 8,325 such spans, reporting 42.0% of the genome as intron
+  against 20.6%, and 21.6% intergenic against 43.0%. The database is rebuilt and
+  now at 1.2.0. `HKS_human_CHM13_v2` was unaffected.
 
-- **`prep-bed gff-gene` derives introns per transcript, not per chromosome.**
-  The *A. thaliana* Col-CEN `gene.bed` used to build that database labels 8,325
-  spans `intron` that lie inside no gene at all — gaps between neighbouring
-  genes, which are intergenic. The effect is not marginal: it reports 42.0% of
-  the genome as intron against 20.6% actual, and 21.6% intergenic against 43.0%.
-  Introns are now derived from each transcript's own consecutive exons, and
-  where transcripts disagree the more specific label wins (`exon` > `intron` >
-  `intergenic`) so alternative splicing never double-labels a base. The human
-  CHM13 gene set is unaffected and reproduces byte-identically; the Arabidopsis
-  database needs regenerating.
+  `prep-bed gff-gene` derives introns from each transcript's own consecutive
+  exons, and where transcripts disagree the more specific label wins
+  (`exon` > `intron` > `intergenic`).
+
 - **`colors.tsv` gains an optional 4th column, `legend_group`, and `build`
   carries it through.** A feature set with hundreds of leaves in a handful of
-  colours produced a legend that dwarfed the figure — and worse, silently
-  truncated to whatever fit the canvas. The CHM13 cytoband database has 833
-  features and the legend drew 51 of them, showing 6% of what was present with
-  no indication the rest were dropped. Features sharing a `legend_group` now
-  collapse to one legend row: 833 entries become 9, labelled by Giemsa stain.
+  colours produced a legend that dwarfed the figure and was truncated to
+  whatever fit the canvas, with no indication that rows had been dropped. The
+  CHM13 cytoband database has 833 features and the legend drew 51 of them.
+  Features sharing a `legend_group` now collapse to one legend row: 833 entries
+  become 9, labelled by Giemsa stain.
 
   The column is optional and the header must be exactly 3 or exactly 4 columns,
   so every existing database parses unchanged and keeps its per-feature legend
@@ -103,8 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supply and the file the database ships have the same shape; it is emitted only
   when at least one feature declares a group, leaving ungrouped builds
   byte-identical. Because a legend row is one swatch and one label, `build`
-  fails if a group spans two colours — there would be no well-defined swatch,
-  and the figure would silently misrepresent the rest of the group. See
+  fails if a group spans two colours, since there is no well-defined swatch for
+  such a group. See
   [build → Grouping the legend](docs/commands/build.md#grouping-the-legend).
 
 - **`examples/karyotypes/`** — reference karyotype plots for six assemblies
@@ -116,8 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI subcommands are imported on demand, cutting startup from ~290 ms to
   ~70 ms.** Registering the eleven subcommands meant importing all eleven
   command modules, and one of them (`download`) pulls in `requests` — about
-  190 ms of that 290 ms, paid by every invocation, for an HTTP library most
-  commands never touch. `karyoscope --help` still imports everything, because
+  190 ms of that 290 ms, paid by every invocation regardless of whether the
+  command used it. `karyoscope --help` still imports everything, because
   Click asks each command for its short help to build the listing; every other
   path now imports only the command being run.
 
@@ -146,9 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there are zero hardcoded `stroke="black"` left.
 
   Separately, the legend now omits features whose entire drawn extent is under
-  half a pixel. Such a feature cannot be found in the figure, so a legend row
-  for it only sends the reader hunting for a colour that was never visibly
-  rendered.
+  half a pixel, since a legend row for such a feature names a colour that is not
+  visibly present in the figure.
 
 - **`bin` no longer emits a runt trailing bin.** A trailing partial bin cast a
   label vote of equal standing to a full one, so a handful of bases could
