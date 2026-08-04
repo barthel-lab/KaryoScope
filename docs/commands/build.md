@@ -185,9 +185,11 @@ done
 
 ## Preparing a feature-set BED
 
-`build` starts from a final BED; producing one is dataset-specific. A typical recipe is: take a reference annotation source (RepeatMasker, censat, GENCODE, EDTA, a satellite-monomer catalog, …), reduce it to a BED whose 4th column is the feature label, optionally priority-merge overlaps, and hand that BED to `build`. Overlaps and gaps are fine — `build` gap-fills automatically and HKS resolves overlaps per k-mer.
+`build` starts from a final BED whose 4th column is the feature label. Overlaps and gaps are fine — `build` gap-fills automatically and HKS resolves overlaps per k-mer.
 
-> **Planned: `karyoscope prep-bed`.** Turning those raw annotation sources into a final labelled BED — GFF3/GTF gene models into exon/intron/intergenic, RepeatMasker/EDTA tables into labelled repeat BEDs with a hierarchy, satellite monomer files into merged array bands — is the main friction in building a database today, and each source currently needs its own conversion. A dedicated `karyoscope prep-bed` helper for these common conversions is planned. It will be a **separate subcommand**, not folded into `build`: `build`'s contract stays "a final labelled BED", so it never has to sniff and guess at raw file formats.
+Use [`karyoscope prep-bed`](prep-bed.md) to produce that BED from the formats annotation usually arrives in: RepeatMasker and EDTA tables, GFF3/GTF gene models, UCSC cytoband tables, satellite monomer catalogs, and a plain `.fai`. It writes the BED and hierarchy and prints the `feature_sets:` stanza to paste (or append) here.
+
+`prep-bed` is deliberately a **separate subcommand** rather than something `build` does for you: `build`'s contract stays "a final labelled BED", so it never has to sniff and guess at raw file formats. For the same reason `prep-bed` never gap-fills, flattens or drops sequences — `background:`, `flatten:` and `exclude:` below already do that, and doing it in both places would mean two places to get it wrong.
 
 ## Resource requirements
 

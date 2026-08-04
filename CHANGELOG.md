@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`karyoscope prep-bed`, converting source annotations into feature-set BEDs.**
+  `build` starts from a final labelled BED, and producing that BED was the last
+  step with no command behind it — every dataset needed its own script. There is
+  now one subcommand per *source format*: `repeatmasker` (native `.out` or the
+  UCSC BED repackaging), `edta`, `gff-gene` (GFF3 or GTF), `cytoband` (UCSC
+  golden-path or `cytoBandMapped`), `fai`, and `satellite`. Keying on the format
+  rather than on the output name is what keeps the options honest — RepeatMasker
+  output and an EDTA GFF3 both yield a `repeat` set but share no parsing, so a
+  single command would have to carry flags that are valid for only some inputs.
+
+  Each writes its BED and hierarchy and prints the matching `feature_sets:`
+  stanza on **stdout**, with progress and warnings on stderr, so the stanza can
+  be appended straight to a build spec. Optional `--colors` reproduces the
+  reference palettes and fills in `legend_group`, so a cytoband set arrives with
+  its legend already collapsed to nine stain rows rather than needing the
+  database edited by hand afterwards.
+
+  `prep-bed` deliberately does not gap-fill, flatten overlaps, or drop
+  sequences: `build` already owns `background:`, `flatten:` and `exclude:`, and
+  duplicating them would mean two places to get them wrong. Sequences a set does
+  not cover are reported for the spec's `exclude:` rather than given a
+  placeholder `exclude` *label*, which older hand-written sets used — a label
+  claims the sequence for the feature set instead of leaving it uncovered.
+  The one converter that tiles is `satellite`, because telling `p_arm` from
+  `q_arm` needs the centromere position and a gap-fill has only one label.
+
+  Verified by re-deriving the reference feature sets from their original inputs:
+  the `edta`, `fai`, `satellite`, `cytoband` and `gff-gene` outputs are
+  byte-identical to the files the bespoke scripts produced, including the CHM13
+  human gene set (612,908 records) and the whole CHM13 RepeatMasker set
+  (4,636,653 records).
+
+### Fixed
+- **`prep-bed gff-gene` derives introns per transcript, not per chromosome.**
+  The *A. thaliana* Col-CEN `gene.bed` used to build that database labels 8,325
+  spans `intron` that lie inside no gene at all — gaps between neighbouring
+  genes, which are intergenic. The effect is not marginal: it reports 42.0% of
+  the genome as intron against 20.6% actual, and 21.6% intergenic against 43.0%.
+  Introns are now derived from each transcript's own consecutive exons, and
+  where transcripts disagree the more specific label wins (`exon` > `intron` >
+  `intergenic`) so alternative splicing never double-labels a base. The human
+  CHM13 gene set is unaffected and reproduces byte-identically; the Arabidopsis
+  database needs regenerating.
 - **`colors.tsv` gains an optional 4th column, `legend_group`, and `build`
   carries it through.** A feature set with hundreds of leaves in a handful of
   colours produced a legend that dwarfed the figure — and worse, silently

@@ -38,7 +38,7 @@ from karyoscope._version import __version__
 #: Subcommand name -> ``module:attribute`` holding its ``click.Command``.
 #:
 #: Imported on demand rather than up front. Registering the subcommands used to
-#: mean importing all eleven command modules, and one of them (``download``)
+#: mean importing every command module, and one of them (``download``)
 #: pulls in ``requests`` -- ~190 ms of the ~290 ms it took to import this
 #: module, paid by every invocation including ``karyoscope --version`` and
 #: every ``annotate`` run, for an HTTP library they never touch.
@@ -50,6 +50,7 @@ from karyoscope._version import __version__
 _LAZY_COMMANDS: dict[str, str] = {
     "download": "karyoscope.commands.download:cmd",
     "register": "karyoscope.commands.register:cmd",
+    "prep-bed": "karyoscope.commands.prep_bed:cmd",
     "build": "karyoscope.commands.build:cmd",
     "annotate": "karyoscope.commands.annotate:cmd",
     "scaffold": "karyoscope.commands.scaffold:cmd",

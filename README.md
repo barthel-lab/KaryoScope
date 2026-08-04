@@ -279,6 +279,7 @@ Pass `--format pdf` or `--format png` (repeatable) to additionally produce those
 |---|---|
 | [`karyoscope download`](docs/commands/download.md) | Acquire pre-built databases |
 | [`karyoscope register`](docs/commands/register.md) | Register a locally-placed database so commands can use it |
+| [`karyoscope prep-bed`](docs/commands/prep-bed.md) | Convert a source annotation into a feature-set BED |
 | [`karyoscope build`](docs/commands/build.md) | Build an HKS database from a genome and per-feature-set BEDs |
 | [`karyoscope annotate`](docs/commands/annotate.md) | Annotate sequences with *k*-mer features |
 | [`karyoscope scaffold`](docs/commands/scaffold.md) | Order, orient, and rename assembly contigs |
@@ -306,7 +307,7 @@ karyoscope download --list           # download and on-disk size for each
 karyoscope download --info <ID>      # ...plus the free space needed to install
 ```
 
-You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; producing that BED from raw annotation sources (GFF3/GTF, RepeatMasker/EDTA, satellite catalogs) is currently a manual, source-specific step, and a dedicated `karyoscope prep-bed` helper to automate it is [planned](docs/commands/build.md#preparing-a-feature-set-bed).
+You can also build your own database from a genome and per-feature-set BED annotations with [`karyoscope build`](docs/commands/build.md). `build` starts from a final labelled BED; [`karyoscope prep-bed`](docs/commands/prep-bed.md) produces one from the formats annotation usually arrives in — RepeatMasker and EDTA tables, GFF3/GTF gene models, UCSC cytoband tables, satellite catalogs, and a plain `.fai` — and prints the build-spec stanza to go with it.
 
 ## Pre-computed annotations
 
