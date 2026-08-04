@@ -7,19 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **`colors.tsv` row order is now reproducible, and follows the hierarchy.**
-  `build` wrote one row per node by iterating `Hierarchy.nodes()`, which returns
-  a **set** — so Python's per-run string hash randomisation reordered the file,
-  and rebuilding a database from byte-identical inputs produced a
-  byte-different `colors.tsv`. Row order is emitted in hierarchy order instead
-  (each root, then every child in edge order), which is also what makes legend
-  groups meaningful: they are ordered by first appearance in `colors.tsv`, so
-  for a cytoband set that ordering is now the Giemsa intensity progression
-  rather than whatever the hash seed produced. Colour *assignments* are
-  unchanged; only the order of the rows.
+## [2.2.0] - 2026-08-04
 
 ### Added
+
 - **`docs/recipes/` — reproducible recipes for the shipped databases.** One page
   each for `HKS_human_CHM13_v2` (`chromosome`, `region`, `repeat`, `gene`) and
   `HKS_arabidopsis_ColCEN` (all four sets), giving the exact download URL for
@@ -61,43 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   See [prep-bed](docs/commands/prep-bed.md).
 
-### Fixed
-- **`HKS_arabidopsis_ColCEN` regenerated — its `gene` set labelled intergenic
-  regions as intron.** The set had been built by deriving introns from a
-  chromosome-wide exon list, which treats every gap between neighbouring genes
-  as an intron: 8,325 such spans, reporting 42.0% of the genome as intron
-  against 20.6%, and 21.6% intergenic against 43.0%. The database is rebuilt and
-  now at 1.2.0. `HKS_human_CHM13_v2` was unaffected.
-
-  `prep-bed gff-gene` derives introns from each transcript's own consecutive
-  exons, and where transcripts disagree the more specific label wins
-  (`exon` > `intron` > `intergenic`).
-
-- **`colors.tsv` gains an optional 4th column, `legend_group`, and `build`
-  carries it through.** A feature set with hundreds of leaves in a handful of
-  colours produced a legend that dwarfed the figure and was truncated to
-  whatever fit the canvas, with no indication that rows had been dropped. The
-  CHM13 cytoband database has 833 features and the legend drew 51 of them.
-  Features sharing a `legend_group` now collapse to one legend row: 833 entries
-  become 9, labelled by Giemsa stain.
-
-  The column is optional and the header must be exactly 3 or exactly 4 columns,
-  so every existing database parses unchanged and keeps its per-feature legend
-  (verified against `HKS_human_CHM13_v2`: 0 groups). `build --colors` accepts
-  the column and writes it to the database's `colors.tsv`, so the file you
-  supply and the file the database ships have the same shape; it is emitted only
-  when at least one feature declares a group, leaving ungrouped builds
-  byte-identical. Because a legend row is one swatch and one label, `build`
-  fails if a group spans two colours, since there is no well-defined swatch for
-  such a group. See
-  [build → Grouping the legend](docs/commands/build.md#grouping-the-legend).
-
-- **`examples/karyotypes/`** — reference karyotype plots for six assemblies
-  (CHM13, HG002, the HG008 tumour/normal pair, an HPRC population sample, and
-  Arabidopsis) with notes on what each shows, for comparing your own output
-  against.
+- A dependency missing at *import* time now reports itself in a few readable
+  lines naming the interpreter in use, instead of a bare `ModuleNotFoundError`
+  traceback. `karyoscope.cli` eagerly imports every command module, so one
+  missing package took down **every** command including `--help` and `version`
+  — the two a user would reach for to diagnose it. That import happens inside
+  the pip-generated console script, outside any code KaryoScope controls, so
+  the fix required moving the entry point; the dependency preflight added in
+  2.1.0 cannot help because it runs long after import.
+- An explicit `--threads` above the usable CPU count now logs a warning naming
+  the limiting source (e.g. `$SLURM_CPUS_PER_TASK`) and suggesting a value.
+  Deliberately a warning, not a cap: oversubscription is sometimes faster on
+  heterogeneous CPUs — an Apple M1 Max is 8 performance + 2 efficiency cores,
+  and macOS exposes no way to learn that split, so "number of CPUs" is advice
+  rather than a limit.
 
 ### Changed
+
 - **`build` documentation restructured, and the variable-k description
   corrected.** The "mode A / mode B" naming is gone: BED plus a genome is
   described as the input, and the per-feature-FASTA form now sits in the
@@ -133,8 +104,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   install, or `cairosvg` built against the wrong ABI) still reports readably
   instead of as a traceback.
 
+- **`convert_hks_tsv_to_bed` reads binary blocks instead of looping per line.**
+  It runs twice per feature set — on the raw lookup TSV and again inside
+  `run_hks_smooth` — and on human input those two passes were ~10% of
+  `annotate`'s wall time (129 s of a 21-minute HG002 run), single-threaded,
+  while the rest of the machine idled. Now 8 MiB blocks through
+  `bytes.replace`, with no decode/encode per line. **Measured 2.3x** on a 4 GB
+  real `hks` TSV (21.9 s → 9.5 s), 1.7x at a 30% miss rate; output is
+  byte-identical. Still streams — memory is one block plus a partial line.
+  Blocks are cut at their last newline, so a match can never straddle a
+  boundary (the token ends in a newline, and contains no interior one).
+- **The `karyoscope` console script now routes through `karyoscope._entry`.**
+  Existing editable installs need a `pip install -e .` for the new script to
+  take effect; a fresh install is unaffected.
 
 ### Fixed
+
+- **`colors.tsv` row order is now reproducible, and follows the hierarchy.**
+  `build` wrote one row per node by iterating `Hierarchy.nodes()`, which returns
+  a **set** — so Python's per-run string hash randomisation reordered the file,
+  and rebuilding a database from byte-identical inputs produced a
+  byte-different `colors.tsv`. Row order is emitted in hierarchy order instead
+  (each root, then every child in edge order), which is also what makes legend
+  groups meaningful: they are ordered by first appearance in `colors.tsv`, so
+  for a cytoband set that ordering is now the Giemsa intensity progression
+  rather than whatever the hash seed produced. Colour *assignments* are
+  unchanged; only the order of the rows.
+
+- **`HKS_arabidopsis_ColCEN` regenerated — its `gene` set labelled intergenic
+  regions as intron.** The set had been built by deriving introns from a
+  chromosome-wide exon list, which treats every gap between neighbouring genes
+  as an intron: 8,325 such spans, reporting 42.0% of the genome as intron
+  against 20.6%, and 21.6% intergenic against 43.0%. The database is rebuilt and
+  now at 1.2.0. `HKS_human_CHM13_v2` was unaffected.
+
+  `prep-bed gff-gene` derives introns from each transcript's own consecutive
+  exons, and where transcripts disagree the more specific label wins
+  (`exon` > `intron` > `intergenic`).
+
+- **`colors.tsv` gains an optional 4th column, `legend_group`, and `build`
+  carries it through.** A feature set with hundreds of leaves in a handful of
+  colours produced a legend that dwarfed the figure and was truncated to
+  whatever fit the canvas, with no indication that rows had been dropped. The
+  CHM13 cytoband database has 833 features and the legend drew 51 of them.
+  Features sharing a `legend_group` now collapse to one legend row: 833 entries
+  become 9, labelled by Giemsa stain.
+
+  The column is optional and the header must be exactly 3 or exactly 4 columns,
+  so every existing database parses unchanged and keeps its per-feature legend
+  (verified against `HKS_human_CHM13_v2`: 0 groups). `build --colors` accepts
+  the column and writes it to the database's `colors.tsv`, so the file you
+  supply and the file the database ships have the same shape; it is emitted only
+  when at least one feature declares a group, leaving ungrouped builds
+  byte-identical. Because a legend row is one swatch and one label, `build`
+  fails if a group spans two colours, since there is no well-defined swatch for
+  such a group. See
+  [build → Grouping the legend](docs/commands/build.md#grouping-the-legend).
+
+- **`examples/karyotypes/`** — reference karyotype plots for six assemblies
+  (CHM13, HG002, the HG008 tumour/normal pair, an HPRC population sample, and
+  Arabidopsis) with notes on what each shows, for comparing your own output
+  against.
+
 - **Karyotype outlines now follow the theme, and the legend lists only what is
   visible.** The sequence-outline guard read `if background_color == "white"`,
   so a black-background plot got no border at all — and the cytoband palette
@@ -180,37 +211,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a single allocated CPU. New `karyoscope.cpus` resolves, in order,
   `$SLURM_CPUS_PER_TASK`, `sched_getaffinity`, `os.process_cpu_count` (3.13+),
   then `os.cpu_count`.
-
-### Changed
-- **`convert_hks_tsv_to_bed` reads binary blocks instead of looping per line.**
-  It runs twice per feature set — on the raw lookup TSV and again inside
-  `run_hks_smooth` — and on human input those two passes were ~10% of
-  `annotate`'s wall time (129 s of a 21-minute HG002 run), single-threaded,
-  while the rest of the machine idled. Now 8 MiB blocks through
-  `bytes.replace`, with no decode/encode per line. **Measured 2.3x** on a 4 GB
-  real `hks` TSV (21.9 s → 9.5 s), 1.7x at a 30% miss rate; output is
-  byte-identical. Still streams — memory is one block plus a partial line.
-  Blocks are cut at their last newline, so a match can never straddle a
-  boundary (the token ends in a newline, and contains no interior one).
-- **The `karyoscope` console script now routes through `karyoscope._entry`.**
-  Existing editable installs need a `pip install -e .` for the new script to
-  take effect; a fresh install is unaffected.
-
-### Added
-- A dependency missing at *import* time now reports itself in a few readable
-  lines naming the interpreter in use, instead of a bare `ModuleNotFoundError`
-  traceback. `karyoscope.cli` eagerly imports every command module, so one
-  missing package took down **every** command including `--help` and `version`
-  — the two a user would reach for to diagnose it. That import happens inside
-  the pip-generated console script, outside any code KaryoScope controls, so
-  the fix required moving the entry point; the dependency preflight added in
-  2.1.0 cannot help because it runs long after import.
-- An explicit `--threads` above the usable CPU count now logs a warning naming
-  the limiting source (e.g. `$SLURM_CPUS_PER_TASK`) and suggesting a value.
-  Deliberately a warning, not a cap: oversubscription is sometimes faster on
-  heterogeneous CPUs — an Apple M1 Max is 8 performance + 2 efficiency cores,
-  and macOS exposes no way to learn that split, so "number of CPUs" is advice
-  rather than a limit.
 
 ## [2.1.0] - 2026-07-27
 
@@ -1616,7 +1616,8 @@ For releases, copy the [Unreleased] section to a new heading like:
 ## [1.1.0] - YYYY-MM-DD
 -->
 
-[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.2.0
 [2.1.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.1.0
 [2.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.0.0
 [1.1.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v1.1.0
