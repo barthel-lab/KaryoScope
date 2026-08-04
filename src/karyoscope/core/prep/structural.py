@@ -1,13 +1,20 @@
-"""Structural feature sets: whole-sequence ``chromosome``, and satellite ``region``.
+"""Structural feature sets: whole-sequence ``chromosome``, and centromeric ``region``.
 
 :func:`from_fai` is the trivial one — every sequence becomes a single record
 labelled with its own name.
 
-:func:`from_satellite` is the one converter that legitimately tiles, because the
-tiling is *semantic* rather than a gap-fill: the arms either side of the
-centromere have to be told apart (``p_arm``/``q_arm``), and only the satellite
-annotation says where the centromere is. ``build``'s generic gap-fill cannot do
-that — it has exactly one background label.
+:func:`from_censat` (a CenSat annotation, as for human) and
+:func:`from_satellite` (a bare satellite-monomer catalog, as for the Arabidopsis
+CEN180 set) both build a ``region`` set, and are the two converters that
+legitimately tile. The tiling is *semantic* rather than a gap-fill: the arms
+either side of the centromere have to be told apart (``p_arm``/``q_arm``), only
+the annotation knows where the centromere is, and ``build``'s gap-fill has
+exactly one label where two are needed.
+
+They differ in what the input gives them. CenSat already names its features, so
+the work is normalising labels and locating the centromere from the ``ct``
+transitions; a monomer catalog names nothing, so the work is merging monomers
+into bands and finding the densest cluster.
 """
 
 from __future__ import annotations
@@ -78,6 +85,187 @@ def from_fai(
 INTERIOR = "cen_gap"
 P_ARM = "p_arm"
 Q_ARM = "q_arm"
+
+# -- CenSat -----------------------------------------------------------
+
+#: ``child parent`` edges of the CenSat v2.1 region tree, as used by the shipped
+#: CHM13 v2 ``region`` set. ``p_arm``/``q_arm`` must stay leaves: centromere
+#: detection reads anything that is not an arm as the centromere catch-all.
+CENSAT_HIERARCHY: list[Edge] = [
+    ("centromeric", "categorized"),
+    ("aSat", "centromeric"),
+    ("alpha_hor", "aSat"),
+    ("active_hor", "alpha_hor"),
+    ("dhor", "alpha_hor"),
+    ("hor", "alpha_hor"),
+    ("mixedAlpha", "alpha_hor"),
+    ("mon", "aSat"),
+    ("bSat", "centromeric"),
+    ("cenSat", "centromeric"),
+    ("ct", "centromeric"),
+    ("gSat", "centromeric"),
+    ("HSat", "centromeric"),
+    ("HSat1", "HSat"),
+    ("HSat1A", "HSat1"),
+    ("HSat1B", "HSat1"),
+    ("HSat2", "HSat"),
+    ("HSat3", "HSat"),
+    ("rDNA", "categorized"),
+    ("arm", "categorized"),
+    (P_ARM, "arm"),
+    (Q_ARM, "arm"),
+]
+
+#: Priorities for the three top-level branches; everything else is 1. Siblings
+#: must be all-equal or all-distinct, which this satisfies.
+CENSAT_PRIORITIES = {"centromeric": 1, "rDNA": 2, "arm": 3}
+
+#: Labels that are arms rather than centromeric features, when locating the
+#: centromere by feature extent.
+_NON_CENTROMERIC = frozenset({P_ARM, Q_ARM})
+
+
+def censat_label(raw: str) -> str:
+    """``gSat(TAR1)`` -> ``gSat``.
+
+    CenSat qualifies each label with the specific arrays it contains, in
+    parentheses — useful provenance, but hundreds of distinct values that all
+    mean the same feature. The part before the parenthesis is the leaf.
+    """
+    return raw.split("(", 1)[0]
+
+
+def _centromere_bounds(features: list[tuple[int, int, str]]) -> tuple[int, int] | None:
+    """Centromere extent for one sequence: first ``ct`` start to last ``ct`` end.
+
+    ``ct`` (centromeric transition) brackets the centromere, so it gives the
+    boundary directly. Where a sequence has none, fall back to the extent of
+    every centromeric feature — which is wider, but only used for deciding
+    which arm a gap belongs to.
+    """
+    ct = [(s, e) for s, e, label in features if label == "ct"]
+    if ct:
+        return min(s for s, _e in ct), max(e for _s, e in ct)
+    other = [(s, e) for s, e, label in features if label not in _NON_CENTROMERIC]
+    if other:
+        return min(s for s, _e in other), max(e for _s, e in other)
+    return None
+
+
+def from_censat(
+    *,
+    input_path: Path,
+    lengths: Path,
+    output: Path,
+    hierarchy: Path,
+    priority: Path | None = None,
+    name: str = "region",
+    rename: SeqidRewriter | None = None,
+) -> PrepResult:
+    """Turn a CenSat annotation into a fully-tiled ``region`` feature set.
+
+    CenSat labels are kept (minus their parenthetical array detail) and every
+    remaining base is labelled by which arm it falls on, split at the
+    centromere. Like :func:`from_satellite` this tiles, and for the same
+    reason: only the annotation knows where the centromere is, and a gap-fill
+    has one label where two are needed.
+
+    Scattered pericentromeric satellite remnants far out on an arm keep their
+    own labels; only the gaps around them become arm.
+    """
+    rename = rename or SeqidRewriter()
+    sizes = read_fai(lengths)
+
+    by_seqid: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
+    unknown: set[str] = set()
+    with open_text(input_path) as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+            if not line.strip() or line.startswith(("#", "track", "browser")):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 4:
+                continue
+            seqid = rename(parts[0])
+            try:
+                start, end = int(parts[1]), int(parts[2])
+            except ValueError:
+                continue
+            if seqid not in sizes:
+                unknown.add(seqid)
+                continue
+            by_seqid[seqid].append((start, end, censat_label(parts[3])))
+
+    if not by_seqid:
+        raise PrepError(
+            f"{input_path}: no CenSat records matched a sequence in {lengths} — check "
+            "whether the annotation seqids need --rename-prefix or --seqid-map"
+        )
+
+    records: list[Record] = []
+    bare: list[str] = []
+    for seqid, length in sizes.items():
+        features = coalesce(
+            [(seqid, s, e, label) for s, e, label in sorted(by_seqid.get(seqid, []))]
+        )
+        if not features:
+            bare.append(seqid)
+            continue
+        bounds = _centromere_bounds([(s, e, label) for _c, s, e, label in features])
+        last = 0
+        for _c, start, end, label in features:
+            if start > last:
+                records.append((seqid, last, start, _arm_label(last, start, bounds)))
+            records.append((seqid, start, end, label))
+            last = end
+        if last < length:
+            records.append((seqid, last, length, _arm_label(last, length, bounds)))
+
+    n_records = write_bed(output, records)
+    n_edges = write_hierarchy(hierarchy, CENSAT_HIERARCHY)
+    if priority is not None:
+        with priority.open("w") as out:
+            for child, parent in CENSAT_HIERARCHY:
+                out.write(f"{child}\t{CENSAT_PRIORITIES.get(child, 1)}\t{parent}\n")
+
+    notes = [
+        f"{sum(len(v) for v in by_seqid.values()):,} CenSat records over {len(by_seqid)} sequence(s)"
+    ]
+    if unknown:
+        notes.append(
+            f"skipped {len(unknown)} annotation seqid(s) absent from {lengths}: "
+            + ", ".join(sorted(unknown)[:5])
+        )
+    if bare:
+        notes.append(
+            f"{len(bare)} sequence(s) have no CenSat annotation and are left uncovered "
+            "(list them under the spec's exclude:): " + ", ".join(bare[:5])
+        )
+
+    return PrepResult(
+        name=name,
+        bed=output,
+        n_records=n_records,
+        background=None,  # the arm split already tiles every annotated sequence
+        hierarchy=hierarchy,
+        n_edges=n_edges,
+        priority=priority,
+        exclude=bare,
+        notes=notes,
+    )
+
+
+def _arm_label(start: int, end: int, bounds: tuple[int, int] | None) -> str:
+    """Which arm a gap belongs to, given the centromere extent."""
+    if bounds is None:
+        return P_ARM
+    cen_start, cen_end = bounds
+    if end <= cen_start:
+        return P_ARM
+    if start >= cen_end:
+        return Q_ARM
+    # Inside the centromere: only reachable where CenSat coverage is incomplete.
+    return P_ARM
 
 
 def _hierarchy_for(satellite: str) -> list[Edge]:

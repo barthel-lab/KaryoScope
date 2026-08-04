@@ -510,6 +510,84 @@ def test_satellite_splits_the_arms_around_the_core_and_tiles_fully(
     assert result.background is None
 
 
+def test_censat_label_drops_the_array_detail() -> None:
+    """CenSat qualifies each label with the arrays it contains; hundreds of
+    distinct values all mean the same feature."""
+    assert structural_prep.censat_label("gSat(TAR1)") == "gSat"
+    assert structural_prep.censat_label("hor(S1C10H1-B)") == "hor"
+    assert structural_prep.censat_label("ct") == "ct"
+
+
+def test_censat_splits_arms_at_the_ct_features(tmp_path: Path, fai: Path) -> None:
+    source = tmp_path / "censat.bed"
+    source.write_text(
+        'track name="x"\n'
+        "chr1\t100\t200\tgSat(TAR1)\n"  # a distal remnant, out on the p arm
+        "chr1\t400\t450\tct\n"
+        "chr1\t450\t550\tactive_hor(S1C1H1L)\n"
+        "chr1\t550\t600\tct\n"
+    )
+    output = tmp_path / "region.bed"
+    structural_prep.from_censat(
+        input_path=source, lengths=fai, output=output, hierarchy=tmp_path / "region.tsv"
+    )
+    assert [r for r in bed_rows(output) if r[0] == "chr1"] == [
+        ["chr1", "0", "100", "p_arm"],
+        ["chr1", "100", "200", "gSat"],  # remnant keeps its label
+        ["chr1", "200", "400", "p_arm"],
+        ["chr1", "400", "450", "ct"],
+        ["chr1", "450", "550", "active_hor"],
+        ["chr1", "550", "600", "ct"],
+        ["chr1", "600", "1000", "q_arm"],
+    ]
+
+
+def test_censat_coalesces_rows_that_share_a_label_once_detail_is_dropped(
+    tmp_path: Path, fai: Path
+) -> None:
+    """Two abutting arrays of the same feature are one region, not two."""
+    source = tmp_path / "censat.bed"
+    source.write_text("chr1\t100\t200\thor(S1C1H2-A)\nchr1\t200\t300\thor(S1C1H2-B)\n")
+    output = tmp_path / "region.bed"
+    structural_prep.from_censat(
+        input_path=source, lengths=fai, output=output, hierarchy=tmp_path / "region.tsv"
+    )
+    assert [r for r in bed_rows(output) if r[3] == "hor"] == [["chr1", "100", "300", "hor"]]
+
+
+def test_censat_reports_unannotated_sequences_instead_of_claiming_them(
+    tmp_path: Path, fai: Path
+) -> None:
+    source = tmp_path / "censat.bed"
+    source.write_text("chr1\t100\t200\tct\n")
+    output = tmp_path / "region.bed"
+    result = structural_prep.from_censat(
+        input_path=source, lengths=fai, output=output, hierarchy=tmp_path / "region.tsv"
+    )
+    assert "chrM" in result.exclude and "chr2" in result.exclude
+    assert all(row[0] == "chr1" for row in bed_rows(output))
+
+
+def test_censat_priorities_rank_the_three_branches(tmp_path: Path, fai: Path) -> None:
+    """Siblings must be all-equal or all-distinct for build to accept them."""
+    source = tmp_path / "censat.bed"
+    source.write_text("chr1\t100\t200\tct\n")
+    priority = tmp_path / "region.prio"
+    structural_prep.from_censat(
+        input_path=source,
+        lengths=fai,
+        output=tmp_path / "region.bed",
+        hierarchy=tmp_path / "region.tsv",
+        priority=priority,
+    )
+    rows = {
+        c: int(p)
+        for c, p, _parent in (ln.split("\t") for ln in priority.read_text().split("\n") if ln)
+    }
+    assert (rows["centromeric"], rows["rDNA"], rows["arm"]) == (1, 2, 3)
+    assert rows["p_arm"] == rows["q_arm"] == 1
+
+
 def test_satellite_reads_bed_input_as_zero_based(tmp_path: Path, fai: Path) -> None:
     """The coordinate convention follows the suffix; a BED must not be shifted."""
     source = tmp_path / "sat.bed"

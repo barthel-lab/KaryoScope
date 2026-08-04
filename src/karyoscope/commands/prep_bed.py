@@ -485,6 +485,80 @@ def fai(
     )
 
 
+@cmd.command("censat")
+@click.option(
+    "--input",
+    "input_path",
+    type=click.Path(**_IN),
+    required=True,
+    help="CenSat annotation BED (e.g. chm13v2.0.cenSatv2.1.bed; plain or gzipped).",
+)
+@click.option(
+    "--lengths",
+    type=click.Path(**_IN),
+    required=True,
+    help="samtools .fai (or 2-column sizes file) for the target assembly.",
+)
+@click.option("--output", type=click.Path(**_OUT), required=True, help="Output feature-set BED.")
+@click.option(
+    "--hierarchy",
+    type=click.Path(**_OUT),
+    required=True,
+    help="Output 'child<TAB>parent' hierarchy (CenSat v2.1 tree).",
+)
+@click.option(
+    "--priority",
+    type=click.Path(**_OUT),
+    default=None,
+    help="Also write the tree as a 3-column priority file, ranking centromeric over rDNA over arm.",
+)
+@click.option("--name", default="region", show_default=True, help="Feature-set name in the stanza.")
+@_seqid_options
+@click.option("--force", is_flag=True, help="Overwrite existing output files.")
+def censat(
+    input_path: Path,
+    lengths: Path,
+    output: Path,
+    hierarchy: Path,
+    priority: Path | None,
+    name: str,
+    rename_prefix: str | None,
+    seqid_map: Path | None,
+    force: bool,
+) -> None:
+    """A CenSat annotation -> a fully-tiled `region` feature set.
+
+    \b
+    CenSat qualifies every label with the specific arrays it contains
+    (`gSat(TAR1)`); the part before the parenthesis is the leaf, so hundreds of
+    distinct values collapse to the 14 features the hierarchy names.
+
+    \b
+    Every remaining base is labelled by which arm it falls on, split at the
+    centromere -- located from the `ct` (centromeric transition) features that
+    bracket it, or from the extent of all centromeric features where a sequence
+    has no `ct`. Pericentromeric remnants far out on an arm keep their own
+    labels; only the gaps around them become arm.
+
+    \b
+    Example:
+        karyoscope prep-bed censat --input chm13v2.0.cenSatv2.1.bed \\
+            --lengths CHM13.fa.gz.fai --output region.bed --hierarchy region.tsv
+    """
+    _run(
+        structural_prep.from_censat,
+        [output, hierarchy, priority],
+        force,
+        input_path=input_path,
+        lengths=lengths,
+        output=output,
+        hierarchy=hierarchy,
+        priority=priority,
+        name=name,
+        rename=_rewriter(rename_prefix, seqid_map),
+    )
+
+
 @cmd.command("satellite")
 @click.option(
     "--input",
