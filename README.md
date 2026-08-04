@@ -20,7 +20,7 @@
 
 > ℹ️ **KaryoScope follows [semantic versioning](https://semver.org); v1.0.0 is the first stable release.** The command-line interface is stable: deprecations ship with warnings and a back-compatible transition, and any breaking change will come with a major-version bump. The project is being prepared for journal submission, and new features continue to land between releases — see the [CHANGELOG](CHANGELOG.md) and [releases](https://github.com/barthel-lab/KaryoScope/releases).
 
-> 🚀 **New in v2.2.0.** [`karyoscope prep-bed`](docs/commands/prep-bed.md) converts source annotations — RepeatMasker, EDTA, GFF3/GTF gene models, UCSC cytobands, CenSat, satellite catalogs, a plain `.fai` — into the feature-set BEDs [`karyoscope build`](docs/commands/build.md) consumes, so building a database no longer needs a script per dataset. [`docs/recipes/`](docs/recipes/) rebuilds the shipped human and *Arabidopsis* databases end to end, from download URL to built index. [`examples/karyotypes/`](examples/karyotypes/) collects reference karyotype plots for six assemblies to compare your own output against. Legends can now be collapsed with a `legend_group` column, turning the cytoband database's 833 entries into 9. See the [CHANGELOG](CHANGELOG.md).
+> 🚀 **New in v2.2.0.** [`karyoscope prep-bed`](docs/commands/prep-bed.md) converts source annotations — RepeatMasker, EDTA, GFF3/GTF gene models, CenSat, satellite catalogs, a plain `.fai` — into the feature-set BEDs [`karyoscope build`](docs/commands/build.md) consumes, so building a database no longer needs a script per dataset. [`docs/recipes/`](docs/recipes/) rebuilds the shipped human and *Arabidopsis* databases end to end, from download URL to built index. [`examples/karyotypes/`](examples/karyotypes/) collects reference karyotype plots for six assemblies to compare your own output against. Legends can now be collapsed with a `legend_group` column. See the [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -73,7 +73,9 @@ A pre-built database for the human genome is distributed alongside the tool, der
 **Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Resource needs scale with the input:
 
 - **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
-- **Human whole-genome inputs (HKS backend, recommended):** `annotate` holds the index (~10 GB, fixed) plus per-query buffering that grows with how much sequence one lookup processes at once, so the memory to request depends on the input shape. A **single haplotype** peaks at **~10 GB** (request ≥ 16 GB) and finishes in **~7–9 minutes** at 16 threads. A **combined diploid assembly** — both haplotypes in one file, e.g. HG002 v1.1 — peaks at **~17 GB** (request ≥ 24 GB); annotating each haplotype separately keeps the peak at ~10 GB. Measured at 16 threads on T2T-CHM13v2.0, HG008N, HG008T, and HG002 v1.1. See [Disk space](#disk-space) for storage.
+- **Human whole-genome inputs (HKS backend, recommended):** `annotate`'s peak is set by the index, not by the input. It holds the shared base index (6.0 GiB) plus one feature set's labeling at a time (the largest is 3.0 GiB), so the peak is **~10 GB whatever you annotate** — a single haplotype and a combined diploid assembly measure the same. **Request ≥ 16 GB.** A single haplotype's six-feature-set run takes **~7–9 minutes** at 16 threads; a combined diploid is roughly twice that. Measured on T2T-CHM13v2.0, HG008N, HG008T and HG002 v1.1. See [Disk space](#disk-space) for storage.
+
+  Memory barely moves with `--threads`, so there is no reason to hold threads back to save RAM. What *does* vary by machine is the index load: 9 GB is read per feature set, and if there is enough free RAM for the page cache to hold it, the second and later feature sets load in ~2 s instead of ~25 s. On a memory-tight machine expect every load to be cold.
 - **Human whole-genome inputs (KMC backend):** loading the KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads), so we recommend ≥ 50 GB RAM and ≥ 16 CPU cores. A single haplotype's six-feature-set run takes ~17–22 minutes at 16 threads.
 
 ### Disk space
@@ -218,11 +220,12 @@ This walkthrough uses the [HG002 v1.1 T2T diploid assembly](https://s3-us-west-2
 
 <!-- TODO(hks-default): this Quick start uses the default `karyoscope download`,
      which currently installs the KMC KS_human_CHM13_v2 database (hence the KMC
-     name in the output filenames below and the ~17 GB / KMC RAM figures). When
+     name in the output filenames below and the KMC RAM figures). When
      the registry default flips to HKS_human_CHM13_v2 (after KMC removal + the
      conda recipe guarantees `hks` on every install), switch this walkthrough to
      HKS: the output names become HKS_human_CHM13_v2 and the RAM guidance drops
-     to the HKS figures (~16-24 GB). Keep it on KMC until then. -->
+     to the HKS figure (~16 GB, since the peak is the index and not the
+     input). Keep it on KMC until then. -->
 
 ```bash
 # 1. Download the recommended human reference database (one-time).
@@ -236,10 +239,10 @@ karyoscope download
 curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
 # 3. Annotate the assembly. Recommended: at least 16 threads and, for the
-#    HKS backend, ≥ 24 GB of RAM — HG002 v1.1 is a combined diploid
-#    assembly and its annotate peaks at ~17 GB (a single haplotype peaks
-#    at ~10 GB and fits 16 GB). The KMC backend needs ≥ 50 GB. HG002 runs
-#    in ~20-30 min at -t 16.
+#    HKS backend, ≥ 16 GB of RAM — annotate's peak is set by the index it
+#    holds (~10 GB) rather than by the input, so a combined diploid and a
+#    single haplotype need the same. The KMC backend needs ≥ 50 GB. HG002
+#    runs in ~20-30 min at -t 16.
 #    Needs ~34 GB free in results/ -- six feature sets over a 6 Gbp
 #    diploid assembly. --no-bgzip keeps the per-feature-set BEDs as plain
 #    text for easy inspection; drop it to get the default bgzipped
