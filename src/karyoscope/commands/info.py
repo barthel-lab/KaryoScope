@@ -43,7 +43,11 @@ from karyoscope.exceptions import (
     KaryoscopeError,
     ManifestError,
 )
-from karyoscope.manifest import Manifest, validate_database_layout
+from karyoscope.manifest import (
+    Manifest,
+    check_install_readiness,
+    validate_database_layout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +152,7 @@ def _print_manifest_summary(manifest: Manifest, db_dir: Path, size_line: str | N
         click.echo(size_line)
 
 
-def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
+def _print_hierarchy_summary(manifest: Manifest, db_dir: Path, report_colors: bool = True) -> None:
     """Print feature-set counts derived from hierarchy.tsv.
 
     Also runs :func:`validate_hierarchy` and prints any issues as
@@ -156,6 +160,10 @@ def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
     show what we can just because the hierarchy is malformed. The
     ``annotate`` command treats the same issues as hard errors when
     smoothing is requested.
+
+    ``report_colors=False`` suppresses the colours block for callers that
+    report the same problems themselves; archive inspection does, under a
+    verdict that says they block installation.
     """
     hierarchy_path = db_dir / manifest.hierarchy
     try:
@@ -186,18 +194,11 @@ def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
     # than erroring. ``download`` and ``karyotype`` enforce the
     # same checks as hard errors.
     color_issues: list[str] = []
-    try:
-        from karyoscope.core.io.colors import (
-            parse_colors_and_groups,
-            validate_colors,
-            validate_legend_groups,
-        )
-
-        colors, legend_groups = parse_colors_and_groups(db_dir / manifest.colors)
-        color_issues = validate_colors(hierarchy, colors)
-        color_issues += validate_legend_groups(colors, legend_groups)
-    except Exception as e:
-        color_issues = [f"colors.tsv could not be parsed: {e}"]
+    if report_colors:
+        try:
+            color_issues = check_install_readiness(db_dir, manifest)
+        except Exception as e:
+            color_issues = [f"colors.tsv could not be parsed: {e}"]
 
     counts = hierarchy.count_by_feature_set()
     click.echo("  Feature sets:")
@@ -380,7 +381,23 @@ def _show_archive(path: Path) -> None:
             root,
             size_line=f"  Size extracted:         {_format_size(total_bytes)}",
         )
-        _print_hierarchy_summary(manifest, root)
+        _print_hierarchy_summary(manifest, root, report_colors=False)
+
+        # The layout can be sound while the contents are not. `download`
+        # refuses to register such a database, so an archive that passes
+        # everything above can still be uninstallable — say so plainly,
+        # since publishing is exactly what this mode is for.
+        try:
+            blocking = check_install_readiness(root, manifest)
+        except Exception as e:
+            blocking = [f"could not be checked: {e}"]
+        if blocking:
+            click.echo("  Install check: FAILED — `karyoscope download` would refuse this:")
+            for issue in blocking:
+                click.echo(f"    - {issue}")
+            click.echo("  Fix these before publishing the archive.")
+        else:
+            click.echo("  Install check: passed")
 
 
 # --- inspecting an ad-hoc path --------------------------------------------

@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database is verified without being unpacked. Members whose paths escape the
   archive root are skipped rather than written.
 
+  Alongside the layout it reports an `Install check`, which runs the same
+  hierarchy-versus-colours validation `download` applies before recording an
+  install. A database can be structurally valid and still be refused at install;
+  that now shows up before publishing rather than after. Both paths call the new
+  `manifest.check_install_readiness()`, so they cannot drift apart.
+
 ## [2.2.0] - 2026-08-04
 
 ### Added

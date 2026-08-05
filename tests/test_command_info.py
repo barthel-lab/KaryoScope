@@ -235,6 +235,69 @@ def test_info_archive_rejects_path_traversal_members(
     assert not (tmp_path / "escaped.txt").exists()
 
 
+def test_info_archive_install_check_passes(
+    cli_runner: CliRunner,
+    dummy_db_tarball: Path,
+    isolated_db_root: Path,
+) -> None:
+    result = _invoke(cli_runner, "info", str(dummy_db_tarball), "--db-root", str(isolated_db_root))
+    assert result.exit_code == 0, result.output
+    assert "Install check: passed" in result.output
+
+
+def test_info_archive_install_check_catches_what_download_rejects(
+    cli_runner: CliRunner,
+    unpacked_dummy_db: Path,
+    tmp_path: Path,
+    isolated_db_root: Path,
+    dummy_db_sha256: str,
+) -> None:
+    """A layout-valid archive that download would refuse must not read as OK.
+
+    `download` treats a hierarchy node with no colour as fatal and won't
+    register the install. Before this check, `info` called the same
+    archive valid, so the problem only surfaced after publishing.
+    """
+    colors = unpacked_dummy_db / "colors.txt"
+    kept = [ln for ln in colors.read_text().splitlines() if "\tchr1\t" not in ln]
+    colors.write_text("\n".join(kept) + "\n")
+    archive = _tar_from(unpacked_dummy_db.parent, tmp_path / "no_colour.tar.gz")
+
+    result = _invoke(cli_runner, "info", str(archive), "--db-root", str(isolated_db_root))
+    assert result.exit_code == 0, result.output
+    # The layout itself is fine — every declared file is present.
+    assert "Layout valid: yes" in result.output
+    # But installing it would fail, and that has to be the headline.
+    assert "Install check: FAILED" in result.output
+    assert "chr1" in result.output
+    assert "Fix these before publishing" in result.output
+    # The same problem must not also be printed as a mere warning.
+    assert "Colors warnings:" not in result.output
+
+
+def test_info_archive_and_download_agree_on_a_broken_database(
+    cli_runner: CliRunner,
+    unpacked_dummy_db: Path,
+    tmp_path: Path,
+    isolated_db_root: Path,
+) -> None:
+    """The pre-publication verdict and the install gate share one check."""
+    from karyoscope.manifest import check_install_readiness, validate_database_layout
+
+    colors = unpacked_dummy_db / "colors.txt"
+    kept = [ln for ln in colors.read_text().splitlines() if "\tchr1\t" not in ln]
+    colors.write_text("\n".join(kept) + "\n")
+
+    manifest = validate_database_layout(unpacked_dummy_db)
+    issues = check_install_readiness(unpacked_dummy_db, manifest)
+    assert issues, "expected the missing colour to be reported"
+
+    archive = _tar_from(unpacked_dummy_db.parent, tmp_path / "broken_colors.tar.gz")
+    result = _invoke(cli_runner, "info", str(archive), "--db-root", str(isolated_db_root))
+    for issue in issues:
+        assert issue in result.output
+
+
 def test_info_non_archive_file_is_unchanged(
     cli_runner: CliRunner,
     tmp_path: Path,
