@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel superseded runs on the same PR/branch
+# Supersede earlier runs of the same PR, but never one merge's run with the
+# next merge's. Keying on github.ref put every push to main in one group, so
+# merging PRs back to back cancelled the earlier merge commit's run and left
+# it with no CI at all. Keying on the PR number when there is one, and the
+# commit sha otherwise, gives each main commit a group of its own: merges
+# neither cancel nor queue behind each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
