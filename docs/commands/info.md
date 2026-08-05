@@ -10,7 +10,7 @@ karyoscope info [OPTIONS] [TARGET]
 
 ## Description
 
-When run with no argument, `karyoscope info` lists installed databases along with their version, install date, size, and source. When given a database id, it prints the parsed manifest plus feature-set counts derived from the database's `hierarchy.tsv`, and runs hierarchy and colors validation, printing any issues as warnings without exiting non-zero. When given a filesystem path, it probes whether the path is a KaryoScope database directory.
+When run with no argument, `karyoscope info` lists installed databases along with their version, install date, size, and source. When given a database id, it prints the parsed manifest plus feature-set counts derived from the database's `hierarchy.tsv`, and runs hierarchy and colors validation, printing any issues as warnings without exiting non-zero. When given a filesystem path, it probes whether the path is a KaryoScope database directory or a database archive.
 
 ## Options
 
@@ -30,7 +30,64 @@ karyoscope info KS_human_CHM13_v2
 
 # Probe whether a directory is a KaryoScope database
 karyoscope info ./some/path
+
+# Validate a database archive before publishing it
+karyoscope info ./HKS_arabidopsis_ColCEN.tar.gz
 ```
+
+## Validating an archive
+
+Given a `.tar.gz`, `.tgz`, or `.tar` file, `info` checks the database layout
+*inside* the archive. This is what the
+[registry](https://github.com/barthel-lab/KaryoScope-registry) asks a
+contributor to run before opening a pull request.
+
+```
+Path: HKS_arabidopsis_ColCEN.tar.gz
+  Type: database archive (435.7 MB)
+  Top-level directory: HKS_arabidopsis_ColCEN
+  Contents: 12 files, 646.1 MB extracted
+  Layout valid: yes
+  Database id:  HKS_arabidopsis_ColCEN
+  Version:                1.2.0
+  ...
+  Install check: passed
+```
+
+Two questions get answered.
+
+`Layout valid` covers structure: it reports `NO` when the archive holds more or
+fewer than one top-level directory, has no `manifest.yaml`, or is missing a file
+the manifest declares — including any of the per-feature-set index files an HKS
+database needs. It also warns when the manifest's `id` differs from the
+top-level directory name, since `download` installs the directory and then looks
+it up by id.
+
+`Install check` covers contents, and runs the same check `download` applies
+before it records an install — every hierarchy node a command might emit has a
+colour, and the legend groups are well formed. A database can be structurally
+valid and still fail here, in which case `download` refuses it:
+
+```
+  Layout valid: yes
+  ...
+  Install check: FAILED — `karyoscope download` would refuse this:
+    - feature set 'chromosome': hierarchy node 'chr1' has no entry in colors.tsv
+  Fix these before publishing the archive.
+```
+
+Both commands call `check_install_readiness()`, so the verdict here and the
+install gate cannot drift apart.
+
+The archive is streamed once and never unpacked: only the manifest and the
+TSV/TXT sidecars are read into a temporary directory, and the index files are
+checked by name and size alone. Reading a multi-gigabyte archive still takes as
+long as decompressing it, but costs no disk space.
+
+Problems are reported, not raised — `info` exits 0 either way. Read the output
+rather than the exit status. `info` stays diagnostic on purpose: a broken
+database is exactly when you need it to explain itself rather than refuse to
+look.
 
 ## Example output
 

@@ -28,7 +28,7 @@ from karyoscope.exceptions import (
     KaryoscopeError,
 )
 from karyoscope.installed import InstalledRecord, load, now_iso, record_install
-from karyoscope.manifest import validate_database_layout
+from karyoscope.manifest import check_install_readiness, validate_database_layout
 from karyoscope.registry import DatabaseEntry
 
 logger = logging.getLogger(__name__)
@@ -478,17 +478,7 @@ def install_database(
     # install time rather than karyotype time. We keep the extracted
     # directory on disk for inspection but refuse to register the
     # install in installed.json.
-    from karyoscope.core.io.colors import (
-        parse_colors_and_groups,
-        validate_colors,
-        validate_legend_groups,
-    )
-    from karyoscope.core.io.hierarchy import parse_hierarchy
-
-    hierarchy = parse_hierarchy(target_dir / manifest.hierarchy)
-    colors, legend_groups = parse_colors_and_groups(target_dir / manifest.colors)
-    color_issues = validate_colors(hierarchy, colors)
-    color_issues += validate_legend_groups(colors, legend_groups)
+    color_issues = check_install_readiness(target_dir, manifest)
     if color_issues:
         raise KaryoscopeError(
             f"database {entry.id!r} extracted at {target_dir} but FAILED colors "

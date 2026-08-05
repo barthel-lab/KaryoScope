@@ -256,3 +256,35 @@ def validate_database_layout(db_dir: Path) -> Manifest:
             )
 
     return manifest
+
+
+def check_install_readiness(db_dir: Path, manifest: Manifest) -> list[str]:
+    """Report the problems that would stop ``download`` installing ``db_dir``.
+
+    :func:`validate_database_layout` answers "are the declared files
+    present". This answers the next question: is what they contain
+    mutually consistent. Currently that means every hierarchy node a
+    downstream command might emit has a colour, and the legend groups are
+    well formed — a malformed community database otherwise surfaces at
+    ``karyotype`` time, long after install.
+
+    Returns human-readable problems, empty when there are none.
+    ``download`` raises on a non-empty result and refuses to record the
+    install; ``info`` prints it. Both call this so a database cannot pass
+    the pre-publication check and then be rejected at install.
+
+    Assumes ``validate_database_layout`` has already succeeded, so the
+    hierarchy and colors files it reads are known to exist.
+    """
+    from karyoscope.core.io.colors import (
+        parse_colors_and_groups,
+        validate_colors,
+        validate_legend_groups,
+    )
+    from karyoscope.core.io.hierarchy import parse_hierarchy
+
+    hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
+    colors, legend_groups = parse_colors_and_groups(db_dir / manifest.colors)
+    issues = validate_colors(hierarchy, colors)
+    issues += validate_legend_groups(colors, legend_groups)
+    return issues
