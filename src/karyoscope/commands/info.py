@@ -11,6 +11,9 @@ Three modes:
 * ``karyoscope info <path>``: probe a filesystem path. If it's a
   directory containing a ``manifest.yaml``, treat it like a database
   (useful for inspecting databases not installed via ``download``).
+  If it's a ``.tar.gz``/``.tgz``/``.tar`` archive holding one, validate
+  the layout inside the archive without unpacking it — the check a
+  registry contributor needs before opening a PR.
 
 The output is plain text. Machine-readable output (``--json``) is
 deferred to a later stage when there's a concrete consumer.
@@ -20,7 +23,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from pathlib import Path
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
 
 import click
 
@@ -107,8 +112,13 @@ def _list_installed(db_root: Path) -> None:
 # --- detailed view of one database -----------------------------------------
 
 
-def _print_manifest_summary(manifest: Manifest, db_dir: Path) -> None:
-    """Print the manifest's contents in a tidy plain-text format."""
+def _print_manifest_summary(manifest: Manifest, db_dir: Path, size_line: str | None = None) -> None:
+    """Print the manifest's contents in a tidy plain-text format.
+
+    ``size_line`` overrides the trailing size report. Archive inspection
+    passes its own, because the directory it validates holds placeholders
+    for the index files rather than the real ones.
+    """
     click.echo(f"  Version:                {manifest.version}")
     click.echo(f"  KaryoScope min version: {manifest.karyoscope_min_version}")
     click.echo(
@@ -132,7 +142,10 @@ def _print_manifest_summary(manifest: Manifest, db_dir: Path) -> None:
     if manifest.smoothing:
         for k, v in sorted(manifest.smoothing.items()):
             click.echo(f"  Smoothing ({k}): {v}")
-    click.echo(f"  Size on disk:           {_format_size(_dir_size(db_dir))}")
+    if size_line is None:
+        click.echo(f"  Size on disk:           {_format_size(_dir_size(db_dir))}")
+    else:
+        click.echo(size_line)
 
 
 def _print_hierarchy_summary(manifest: Manifest, db_dir: Path) -> None:
@@ -233,6 +246,143 @@ def _show_database(db_root: Path, db_id: str) -> None:
     _print_hierarchy_summary(manifest, db_dir)
 
 
+# --- inspecting a database archive -----------------------------------------
+
+#: Suffixes we will try to read as a database archive.
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar")
+
+#: Members small enough to materialize while streaming. The manifest and the
+#: TSV/TXT sidecars are kilobytes; the index files are the whole database, and
+#: only their presence and names matter here.
+_MAX_INLINE_BYTES = 128 * 1024 * 1024
+_INLINE_SUFFIXES = (".yaml", ".yml", ".tsv", ".txt")
+
+
+def _looks_like_archive(path: Path) -> bool:
+    return path.name.lower().endswith(_ARCHIVE_SUFFIXES)
+
+
+def _safe_relpath(name: str) -> PurePosixPath | None:
+    """Return ``name`` as a relative path, or None if it escapes the root.
+
+    Tar members are attacker-controlled: absolute paths and ``..`` components
+    would let an archive write outside the staging directory.
+    """
+    pure = PurePosixPath(name)
+    if pure.is_absolute():
+        return None
+    parts = [p for p in pure.parts if p not in (".", "")]
+    if any(p == ".." for p in parts):
+        return None
+    return PurePosixPath(*parts) if parts else None
+
+
+def _stage_archive(path: Path, staging: Path) -> tuple[set[str], int, int]:
+    """Stream ``path`` once, reproducing its shape under ``staging``.
+
+    Small text members are written out in full; every other regular file
+    becomes an empty placeholder, so :func:`validate_database_layout` can
+    run its existence checks without unpacking gigabytes of index. Returns
+    the set of top-level names, the number of regular files, and their
+    total uncompressed size.
+    """
+    top_level: set[str] = set()
+    n_files = 0
+    total_bytes = 0
+
+    # Stream mode ("r|*"): one forward pass, no seeking back into the
+    # compressed stream, so a multi-GB archive is read but never written.
+    with tarfile.open(path, mode="r|*") as tar:
+        for member in tar:
+            rel = _safe_relpath(member.name)
+            if rel is None:
+                logger.warning("skipping archive member with unsafe path: %s", member.name)
+                continue
+            top_level.add(rel.parts[0])
+            if member.isdir():
+                (staging / rel).mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                # Symlinks and devices have no place in a database archive.
+                logger.warning("skipping non-regular archive member: %s", member.name)
+                continue
+
+            n_files += 1
+            total_bytes += member.size
+            dest = staging / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            inline = (
+                rel.name.lower().endswith(_INLINE_SUFFIXES) and member.size <= _MAX_INLINE_BYTES
+            )
+            if inline:
+                src = tar.extractfile(member)
+                if src is None:  # pragma: no cover (isfile() implies a payload)
+                    dest.touch()
+                    continue
+                with dest.open("wb") as out:
+                    while chunk := src.read(1 << 20):
+                        out.write(chunk)
+            else:
+                dest.touch()
+
+    return top_level, n_files, total_bytes
+
+
+def _show_archive(path: Path) -> None:
+    """Validate a database archive's layout without unpacking it."""
+    click.echo(f"  Type: database archive ({_format_size(path.stat().st_size)})")
+
+    with tempfile.TemporaryDirectory(prefix="karyoscope-info-") as tmp:
+        staging = Path(tmp)
+        try:
+            top_level, n_files, total_bytes = _stage_archive(path, staging)
+        except tarfile.TarError as e:
+            click.echo(f"  Layout valid: NO (cannot read archive: {e})")
+            return
+
+        if not top_level:
+            click.echo("  Layout valid: NO (archive is empty)")
+            return
+        if len(top_level) > 1:
+            names = ", ".join(sorted(top_level))
+            click.echo(
+                f"  Layout valid: NO (archive must hold exactly one top-level "
+                f"directory; found {len(top_level)}: {names})"
+            )
+            return
+
+        root_name = next(iter(top_level))
+        root = staging / root_name
+        click.echo(f"  Top-level directory: {root_name}")
+        click.echo(f"  Contents: {n_files} files, {_format_size(total_bytes)} extracted")
+
+        if not (root / "manifest.yaml").is_file():
+            click.echo(f"  Layout valid: NO (no manifest.yaml in {root_name}/)")
+            return
+
+        try:
+            manifest = validate_database_layout(root)
+        except (ManifestError, DatabaseLayoutError) as e:
+            click.echo(f"  Layout valid: NO ({e})")
+            return
+
+        click.echo("  Layout valid: yes")
+        click.echo(f"  Database id:  {manifest.id}")
+        if manifest.id != root_name:
+            # download installs the archive's directory, then looks it up by
+            # the manifest id; a mismatch breaks the install it just did.
+            click.echo(
+                f"  ! Database id {manifest.id!r} does not match the top-level "
+                f"directory {root_name!r}; they must be the same."
+            )
+        _print_manifest_summary(
+            manifest,
+            root,
+            size_line=f"  Size extracted:         {_format_size(total_bytes)}",
+        )
+        _print_hierarchy_summary(manifest, root)
+
+
 # --- inspecting an ad-hoc path --------------------------------------------
 
 
@@ -262,6 +412,9 @@ def _show_path(path: Path) -> None:
         return
 
     if path.is_file():
+        if _looks_like_archive(path):
+            _show_archive(path)
+            return
         size = _format_size(path.stat().st_size)
         click.echo(f"  Type: file ({size})")
         return
@@ -298,6 +451,7 @@ def cmd(target: str | None, db_root_arg: Path | None, db_alias: Path | None) -> 
         karyoscope info                     # list installed databases
         karyoscope info KS_human_CHM13_v2   # details on one database
         karyoscope info ./some/path/        # probe a filesystem path
+        karyoscope info ./my_db.tar.gz      # validate an archive's layout
     """
     db_root = paths.ensure_db_root(resolve_db_root_flag(db_root_arg, db_alias, command="info"))
 

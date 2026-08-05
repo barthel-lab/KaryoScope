@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`karyoscope info <archive>` validates a database archive's layout.** Given a
+  `.tar.gz`, `.tgz`, or `.tar`, `info` now reports the top-level directory, the
+  extracted size, whether the layout is valid, and the same manifest and
+  feature-set summary it prints for a database directory. It reports
+  `Layout valid: NO` for an archive with more or fewer than one top-level
+  directory, without a `manifest.yaml`, or missing any file the manifest
+  declares, and warns when the manifest `id` and the directory name disagree.
+
+  Previously an archive fell through to the generic file branch and printed only
+  `Type: file (435.7 MB)`. The registry's contributor instructions told people to
+  run this command and fix what it reported, so the check passed for any tarball.
+
+  The archive is streamed once: the manifest and TSV/TXT sidecars are read into a
+  temporary directory and the index files are checked by name, so a multi-gigabyte
+  database is verified without being unpacked. Members whose paths escape the
+  archive root are skipped rather than written.
+
 ## [2.2.0] - 2026-08-04
 
 ### Added
