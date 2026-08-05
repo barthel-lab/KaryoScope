@@ -80,14 +80,15 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 ### Disk space
 
-Databases are large, and the archive is **not** deleted until extraction finishes — so installing needs room for the download *and* the extracted database at the same time. That peak, not the download size, is the number to check against `df -h`:
+The archive is **not** deleted until extraction finishes, so installing needs room for the download *and* the extracted database at the same time. That peak, not the download size, is the number to check against `df -h`:
 
 | Database | Backend | Download (`.tar.gz`) | On disk after install | **Free space to install** |
 |---|---|---|---|---|
 | `HKS_human_CHM13_v2` | HKS | 13.3 GB | 22.7 GB | **~36 GB** |
 | `KS_human_CHM13_v2` (default) | KMC | 16.3 GB | 17.2 GB | **~34 GB** |
+| `HKS_arabidopsis_ColCEN` | HKS | 0.46 GB | 0.68 GB | **~1.1 GB** |
 
-The HKS archive compresses far better than the KMC one, so its download is the *smaller* of the two while its installed footprint is the larger. Once the install completes the archive is removed and only the "on disk" column remains occupied.
+Size tracks the genome, not the tool: the 135 Mb *Arabidopsis* database installs in about a gigabyte, while the human references need tens. Between the two human databases, the HKS archive compresses far better than the KMC one, so its download is the *smaller* while its installed footprint is the larger. Once the install completes the archive is removed and only the "on disk" column remains occupied.
 
 `karyoscope download` checks free space before it starts transferring anything and refuses with the shortfall spelled out rather than failing after a 25-minute download. `karyoscope download --info <ID>` prints all three figures for any database. Sizes here are decimal GB (10⁹ bytes); `df -h` reports binary GiB, so 36 GB shows there as 34 GiB.
 
@@ -311,6 +312,8 @@ Beyond the per-command pages:
 ## Databases
 
 KaryoScope works with pre-built databases distributed via the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry). The current default is `KS_human_CHM13_v2` (17.2 GB installed; see [Disk space](#disk-space) for the free space needed to install it), built from the T2T-CHM13v2.0 reference.
+
+The registry also carries `HKS_arabidopsis_ColCEN` (0.68 GB installed), built from the *Arabidopsis thaliana* Col-CEN v1.2 telomere-to-telomere assembly, with `chromosome`, `region`, `repeat` and `gene` feature sets. Two differences from the human databases: its structural set is `region` rather than `subtelomeric`, and rendering a karyotype from it needs `--telo-motif CCCTAAA`, because plant telomeres are `TTTAGGG` and the default motif finds none.
 
 Browse and download available databases:
 

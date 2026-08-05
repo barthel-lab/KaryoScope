@@ -22,6 +22,7 @@ A database has two sizes, and for the HKS databases they differ substantially:
 |---|---|---|---|
 | `KS_human_CHM13_v2` (default) | 16.3 GB | 17.2 GB | **~34 GB** |
 | `HKS_human_CHM13_v2` | 13.3 GB | 22.7 GB | **~36 GB** |
+| `HKS_arabidopsis_ColCEN` | 0.46 GB | 0.68 GB | **~1.1 GB** |
 
 Installing needs the sum of the two columns, because the archive is only deleted once extraction succeeds. `download` verifies that up front and refuses with the exact shortfall rather than filling the disk part-way through extraction; `--no-space-check` overrides it. Reinstalling over an existing copy credits the space that copy will free, and a staged or partially-downloaded archive is credited too, so a retry doesn't require room for the archive twice.
 
