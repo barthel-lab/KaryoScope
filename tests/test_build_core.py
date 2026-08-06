@@ -284,3 +284,47 @@ def test_keep_intermediates_preserves_a_failed_build(tmp_path: Path, tiny_inputs
     with pytest.raises(BuildError):
         build_database(spec, db_root, register=False, keep_intermediates=True)
     assert (db_root / "HKS_keep").is_dir()
+
+
+def test_priority_file_must_name_every_node(tmp_path: Path, tiny_inputs: dict) -> None:
+    """An unlisted node would take priority 0 -- the BEST priority -- and win.
+
+    The node most easily forgotten is the gap-fill leaf, because `build` adds it
+    to the hierarchy itself and so it never appears in a hand-written hierarchy
+    file. Left unlisted it outranks every real feature.
+    """
+    prio = tmp_path / "missing_background.priority.txt"
+    prio.write_text("LINE 1 categorized\nSINE 2 categorized\n")  # no `nonrepeat`
+    spec = BuildSpec.from_flags(
+        db_id="HKS_missing_prio",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        priorities={"repeat": prio},
+        s=11,
+    )
+    with pytest.raises(BuildError) as excinfo:
+        build_database(spec, tmp_path / "db", register=False)
+    message = str(excinfo.value)
+    assert "background" in message
+    assert "gap-fill" in message
+
+
+def test_priority_file_need_not_name_the_root(tmp_path: Path, tiny_inputs: dict) -> None:
+    """`categorized` is never a child, so its priority is never compared."""
+    prio = tmp_path / "complete.priority.txt"
+    prio.write_text("LINE 1 categorized\nSINE 2 categorized\nbackground 3 categorized\n")
+    spec = BuildSpec.from_flags(
+        db_id="HKS_root_exempt",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        priorities={"repeat": prio},
+        s=11,
+    )
+    # Preparation must get past the priority check; it may still fail later if
+    # hks is absent, which is what @requires_hks guards elsewhere.
+    try:
+        build_database(spec, tmp_path / "db", register=False)
+    except BuildError as e:
+        assert "have no entry" not in str(e)
