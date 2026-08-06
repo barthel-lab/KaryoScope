@@ -1,8 +1,15 @@
-# Priority order for the CHM13 v2 repeat set, highest priority (1) first:
-#   rRNA, scRNA, snRNA, srpRNA, tRNA, Satellite, RC, Retroposon, DNA, LTR, SINE, LINE, Simple_repeat, Low_complexity, Unknown
-# Interior nodes carry values only to satisfy HKS's rule that siblings be
-# all-equal or all-distinct; they never appear as BED labels.
-# 3-column 'child priority parent' -- this supplies the hierarchy too.
+# Flatten order for the CHM13 v2 repeat set (build's `flatten_order:`), highest
+# priority (1) first:
+#   rRNA, scRNA, snRNA, srpRNA, tRNA, Satellite, RC, Retroposon, DNA, LTR, SINE,
+#   LINE, Simple_repeat, Low_complexity, Unknown
+# NOT the per-k-mer ordering -- that is chm13v2_repeat.priority.txt, and the two
+# differ.
+# Only the relative order of the 15 leaves is read. Interior nodes appear so the
+# file also spells out the tree; their values are inert, because a name that is
+# never a BED label cannot win a base. HKS's all-equal-or-all-distinct rule does
+# not apply here: these values are used to sort labels before k-mers are
+# extracted and are never handed to HKS.
+# 3-column 'child priority parent'.
 repeat	1	categorized
 Interspersed_Repeat	1	repeat
 RNA	1	Interspersed_Repeat
