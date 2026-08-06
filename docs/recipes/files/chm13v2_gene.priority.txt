@@ -1,0 +1,9 @@
+# Per-k-mer resolution for the CHM13 v2 gene set (build's `priority:`).
+# The more specific label wins where a k-mer is claimed by several: exon over
+# intron over intergenic. Without this the three tie, `plca` falls back to the
+# common ancestor -- which for a flat set is the root -- and 786 Mb of the
+# genome resolves to `categorized` instead of to a gene feature.
+# 3-column 'child priority parent' -- this supplies the hierarchy too.
+exon	1	categorized
+intron	2	categorized
+intergenic	3	categorized

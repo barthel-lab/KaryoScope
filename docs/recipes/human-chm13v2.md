@@ -153,7 +153,13 @@ sha256sum chm13_gene.bed
 # 03ae30a1a9c90a574b96eb4dfaa34a0c834ef51f5b3eec4181f39d4e8c9063e9   (612,909 rows)
 ```
 
-`prep-bed` writes the hierarchy and colours files itself — there is nothing to supply.
+`prep-bed` writes the hierarchy and colours files itself. What it cannot derive is how a k-mer claimed by more than one of the three should resolve, so that ordering is provided:
+
+```bash
+cp docs/recipes/files/chm13v2_gene.priority.txt .
+```
+
+The three leaves are siblings, so without this file they tie and resolve to their common ancestor, which for a flat set is the root. Annotating HG002 against a database built without it puts 786 Mb on `categorized` and gives `exon` 258 Mb, against 679 Mb with it.
 
 Introns are derived per transcript from that transcript's own consecutive exons; where transcripts disagree, `exon` beats `intron` beats `intergenic`. The result tiles every sequence, so the set needs no gap-fill.
 
@@ -192,6 +198,7 @@ feature_sets:
   - name: gene
     bed: chm13_gene.bed
     hierarchy: chm13_gene.tsv
+    priority: chm13v2_gene.priority.txt   # exon > intron > intergenic per k-mer
     colors: chm13_gene.colors.tsv
     background: null            # exon/intron/intergenic already tiles every base
 roles:
