@@ -152,3 +152,25 @@ def test_validate_accepts_variable_k_in_mode_a(genome: Path, bed: Path) -> None:
         feature_sets=[FeatureSetSpec("r", bed=bed, variable_k=True)],
     )
     spec.validate()  # does not raise
+
+
+def test_flatten_order_is_read_and_implies_flatten(tmp_path):
+    """`flatten` and `priority` answer different questions and may disagree."""
+    order = tmp_path / "order.txt"
+    order.write_text("LINE 1 categorized\n")
+    bed = tmp_path / "r.bed"
+    bed.write_text("chr1\t0\t10\tLINE\n")
+    genome = tmp_path / "g.fa"
+    genome.write_text(">chr1\nACGT\n")
+    spec_file = tmp_path / "spec.yaml"
+    spec_file.write_text(
+        "id: HKS_x\nversion: 1.0.0\nsequence: g.fa\nfeature_sets:\n"
+        "  - name: repeat\n    bed: r.bed\n    flatten_order: order.txt\n"
+    )
+    spec = BuildSpec.from_yaml(spec_file)
+    fs = spec.feature_sets[0]
+    assert fs.flatten_order == order
+    # naming an order is what asks for flattening; `flatten: true` is redundant
+    assert fs.flatten is True
+    # ... and it does not turn on per-k-mer priority resolution
+    assert fs.priority is None

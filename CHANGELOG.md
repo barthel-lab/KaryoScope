@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`karyoscope prep-bed asat` — a per-array alpha-satellite feature set from a
+  CenSat annotation.** Where `prep-bed censat` collapses CenSat onto its 14
+  broad classes, `asat` reads the same file per array: `hor_1_5(S1C1/5/19H1L)`
+  becomes a record labelled `S1C1_5_19H1L`. On CHM13 v2: 766 records, 86 arrays,
+  85,444,299 bp.
+
+  Both CenSat dialects are read. An interval naming several arrays produces one
+  record per array over the full interval, so HKS resolves the shared k-mers to
+  their common ancestor. Bare continuation suffixes are expanded first, so
+  `hor_1_1(S3C1H2-A,B,C)` names S3C1H2-A, S3C1H2-B and S3C1H2-C rather than
+  leaves called `A`, `B` and `C`.
+
+  Every alpha-satellite class is included by default, nested under a shared
+  `asat` parent. Excluding one leaves that sequence to the gap-fill, whose leaf
+  sits at the hierarchy root, so k-mers the named arrays share with it resolve
+  to the root. The shared sequence is the conserved monomer core: on CHM13,
+  excluding `mon` and `dhor` puts 36.9% of array bases on the root, against 4.6%
+  with them included.
+
+- **`flatten_order:` (build spec) and `--flatten-order` (CLI) set a feature
+  set's per-base flatten ranking independently of `priority:`.** The two settings
+  answer different questions: `flatten` picks one label per base before k-mers
+  are extracted, while `priority` resolves a k-mer claimed by several labels as
+  the index is built. A set may want a different ranking for each. Supplying
+  `flatten_order:` implies `flatten` for that set.
+
+  Previously `flatten` derived its order from the priority file, so a set that
+  wanted a specific per-base partition had to accept the same ranking at index
+  time. The `repeat` set in the CHM13 recipe is the case in point: its
+  fully distinct 1..15 leaf ranking is what makes the set a hard partition, but
+  applied per k-mer it collapses every shared k-mer onto one class rather than
+  letting siblings tie and resolve to their common ancestor.
+
 - **`karyoscope info <archive>` validates a database archive's layout.** Given a
   `.tar.gz`, `.tgz`, or `.tar`, `info` now reports the top-level directory, the
   extracted size, whether the layout is valid, and the same manifest and
@@ -31,6 +64,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   install. A database can be structurally valid and still be refused at install;
   that now shows up before publishing rather than after. Both paths call the new
   `manifest.check_install_readiness()`, so they cannot drift apart.
+
+### Changed
+
+- **`build` now rejects a priority file that omits any hierarchy node**, listing
+  the nodes it did not find. The root is exempt, since it is never a child and
+  its priority is never compared. Existing specs whose priority files are
+  incomplete will fail until the missing nodes are added.
+
+  An omitted node previously took priority 0. HKS treats a lower value as higher
+  priority, so a node absent from the file outranked every node present in it.
+  The gap-fill leaf was the most common omission: `build` attaches it to the
+  root, so it appears in no hierarchy file and had no obvious reason to appear
+  in a priority file. Left out, it took precedence over every real feature, and
+  a feature sharing all its k-mers with unannotated sequence stopped painting.
+
+  Filling in a default does not avoid this. Zero wins outright, and a losing
+  value fails differently: two omitted siblings would share it, so a group whose
+  listed members are distinct would satisfy neither half of HKS's
+  all-equal-or-all-distinct rule.
+
+- **`prep-bed` writes the gap-fill leaf into the priority files it generates**,
+  ranked after the features, so a k-mer a feature shares with unannotated
+  sequence stays with the feature. Applies to `repeatmasker` and `edta`. The
+  converters whose output already tiles declare no gap-fill and are unchanged.
+
+### Documentation
+
+- **`build`: background placement and the hierarchy root.** The gap-fill leaf
+  sits at the root, so a k-mer it shares with a real feature resolves to
+  `categorized` and paints nothing. Covers when that is harmless (a set that
+  already tiles; a background disjoint by construction, as `nonrepeat` is) and
+  when it costs a set most of its resolution (a background holding homologs of
+  the features), plus the fix: bring the leftovers into the tree under a shared
+  parent instead of leaving them to gap-fill.
 
 ## [2.2.0] - 2026-08-04
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from karyoscope.core.build import build_database
+from karyoscope.core.build import _prepare_feature_set, build_database
 from karyoscope.core.buildspec import BuildSpec, FeatureSetSpec
 from karyoscope.core.io.hks import run_hks_lookup
 from karyoscope.exceptions import BuildError
@@ -284,3 +284,87 @@ def test_keep_intermediates_preserves_a_failed_build(tmp_path: Path, tiny_inputs
     with pytest.raises(BuildError):
         build_database(spec, db_root, register=False, keep_intermediates=True)
     assert (db_root / "HKS_keep").is_dir()
+
+
+def _prepare(spec, tmp_path):
+    """Run just the per-feature-set preparation, without hks or samtools.
+
+    The priority checks live here, ahead of any HKS call, so testing at this
+    level keeps them covered on a machine that has neither tool — which is every
+    CI runner. Gap-fill would shell out to `samtools faidx`, so the `.fai` is
+    written directly instead.
+    """
+    fai = Path(str(spec.sequence) + ".fai")
+    if not fai.is_file():
+        offset = 0
+        rows = []
+        for block in spec.sequence.read_text().split(">")[1:]:
+            head, _, seq = block.partition("\n")
+            seq = seq.replace("\n", "")
+            offset += len(head) + 2
+            rows.append(f"{head.split()[0]}\t{len(seq)}\t{offset}\t{len(seq)}\t{len(seq) + 1}")
+            offset += len(seq) + 1
+        fai.write_text("\n".join(rows) + "\n")
+    work = tmp_path / "work"
+    work.mkdir(exist_ok=True)
+    return _prepare_feature_set(spec.feature_sets[0], spec=spec, index_dir=work, work_dir=work)
+
+
+def test_priority_file_must_name_every_node(tmp_path: Path, tiny_inputs: dict) -> None:
+    """An unlisted node would take priority 0 -- the BEST priority -- and win.
+
+    The node most easily forgotten is the gap-fill leaf, because `build` adds it
+    to the hierarchy itself and so it never appears in a hand-written hierarchy
+    file. Left unlisted it outranks every real feature.
+    """
+    prio = tmp_path / "missing_background.priority.txt"
+    prio.write_text("LINE 1 categorized\nSINE 2 categorized\n")  # no `nonrepeat`
+    spec = BuildSpec.from_flags(
+        db_id="HKS_missing_prio",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        priorities={"repeat": prio},
+        s=11,
+    )
+    with pytest.raises(BuildError) as excinfo:
+        _prepare(spec, tmp_path)
+    message = str(excinfo.value)
+    assert "background" in message
+    assert "gap-fill" in message
+
+
+def test_priority_file_need_not_name_the_root(tmp_path: Path, tiny_inputs: dict) -> None:
+    """`categorized` is never a child, so its priority is never compared."""
+    prio = tmp_path / "complete.priority.txt"
+    prio.write_text("LINE 1 categorized\nSINE 2 categorized\nbackground 3 categorized\n")
+    spec = BuildSpec.from_flags(
+        db_id="HKS_root_exempt",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        priorities={"repeat": prio},
+        s=11,
+    )
+    prepared = _prepare(spec, tmp_path)
+    assert prepared.priorities_path is not None
+
+
+def test_flatten_order_is_not_held_to_the_sibling_rule(tmp_path: Path, tiny_inputs: dict) -> None:
+    """It never reaches HKS; its values only sort labels before k-mer extraction.
+
+    A mixed sibling group would be rejected in a `priority:` file, where `plca`
+    needs it to stay associative.
+    """
+    order = tmp_path / "order.txt"
+    order.write_text("LINE 1 categorized\nSINE 1 categorized\nnonrepeat 2 categorized\n")
+    spec = BuildSpec.from_flags(
+        db_id="HKS_flat_order",
+        version="1.0.0",
+        sequence=tiny_inputs["genome"],
+        feature_beds={"repeat": tiny_inputs["repeat_bed"]},
+        flatten_orders={"repeat": order},
+        s=11,
+    )
+    prepared = _prepare(spec, tmp_path)
+    assert prepared.priorities_path is None  # no priority file -> no HKS priorities

@@ -25,6 +25,7 @@ from typing import Any
 
 import click
 
+from karyoscope.core.prep import asat as asat_prep
 from karyoscope.core.prep import cytoband as cytoband_prep
 from karyoscope.core.prep import genes as genes_prep
 from karyoscope.core.prep import repeats as repeats_prep
@@ -658,5 +659,116 @@ def satellite(
         satellite=satellite,
         merge_gap=merge_gap,
         cluster_gap=cluster_gap,
+        rename=_rewriter(rename_prefix, seqid_map),
+    )
+
+
+@cmd.command("asat")
+@click.option(
+    "--input",
+    "input_path",
+    type=click.Path(**_IN),
+    required=True,
+    help="CenSat annotation BED (e.g. chm13v2.0.cenSatv2.1.bed; plain or gzipped).",
+)
+@click.option("--output", type=click.Path(**_OUT), required=True, help="Output feature-set BED.")
+@click.option(
+    "--hierarchy",
+    type=click.Path(**_OUT),
+    required=True,
+    help="Output 'child<TAB>parent' hierarchy: the asat/alpha_hor/dhor/mon scaffold, "
+    "with every array flat under its class.",
+)
+@click.option(
+    "--priority",
+    type=click.Path(**_OUT),
+    default=None,
+    help="Also write the tree as a 3-column priority file ranking alpha_hor over dhor over "
+    "mon, so a k-mer an array shares with divergent or monomeric alpha-satellite resolves "
+    "to the array. Names the background explicitly at the same priority as asat.",
+)
+@click.option(
+    "--colors",
+    type=click.Path(**_OUT),
+    default=None,
+    help="Also write a colours file, one colour per suprachromosomal family with a "
+    "legend_group so the legend collapses to nine rows instead of one per array.",
+)
+@click.option(
+    "--background",
+    default="background",
+    show_default=True,
+    help="Gap-fill label named in the stanza and in the priority file.",
+)
+@click.option(
+    "--class",
+    "classes",
+    type=click.Choice(asat_prep.CLASSES),
+    multiple=True,
+    default=asat_prep.CLASSES,
+    show_default=True,
+    help="alpha-satellite class to include. Repeatable; the default takes all four.",
+)
+@click.option("--name", default="asat", show_default=True, help="Feature-set name in the stanza.")
+@_seqid_options
+@click.option("--force", is_flag=True, help="Overwrite existing output files.")
+def asat(
+    input_path: Path,
+    output: Path,
+    hierarchy: Path,
+    priority: Path | None,
+    colors: Path | None,
+    background: str,
+    classes: tuple[str, ...],
+    name: str,
+    rename_prefix: str | None,
+    seqid_map: Path | None,
+    force: bool,
+) -> None:
+    """A CenSat annotation -> a per-array `asat` feature set.
+
+    \b
+    Where `prep-bed censat` collapses CenSat to its broad classes (one `aSat`
+    label for every array), this keeps the per-array detail in the
+    parenthetical: `hor_1_5(S1C1/5/19H1L)` becomes a record labelled
+    `S1C1_5_19H1L`.
+
+    \b
+    CenSat names more than one array on intervals where two arrays' sequence is
+    interleaved. Each is emitted as its own record rather than picking a
+    winner, letting HKS resolve the shared k-mers to their common ancestor --
+    so do NOT pass `build --flatten` for this set. Bare continuation suffixes
+    are expanded first: `hor_1_1(S3C1H2-A,B,C)` is three records for S3C1H2-A,
+    S3C1H2-B and S3C1H2-C, not leaves called `A`, `B` and `C`.
+
+    \b
+    Every alpha-satellite class is included by default. Dropping one leaves that
+    sequence to build's gap-fill, whose leaf sits at the hierarchy root, so every
+    k-mer a named array shares with it resolves to the root. On CHM13, excluding
+    `mon` and `dhor` puts 36.9% of array bases on the root, against 4.6% with
+    them included.
+
+    \b
+    Arrays are left flat under `alpha_hor`. Structure among them is a phylogeny
+    no annotation file contains; derive it separately (e.g. mashtree over the
+    per-array sequences) and replace that star.
+
+    \b
+    Example:
+        karyoscope prep-bed asat --input chm13v2.0.cenSatv2.1.bed \\
+            --output asat.bed --hierarchy asat.tsv
+    """
+    _run(
+        asat_prep.from_censat,
+        [output, hierarchy, priority, colors],
+        force,
+        input_path=input_path,
+        output=output,
+        hierarchy=hierarchy,
+        priority=priority,
+        colors=colors,
+        background=background,
+        classes=tuple(classes),
+        name=name,
         rename=_rewriter(rename_prefix, seqid_map),
     )

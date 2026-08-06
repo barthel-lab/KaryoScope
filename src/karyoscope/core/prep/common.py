@@ -189,12 +189,33 @@ def write_hierarchy(path: Path, edges: Iterable[Edge]) -> int:
     return n
 
 
-def write_priority(path: Path, edges: Iterable[Edge], priority: int = 1) -> int:
-    """Write the same tree as 3-column ``child<TAB>priority<TAB>parent``."""
+def write_priority(
+    path: Path,
+    edges: Iterable[Edge],
+    priority: int = 1,
+    background: str | None = None,
+    background_priority: int | None = None,
+) -> int:
+    """Write the same tree as 3-column ``child<TAB>priority<TAB>parent``.
+
+    ``background`` names the gap-fill leaf, which ``build`` adds to the
+    hierarchy itself and which therefore does not appear in ``edges``. It has to
+    be written anyway: ``build`` requires a priority for every node, and if it
+    did not, an unlisted node would take the *best* priority and the gap-fill
+    would outrank every real feature.
+
+    It is given ``background_priority`` — by default one step worse than
+    ``priority``, so a k-mer a feature shares with unannotated sequence stays
+    with the feature.
+    """
     n = 0
     with path.open("w") as out:
         for child, parent in edges:
             out.write(f"{child}\t{priority}\t{parent}\n")
+            n += 1
+        if background is not None:
+            worse = priority + 1 if background_priority is None else background_priority
+            out.write(f"{background}\t{worse}\tcategorized\n")
             n += 1
     return n
 
@@ -236,6 +257,9 @@ class PrepResult:
     hierarchy: Path | None = None
     n_edges: int = 0
     priority: Path | None = None
+    #: Rows in the priority file. Differs from ``n_edges`` when a background is
+    #: written, since ``build`` adds that leaf to the hierarchy itself.
+    n_priority: int = 0
     colors: Path | None = None
     n_colors: int = 0
     #: Sequences present in the assembly that this set deliberately does not
@@ -250,7 +274,7 @@ class PrepResult:
         if self.hierarchy is not None:
             parts.append(f"{self.hierarchy} ({self.n_edges:,} edges)")
         if self.priority is not None:
-            parts.append(f"{self.priority} ({self.n_edges:,} rows)")
+            parts.append(f"{self.priority} ({self.n_priority or self.n_edges:,} rows)")
         if self.colors is not None:
             parts.append(f"{self.colors} ({self.n_colors:,} features)")
         return "wrote " + ", ".join(parts)

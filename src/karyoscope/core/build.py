@@ -220,9 +220,19 @@ def _prepare_feature_set(
             # Drop records on excluded sequences so no set covers them.
             intervals = [iv for iv in intervals if iv[0] not in excluded]
         if fs.flatten:
+            # `flatten` and `priority` answer different questions -- one label
+            # per base before k-mers are extracted, versus resolving a k-mer
+            # claimed by several labels at index time -- so a set may want a
+            # different ranking for each. `flatten_order` supplies the first
+            # without implying the second; falling back to `priority` keeps the
+            # single-file form working.
+            if fs.flatten_order is not None:
+                _edges, flat_prios = _parse_priority_file(fs.flatten_order)
+            else:
+                flat_prios = prios
             order = (
-                [n for n, _ in sorted(prios.items(), key=lambda kv: kv[1])]
-                if prios
+                [n for n, _ in sorted(flat_prios.items(), key=lambda kv: kv[1])]
+                if flat_prios
                 else partition.labels_in(intervals)
             )
             intervals = partition.flatten_by_priority(intervals, order)
@@ -294,6 +304,30 @@ def _prepare_feature_set(
     # -- priorities (priority mode only) --
     priorities_path: Path | None = None
     if fs.priority is not None:
+        # Every node must carry a priority. Filling a gap with a default is not
+        # safe in either direction: 0 is the *best* priority, so an omitted node
+        # would silently outrank everything listed -- and the node most often
+        # omitted is the background, which `_resolve_edges` attaches to the root
+        # for you, so the gap-fill would beat every feature in the set. Choosing
+        # a losing default instead just moves the problem: two omitted siblings
+        # would share it, and a group whose listed members are distinct then
+        # satisfies neither half of HKS's all-equal-or-all-distinct rule.
+        # The root is exempt: it is never a child, so its priority is never read.
+        missing = [n for n in nodes if n != REQUIRED_ROOT and n not in prios]
+        if missing:
+            shown = missing if len(missing) <= 8 else [*missing[:8], "..."]
+            hint = ""
+            if fs.background is not None and fs.background in missing:
+                hint = (
+                    f"\n  {fs.background!r} is the gap-fill leaf, which build adds to the "
+                    "hierarchy itself — a priority file has to name it even though the "
+                    "hierarchy file does not."
+                )
+            raise BuildError(
+                f"feature set {fs.name!r}: {len(missing)} hierarchy node(s) have no entry "
+                f"in {fs.priority}: {shown}{hint}\n  Every node needs a priority; an "
+                "unlisted one would default to the highest priority and outrank the rest."
+            )
         full_prio = {node: prios.get(node, 0) for node in nodes}
         parent_of = {c: p for c, p in edges}
         sib_issues = validate_sibling_priorities(parent_of, full_prio)

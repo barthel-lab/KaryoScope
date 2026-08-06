@@ -670,8 +670,40 @@ def test_existing_outputs_are_not_clobbered_without_force(
 
 def test_every_format_subcommand_is_reachable(runner: CliRunner) -> None:
     listing = runner.invoke(main, ["prep-bed", "--help"]).output
-    for leaf in ("repeatmasker", "edta", "gff-gene", "cytoband", "fai", "satellite"):
+    for leaf in ("repeatmasker", "edta", "gff-gene", "cytoband", "fai", "satellite", "asat"):
         assert leaf in listing
+
+
+def test_edta_runs_with_every_optional_output(tmp_path: Path, runner: CliRunner) -> None:
+    """Exercise the handler body, not just --help.
+
+    A name referenced in a subcommand's `_run` call but absent from its
+    signature is a NameError that only fires when the command actually runs, so
+    --help alone would not see it.
+    """
+    gff = tmp_path / "te.gff3"
+    gff.write_text(
+        "##gff-version 3\nchr1\tEDTA\trepeat_region\t1\t100\t.\t+\t.\tClassification=LTR/Copia\n"
+    )
+    result = runner.invoke(
+        main,
+        [
+            "prep-bed",
+            "edta",
+            "--input",
+            str(gff),
+            "--output",
+            str(tmp_path / "r.bed"),
+            "--hierarchy",
+            str(tmp_path / "r.tsv"),
+            "--priority",
+            str(tmp_path / "r.priority.txt"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.output
+    # the gap-fill must be named, or build would give it the best priority
+    assert "nonrepeat" in (tmp_path / "r.priority.txt").read_text()
 
 
 def test_a_bad_rename_prefix_is_a_clean_error_not_a_traceback(

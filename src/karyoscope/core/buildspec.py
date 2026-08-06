@@ -50,6 +50,13 @@ class FeatureSetSpec:
     priority: Path | None = None
     colors: Path | None = None
     flatten: bool = False
+    #: Where ``flatten`` gets its per-base ranking, when that ranking is not the
+    #: one ``priority`` expresses. The two answer different questions —
+    #: ``flatten`` picks one label per base before k-mers are extracted, while
+    #: ``priority`` resolves a k-mer claimed by several labels at index time —
+    #: and a set can legitimately want one without the other. Same 2- or
+    #: 3-column format as ``priority``; only the ordering is read.
+    flatten_order: Path | None = None
     # Enable HKS variable-k queries: one index answers any k <= s (e.g. a k-sweep
     # from a single build). HKS variable-k needs a dummy node for each feature
     # sequence's start, so when *any* set requests it the base index is built
@@ -100,6 +107,7 @@ class BuildSpec:
         priorities: dict[str, Path] | None = None,
         colors: dict[str, Path] | None = None,
         flatten: bool = False,
+        flatten_orders: dict[str, Path] | None = None,
         variable_k: bool = False,
         s: int = DEFAULT_S,
         threads: int = 4,
@@ -129,7 +137,8 @@ class BuildSpec:
                     hierarchy=hierarchies.get(name),
                     priority=priorities.get(name),
                     colors=colors.get(name),
-                    flatten=flatten,
+                    flatten=flatten or name in (flatten_orders or {}),
+                    flatten_order=(flatten_orders or {}).get(name),
                     variable_k=variable_k,
                 )
             )
@@ -227,7 +236,10 @@ class BuildSpec:
                     hierarchy=_resolve(entry["hierarchy"]) if entry.get("hierarchy") else None,
                     priority=_resolve(entry["priority"]) if entry.get("priority") else None,
                     colors=_resolve(entry["colors"]) if entry.get("colors") else None,
-                    flatten=bool(entry.get("flatten", False)),
+                    flatten=bool(entry.get("flatten", False)) or "flatten_order" in entry,
+                    flatten_order=(
+                        _resolve(entry["flatten_order"]) if entry.get("flatten_order") else None
+                    ),
                     variable_k=bool(entry.get("variable_k", False)),
                 )
             )

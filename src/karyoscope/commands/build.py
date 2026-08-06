@@ -112,6 +112,14 @@ def _named_str_map(values: tuple[str, ...], flag: str) -> dict[str, str]:
     help="Colours file ('feature<tab>color') for a feature set. Repeatable.",
 )
 @click.option(
+    "--flatten-order",
+    "flatten_orders_raw",
+    metavar="NAME=PATH",
+    multiple=True,
+    help="Ranking used to flatten a feature set's overlaps, when that ranking differs from "
+    "--priority. Implies --flatten for that set. Repeatable.",
+)
+@click.option(
     "--flatten",
     is_flag=True,
     help="Pre-flatten overlapping BED regions to one label per base (usually unnecessary "
@@ -190,6 +198,7 @@ def cmd(
     sequence: Path | None,
     feature_sets_raw: tuple[str, ...],
     backgrounds_raw: tuple[str, ...],
+    flatten_orders_raw: tuple[str, ...],
     hierarchies_raw: tuple[str, ...],
     priorities_raw: tuple[str, ...],
     colors_raw: tuple[str, ...],
@@ -225,6 +234,7 @@ def cmd(
             sequence=sequence,
             feature_sets_raw=feature_sets_raw,
             backgrounds_raw=backgrounds_raw,
+            flatten_orders_raw=flatten_orders_raw,
             hierarchies_raw=hierarchies_raw,
             priorities_raw=priorities_raw,
             colors_raw=colors_raw,
@@ -270,6 +280,7 @@ def _build_spec(
     sequence: Path | None,
     feature_sets_raw: tuple[str, ...],
     backgrounds_raw: tuple[str, ...],
+    flatten_orders_raw: tuple[str, ...],
     hierarchies_raw: tuple[str, ...],
     priorities_raw: tuple[str, ...],
     colors_raw: tuple[str, ...],
@@ -284,7 +295,14 @@ def _build_spec(
     exclude_raw: tuple[str, ...],
 ) -> BuildSpec:
     if spec_path is not None:
-        conflicting = feature_sets_raw or db_id or sequence or backgrounds_raw or exclude_raw
+        conflicting = (
+            feature_sets_raw
+            or db_id
+            or sequence
+            or backgrounds_raw
+            or exclude_raw
+            or flatten_orders_raw
+        )
         if conflicting:
             raise click.UsageError(
                 "--spec cannot be combined with --id/--sequence/--feature-set/--background/"
@@ -303,6 +321,7 @@ def _build_spec(
         sequence=sequence,
         feature_beds=_named_path_map(feature_sets_raw, "--feature-set"),
         backgrounds=_named_str_map(backgrounds_raw, "--background"),
+        flatten_orders=_named_path_map(flatten_orders_raw, "--flatten-order"),
         hierarchies=_named_path_map(hierarchies_raw, "--hierarchy"),
         priorities=_named_path_map(priorities_raw, "--priority"),
         colors=_named_path_map(colors_raw, "--colors"),

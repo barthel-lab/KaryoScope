@@ -117,8 +117,31 @@ LTR   1  Transposon      LTR   3  Transposon      LTR   2  Transposon
       valid                    valid                    rejected
 ```
 
-Interior nodes need priorities only to satisfy that rule; they are never
-assigned to a k-mer directly.
+**Every node in the hierarchy needs a priority.** An unlisted node takes priority
+0, which outranks every node the file does list, so `build` rejects a file that
+omits one and reports the names it could not find. The root is exempt: it is
+never a child, so its priority is never compared.
+
+`build` adds the background leaf to the hierarchy itself, so that leaf appears in
+no hierarchy file. Left out of the priority file it outranks every real feature,
+and a feature sharing all its k-mers with unannotated sequence paints nothing.
+
+Interior nodes are never assigned to a k-mer, but their priorities decide every
+comparison: `plca` compares the two children of the common ancestor, which in any
+tree deeper than one level are interior nodes. Two subtrees are ranked against
+each other by the priorities of their roots.
+
+### Priorities and the flatten order
+
+Both settings rank labels, for different jobs. `priority:` is applied at index
+time by `plca`, to a k-mer claimed by several labels. `flatten` is applied before
+k-mers are extracted, to each base.
+
+The two rankings need not match. `flatten: true` on its own sorts the `priority:`
+values to get its order, which imposes one ranking on both jobs. To set them
+separately, give `flatten_order:` (or `--flatten-order`) its own file; it implies
+`flatten` for that set. With neither `flatten_order:` nor `priority:` set,
+`flatten` falls back to the order the labels appear in the BED.
 
 ### Colours
 
@@ -166,6 +189,33 @@ meaning "k-mer not in the reference at all"). The background label defaults to
 coloured grey (`#808080`). Set `background: null` in the spec file to disable
 gap-fill for a set. Where a BED already tiles the genome, no background records
 are produced.
+
+#### Background and the hierarchy root
+
+The background is an ordinary leaf and it sits at the root, so under LCA
+resolution a k-mer found in both a feature and the background resolves to
+`categorized` and paints nothing. The background competes with the features
+rather than absorbing only what they miss.
+
+What that costs depends on the leftover sequence:
+
+- **A set that already tiles needs no background.** The shipped `region`, `gene`
+  and `cytoband` sets cover every base.
+- **A background disjoint from the features by construction is safe.**
+  `nonrepeat` cannot contain a repeat.
+- **A background holding homologs of the features is not.** Annotating some
+  members of a repeat family, some paralogs of a gene family, or some arrays of
+  a satellite and leaving the rest to gap-fill costs the annotated members every
+  k-mer they share with the ones left out.
+
+In the third case, bring the leftovers into the tree as features of their own,
+under a shared parent with the annotated ones, so the shared k-mers resolve to
+that parent instead of the root. `prep-bed asat` does this for α-satellite:
+monomeric and divergent arrays become siblings of the named HOR arrays under
+`asat` rather than falling to the background.
+
+`build` places the background at the root only when the hierarchy does not name
+it. A hierarchy that names it explicitly puts it wherever it says.
 
 ### Fixed-k and variable-k
 

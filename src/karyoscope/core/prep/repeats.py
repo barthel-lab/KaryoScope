@@ -234,8 +234,9 @@ def from_repeatmasker(
         ]
         rows.append((background, RM_BACKGROUND_COLOR, ""))
         n_colors = write_colors(colors, name, rows)
+    n_priority = 0
     if priority is not None:
-        write_priority(priority, edges)
+        n_priority = write_priority(priority, edges, background=background)
 
     notes = [f"read {input_path} as the RepeatMasker '{dialect}' dialect"]
     unmapped = sorted(
@@ -261,6 +262,7 @@ def from_repeatmasker(
         hierarchy=hierarchy,
         n_edges=n_edges,
         priority=priority,
+        n_priority=n_priority,
         colors=colors,
         n_colors=n_colors,
         notes=notes,
@@ -384,8 +386,9 @@ def from_edta(
 
     n_records = write_bed(output, records)
     n_edges = write_hierarchy(hierarchy, EDTA_HIERARCHY)
+    n_priority = 0
     if priority is not None:
-        write_priority(priority, EDTA_HIERARCHY)
+        n_priority = write_priority(priority, EDTA_HIERARCHY, background=background)
 
     notes: list[str] = []
     if unmapped:
@@ -403,5 +406,6 @@ def from_edta(
         hierarchy=hierarchy,
         n_edges=n_edges,
         priority=priority,
+        n_priority=n_priority,
         notes=notes,
     )

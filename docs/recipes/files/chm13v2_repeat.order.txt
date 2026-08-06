@@ -1,0 +1,35 @@
+# Flatten order for the CHM13 v2 repeat set (build's `flatten_order:`), highest
+# priority (1) first:
+#   rRNA, scRNA, snRNA, srpRNA, tRNA, Satellite, RC, Retroposon, DNA, LTR, SINE,
+#   LINE, Simple_repeat, Low_complexity, Unknown
+# NOT the per-k-mer ordering -- that is chm13v2_repeat.priority.txt, and the two
+# differ.
+# Only the relative order of the 15 leaves is read. Interior nodes appear so the
+# file also spells out the tree; their values are inert, because a name that is
+# never a BED label cannot win a base. HKS's all-equal-or-all-distinct rule does
+# not apply here: these values are used to sort labels before k-mers are
+# extracted and are never handed to HKS.
+# 3-column 'child priority parent'.
+repeat	1	categorized
+Interspersed_Repeat	1	repeat
+RNA	1	Interspersed_Repeat
+rRNA	1	RNA
+scRNA	2	RNA
+snRNA	3	RNA
+srpRNA	4	RNA
+tRNA	5	RNA
+Transposable_Element	2	Interspersed_Repeat
+Class_I_Retrotransposition	1	Transposable_Element
+LINE	12	Class_I_Retrotransposition
+LINE-dependent_Retroposon	1	Class_I_Retrotransposition
+Retroposon	8	LINE-dependent_Retroposon
+SINE	11	LINE-dependent_Retroposon
+LTR	10	Class_I_Retrotransposition
+Class_II_DNA_Transposition	2	Transposable_Element
+DNA	9	Class_II_DNA_Transposition
+RC	7	Class_II_DNA_Transposition
+Unknown	15	Interspersed_Repeat
+Satellite	6	repeat
+Noninterspersed	2	repeat
+Low_complexity	14	Noninterspersed
+Simple_repeat	13	Noninterspersed
