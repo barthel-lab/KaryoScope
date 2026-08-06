@@ -707,7 +707,7 @@ def satellite(
     multiple=True,
     default=asat_prep.CLASSES,
     show_default=True,
-    help="alpha-satellite class to include. Repeatable; the default takes all three.",
+    help="alpha-satellite class to include. Repeatable; the default takes all four.",
 )
 @click.option("--name", default="asat", show_default=True, help="Feature-set name in the stanza.")
 @_seqid_options
@@ -742,10 +742,11 @@ def asat(
     S3C1H2-B and S3C1H2-C, not leaves called `A`, `B` and `C`.
 
     \b
-    All three alpha-satellite classes are included by default, and dropping one is
-    rarely what you want: `background` is a leaf at the hierarchy root, so any
-    alpha-satellite left to build's gap-fill takes with it every k-mer it shares
-    with a named array -- those resolve to the root and paint nothing.
+    Every alpha-satellite class is included by default. Dropping one leaves that
+    sequence to build's gap-fill, whose leaf sits at the hierarchy root, so every
+    k-mer a named array shares with it resolves to the root. On CHM13, excluding
+    `mon` and `dhor` puts 36.9% of array bases on the root, against 4.6% with
+    them included.
 
     \b
     Arrays are left flat under `alpha_hor`. Structure among them is a phylogeny

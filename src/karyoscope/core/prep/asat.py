@@ -280,9 +280,10 @@ def from_censat(
 ) -> PrepResult:
     """Turn a CenSat annotation into a per-array alpha-satellite feature set.
 
-    ``classes`` selects which alpha-satellite classes to include. The default takes
-    all three; dropping ``mon`` or ``dhor`` leaves that sequence to ``build``'s
-    gap-fill, which costs the named arrays every k-mer they share with it.
+    ``classes`` selects which alpha-satellite classes to include, by the class a
+    label resolves to rather than the one its record carries. The default takes
+    all four; dropping one leaves that sequence to ``build``'s gap-fill, which
+    costs the named arrays every k-mer they share with it.
 
     ``priority`` additionally writes a 3-column priority file ranking the
     classes (see :data:`CLASS_PRIORITY`), which resolves a k-mer shared between
@@ -318,12 +319,6 @@ def from_censat(
                 continue
             cls = censat_class(parts[3])
             if cls is None:
-                continue
-            if cls in NAME_ONLY_CLASSES:
-                # Its arrays are only wanted if some HOR class was selected.
-                if not any(c in classes for c in ("active_hor", "hor", "dhor")):
-                    continue
-            elif cls not in classes:
                 continue
             try:
                 start, end = int(parts[1]), int(parts[2])
@@ -361,6 +356,20 @@ def from_censat(
     for label in mixed_only:
         if not label_classes[label]:
             label_classes[label].add(home_class(label, "mixedAlpha"))
+
+    # Select on the label's resolved class, not the record's. In the older
+    # dialect a live array arrives inside a `hor` record and only becomes
+    # `active_hor` once the `L` rule has been applied, so filtering earlier
+    # would make `--class active_hor` match nothing there.
+    if set(classes) != set(CLASSES):
+        keep = {
+            label
+            for label, seen in label_classes.items()
+            if next(c for c in _PARENT_PRECEDENCE if c in seen) in classes
+        }
+        records = [r for r in records if r[3] in keep]
+        label_classes = {k: v for k, v in label_classes.items() if k in keep}
+        n_intervals = len({(r[0], r[1], r[2]) for r in records})
 
     records.sort(key=lambda r: (r[0], r[1], r[2], r[3]))
     n_records = write_bed(output, records)

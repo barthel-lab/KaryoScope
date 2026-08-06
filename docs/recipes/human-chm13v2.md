@@ -7,7 +7,7 @@ Rebuild the human T2T-CHM13v2.0 database's `chromosome`, `region`, `repeat` and 
 **Requirements:** `karyoscope`, `samtools`, `hks`, and UCSC's [`bigBedToBed`](https://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/bigBedToBed).
 **Cost:** roughly 25 GB of downloads, ~1 GB of intermediates, and a build that takes minutes at `-t 16` but needs substantial RAM — see [Resource requirements](../commands/build.md#resource-requirements).
 
-Three files in [`files/`](files/) are used below. They are shipped because nothing derives them: two encode curation (which chromosomes are acrocentric; which repeat class outranks which) and one is an accession mapping.
+Five files in [`files/`](files/) are used below. They are shipped because nothing derives them: four encode curation (which chromosomes are acrocentric; how repeat classes rank per base and per k-mer; how `exon`, `intron` and `intergenic` rank) and one is an accession mapping.
 
 ## 1. Genome
 
@@ -108,23 +108,23 @@ sha256sum chm13_repeat.bed
 
 RepeatMasker names each element `name#class/family`, as in `L1MA#LINE/L1`. `prep-bed` keeps the class, giving the 15 leaves the hierarchy names. The colours file groups the five RNA leaves into a single legend row, since they share a colour.
 
-Repeat annotations overlap heavily, and this database resolves that by assigning each base to the highest-priority class. The order is provided, and passed to [the build](#6-build) below:
+Repeat annotations overlap heavily, so this set needs two separate rankings. Both are provided and both are passed to [the build](#6-build) below.
+
+`flatten_order:` assigns each base to one class before k-mers are extracted, which is what makes this set a hard partition:
 
 ```bash
 cp docs/recipes/files/chm13v2_repeat.order.txt .
 ```
 
-This set needs **two** orderings, and they are not the same file.
-
-`flatten_order:` picks one class per base *before* k-mers are extracted — that is what produces the hard partition this set's BED is. `priority:` decides where a k-mer claimed by several classes lands *at index time*. Passing the flatten order as `priority:` too would force a fully-distinct ranking onto the second job and collapse every shared k-mer onto one class.
+`priority:` decides where a k-mer claimed by several classes lands at index time:
 
 ```bash
 cp docs/recipes/files/chm13v2_repeat.priority.txt .
 ```
 
-Nearly every value in the resolution file is `1`. Siblings that tie fall back to the standard lowest common ancestor, which is what puts interior labels in the annotation — `Transposable_Element` 152 Mb, `Interspersed_Repeat` 105 Mb, `Class_I_Retrotransposition` 48 Mb.
+Nearly every value in the priority file is `1`. Tied siblings resolve to their lowest common ancestor, which is what puts interior labels in the annotation: `Transposable_Element` 152 Mb, `Interspersed_Repeat` 105 Mb, `Class_I_Retrotransposition` 48 Mb. Passing the flatten order here instead would impose its fully distinct ranking and collapse every shared k-mer onto a single class.
 
-Three values are not `1`. `nonrepeat` is `2`, so a k-mer a repeat class shares with unannotated sequence stays on the repeat rather than resolving to the root. `Satellite` is `2` and `Noninterspersed` is `3`, ordering them after `Interspersed_Repeat` under `repeat`.
+Three values are not `1`. `nonrepeat` is `2`, so a k-mer a repeat class shares with unannotated sequence stays on the repeat rather than resolving to the root. `Satellite` is `2` and `Noninterspersed` is `3`, placing them after `Interspersed_Repeat` under `repeat`.
 
 ## 5. `gene` — RefSeq
 
@@ -153,7 +153,7 @@ sha256sum chm13_gene.bed
 # 03ae30a1a9c90a574b96eb4dfaa34a0c834ef51f5b3eec4181f39d4e8c9063e9   (612,909 rows)
 ```
 
-`prep-bed` writes the hierarchy and colours files itself. What it cannot derive is how a k-mer claimed by more than one of the three should resolve, so that ordering is provided:
+`prep-bed` writes the hierarchy and colours files itself. It cannot derive how a k-mer claimed by more than one of the three leaves should resolve, so that ranking is provided:
 
 ```bash
 cp docs/recipes/files/chm13v2_gene.priority.txt .
@@ -191,8 +191,8 @@ feature_sets:
   - name: repeat
     bed: chm13_repeat.bed
     hierarchy: chm13_repeat.tsv
-    flatten_order: chm13v2_repeat.order.txt   # one class per base, by the paper's order
-    priority: chm13v2_repeat.priority.txt     # and how a shared k-mer resolves
+    flatten_order: chm13v2_repeat.order.txt   # one class per base, in the paper's order
+    priority: chm13v2_repeat.priority.txt     # how a shared k-mer resolves
     colors: chm13_repeat.colors.tsv
     background: nonrepeat
   - name: gene

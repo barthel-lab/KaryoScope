@@ -117,32 +117,31 @@ LTR   1  Transposon      LTR   3  Transposon      LTR   2  Transposon
       valid                    valid                    rejected
 ```
 
-**Every node in the hierarchy needs a priority.** `build` rejects a file that
-omits one rather than filling in a default, because there is no safe default: an
-unlisted node would take the highest priority and outrank everything you did
-list. The node most easily forgotten is the **background**, since `build` adds
-that leaf to the hierarchy itself and so it never appears in a hierarchy file —
-left out of the priority file, the gap-fill beats every real feature and any
-feature sharing all its k-mers with unannotated sequence stops painting. The
-root is the one exception: it is never a child, so its priority is never read.
+**Every node in the hierarchy needs a priority.** An unlisted node takes priority
+0, which outranks every node the file does list, so `build` rejects a file that
+omits one and reports the names it could not find. The root is exempt: it is
+never a child, so its priority is never compared.
 
-Interior nodes are never *assigned* to a k-mer as a label, but their priorities
-decide the outcome of every contest: `plca` compares the two children of the
-common ancestor, which for any deep tree are interior nodes, and then returns
-the original claimant. Ranking two subtrees against each other is done entirely
-through the priorities of their roots.
+`build` adds the background leaf to the hierarchy itself, so that leaf appears in
+no hierarchy file. Left out of the priority file it outranks every real feature,
+and a feature sharing all its k-mers with unannotated sequence paints nothing.
 
-### Priorities versus the flatten order
+Interior nodes are never assigned to a k-mer, but their priorities decide every
+comparison: `plca` compares the two children of the common ancestor, which in any
+tree deeper than one level are interior nodes. Two subtrees are ranked against
+each other by the priorities of their roots.
 
-A priority file passed as `priority:` is used at **index** time, per k-mer, by
-`plca`. `flatten: true` uses it at **annotation** time, per base, to pick one
-label before k-mers are extracted — `build` derives that order by sorting the
-same values.
+### Priorities and the flatten order
 
-These are different questions and the answers need not match. A set that wants a
-specific per-base partition *and* per-k-mer resolution should say so with two
-files, because one file forces the same ranking on both. If you only want the
-partition, pass `flatten: true` and leave `priority:` unset.
+Both settings rank labels, for different jobs. `priority:` is applied at index
+time by `plca`, to a k-mer claimed by several labels. `flatten` is applied before
+k-mers are extracted, to each base.
+
+The two rankings need not match. `flatten: true` on its own sorts the `priority:`
+values to get its order, which imposes one ranking on both jobs. To set them
+separately, give `flatten_order:` (or `--flatten-order`) its own file; it implies
+`flatten` for that set. With neither `flatten_order:` nor `priority:` set,
+`flatten` falls back to the order the labels appear in the BED.
 
 ### Colours
 
@@ -193,34 +192,30 @@ are produced.
 
 #### Background and the hierarchy root
 
-The background is an ordinary leaf, and it sits at the root. Under LCA
-resolution a k-mer found in both a feature and the background therefore
-resolves to `categorized` — the root — and paints nothing. Every k-mer the
-background shares with your features is lost, so the background is not a
-neutral catch-all but a competitor for them.
+The background is an ordinary leaf and it sits at the root, so under LCA
+resolution a k-mer found in both a feature and the background resolves to
+`categorized` and paints nothing. The background competes with the features
+rather than absorbing only what they miss.
 
-That is harmless when the leftover sequence is unrelated to the features, and
-costly when it is not. Before adding a background, ask whether the bases it
-will absorb contain copies of the thing being annotated:
+What that costs depends on the leftover sequence:
 
-- **Features that tile** need no background at all. The shipped `region`,
-  `gene` and `cytoband` sets cover every base, so nothing is left to compete.
-- **A background that is disjoint by construction** is safe. `nonrepeat` cannot
-  contain a repeat.
-- **A background holding homologs of your features is not.** Annotating some
+- **A set that already tiles needs no background.** The shipped `region`, `gene`
+  and `cytoband` sets cover every base.
+- **A background disjoint from the features by construction is safe.**
+  `nonrepeat` cannot contain a repeat.
+- **A background holding homologs of the features is not.** Annotating some
   members of a repeat family, some paralogs of a gene family, or some arrays of
-  a satellite, and leaving the rest to gap-fill, costs the annotated members
-  every k-mer they share with the ones left out.
+  a satellite and leaving the rest to gap-fill costs the annotated members every
+  k-mer they share with the ones left out.
 
-The fix in the third case is to bring the leftovers into the tree as their own
-features, under a shared parent with the ones you care about, so the shared
-k-mers resolve to that parent instead of the root. `prep-bed asat` does this
-for α-satellite: monomeric and divergent arrays become siblings of the named
-HOR arrays under `asat`, rather than falling to the background.
+In the third case, bring the leftovers into the tree as features of their own,
+under a shared parent with the annotated ones, so the shared k-mers resolve to
+that parent instead of the root. `prep-bed asat` does this for α-satellite:
+monomeric and divergent arrays become siblings of the named HOR arrays under
+`asat` rather than falling to the background.
 
-Note that a hierarchy you supply need not place the background at the root —
-`build` puts it there only when you leave it out. Naming it explicitly puts it
-wherever you say.
+`build` places the background at the root only when the hierarchy does not name
+it. A hierarchy that names it explicitly puts it wherever it says.
 
 ### Fixed-k and variable-k
 

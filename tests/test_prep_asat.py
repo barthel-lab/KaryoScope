@@ -176,6 +176,26 @@ def test_excluding_a_class_drops_it_and_warns(censat_bed, tmp_path):
     assert any("resolve to the root and paint nothing" in n for n in result.notes)
 
 
+def test_selecting_active_hor_works_in_either_dialect(tmp_path):
+    """Selection is on the label's resolved class, not the record's.
+
+    In the older dialect a live array arrives inside a `hor` record and only
+    becomes `active_hor` once the `L` rule is applied, so filtering on the
+    record's class would make `--class active_hor` match nothing there.
+    """
+    legacy = tmp_path / "legacy.bed"
+    legacy.write_text("chr1\t100\t200\thor_1_5(S1C1/5/19H1L)\nchr1\t200\t260\thor_1_1(S3C1H2-A)\n")
+    canonical = tmp_path / "canon.bed"
+    canonical.write_text(
+        "chr1\t100\t200\tactive_hor(S1C1/5/19H1L)\nchr1\t200\t260\thor(S3C1H2-A)\n"
+    )
+    for src in (legacy, canonical):
+        _result, records, edges = run(src, tmp_path, classes=("active_hor",))
+        assert {r[3] for r in records} == {"S1C1_5_19H1L"}
+        assert edges["S1C1_5_19H1L"] == "active_hor"
+        assert "S3C1H2-A" not in edges  # inactive, not selected
+
+
 def test_unknown_class_is_rejected(censat_bed, tmp_path):
     with pytest.raises(PrepError, match="unknown"):
         run(censat_bed, tmp_path, classes=("hsat3",))

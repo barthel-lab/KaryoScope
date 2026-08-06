@@ -85,7 +85,7 @@ Format-specific options of note:
 | `gff-gene` | `--feature-type TYPE` | Column-3 type read as an exon (default `exon`). |
 | `cytoband` | `--primary-pattern REGEX` | Which seqids carry banding (default `^chr([0-9]+\|X\|Y)$`). |
 | `censat` | `--priority PATH` | Priority file ranking centromeric over rDNA over arm. |
-| `asat` | `--class CLASS` | α-satellite class to include: `hor`, `dhor`, `mon`. Repeatable; default all three. |
+| `asat` | `--class CLASS` | α-satellite class to include: `active_hor`, `hor`, `dhor`, `mon`. Repeatable; default all four. |
 | `satellite` | `--satellite LABEL` | Leaf label for the bands, e.g. `CEN180` or `aSat`. |
 | `satellite` | `--merge-gap N` | Merge monomers within N bases into one band (default 10). |
 | `satellite` | `--cluster-gap N` | Gap for clustering bands into the centromere core (default 500000). |
@@ -132,17 +132,28 @@ Sequences with no CenSat annotation at all are left uncovered and reported for `
 
 ### `asat`
 
-The same CenSat input as `censat`, read at per-array resolution instead of per class: `hor_1_5(S1C1/5/19H1L)` becomes a record labelled `S1C1_5_19H1L`, where `censat` would label it `hor`. `/` becomes `_`, because `build` writes one FASTA per leaf named by the label.
+The same CenSat input as `censat`, read per array instead of per class: `hor_1_5(S1C1/5/19H1L)` becomes a record labelled `S1C1_5_19H1L`, where `censat` would label it `hor`. `/` becomes `_`, because `build` writes one FASTA per leaf named by the label.
+
+The hierarchy mirrors the shipped `region` set, so the two describe the same arrays under the same names:
+
+```
+asat            → categorized
+  alpha_hor     → asat
+    active_hor  → alpha_hor
+    hor         → alpha_hor
+    dhor        → alpha_hor
+  mon           → asat
+```
+
+Arrays sit flat under their class. A label that appears in both a `hor` and a `dhor` interval is placed under `dhor`.
 
 CenSat names more than one array on intervals where two arrays' sequence is interleaved. Each named array gets its own record over the full interval, so a k-mer found in both resolves to their common ancestor. **Do not pass `build --flatten` for this set** — flattening assigns each base to a single label, which puts the shared sequence on whichever array sorts first.
 
 Continuation names are expanded before labels are read. `hor_1_1(S3C1H2-A,B,C)` names S3C1H2-A, S3C1H2-B and S3C1H2-C; a bare capital continues the previous name with its variant token (`-A`, or the `L` of a live array) replaced. Splitting on the comma alone yields leaves called `A`, `B` and `C`.
 
-The hierarchy is `asat → categorized`, with `alpha_hor`, `dhor` and `mon` beneath it and every array flat under its class. A label named in both a `hor` and a `dhor` interval is placed under `dhor`.
+Every class is included by default. Dropping one leaves that α-satellite to `build`'s gap-fill, and the gap-fill leaf sits at the hierarchy root, so every k-mer a named array shares with it resolves to the root. The shared sequence is the conserved α-satellite monomer core: on CHM13, excluding `mon` and `dhor` puts 36.9% of array bases on the root, against 4.6% with them included. See [background and the hierarchy root](build.md#background-and-the-hierarchy-root).
 
-Structure among the arrays is a phylogeny no annotation file contains. Derive it separately — mashtree over the per-array sequences, say — and replace the `alpha_hor` star; the rest of the scaffold is unaffected.
-
-All three classes are included by default. Dropping one leaves that α-satellite to `build`'s gap-fill, and `background` is a leaf at the hierarchy root: every k-mer a named array shares with it then resolves to the root. The shared sequence here is the conserved α-satellite monomer core, so on CHM13 excluding `dhor` and `mon` costs the named arrays a large fraction of their bases. See [`build`'s note on background placement](build.md#background-and-the-hierarchy-root).
+Arrays are left flat within their class because the structure among them is a phylogeny no annotation file carries. To add it, derive the tree separately — mashtree over the per-array sequences, for example — and replace the flat `alpha_hor` level. Nothing else changes.
 
 ### `satellite`
 
