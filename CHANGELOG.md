@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`karyoscope prep-bed asat` — a per-array alpha-satellite feature set from a
+  CenSat annotation.** Where `prep-bed censat` collapses CenSat onto its 14
+  broad classes, this reads the same file at per-array resolution:
+  `hor_1_5(S1C1/5/19H1L)` becomes a record labelled `S1C1_5_19H1L`. On CHM13 v2
+  it yields 449 records over 84 arrays, covering 85,669,576 bp.
+
+  Two properties of the source are handled that a naive parse gets wrong.
+  CenSat lists **more than one array** on intervals where two arrays' sequence
+  is interleaved; each named array gets its own record over the full interval,
+  so HKS resolves the shared k-mers to their common ancestor instead of the BED
+  asserting an ownership the annotation does not claim. And **continuation
+  names are bare suffixes** — `hor_1_1(S3C1H2-A,B,C)` names S3C1H2-A, S3C1H2-B
+  and S3C1H2-C, so splitting on the comma alone produces leaves called `A`, `B`
+  and `C`.
+
+  All three alpha-satellite classes (`hor`, `dhor`, `mon`) are included by
+  default and nested under a shared `asat` parent. Excluding a class leaves that
+  sequence to the gap-fill, and since `background` is a leaf at the hierarchy
+  root, every k-mer the named arrays share with it then resolves to the root.
+  For alpha-satellite that shared sequence is the conserved monomer core, so the
+  cost is most of the arrays' bases rather than a rounding error.
+
+### Documentation
+
+- **`build`: how background placement interacts with the hierarchy root.** The
+  gap-fill leaf sits at the root, so any k-mer it shares with a real feature
+  resolves to `categorized` and paints nothing. Records when that is harmless
+  (features that tile; a background disjoint by construction, as `nonrepeat` is)
+  and when it silently costs a feature set most of its resolution (a background
+  holding homologs of the features — other members of a repeat family, other
+  arrays of a satellite), plus the fix: bring the leftovers into the tree under
+  a shared parent instead of leaving them to gap-fill.
+
 - **`karyoscope info <archive>` validates a database archive's layout.** Given a
   `.tar.gz`, `.tgz`, or `.tar`, `info` now reports the top-level directory, the
   extracted size, whether the layout is valid, and the same manifest and
