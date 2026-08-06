@@ -108,11 +108,23 @@ sha256sum chm13_repeat.bed
 
 RepeatMasker names each element `name#class/family`, as in `L1MA#LINE/L1`. `prep-bed` keeps the class, giving the 15 leaves the hierarchy names. The colours file groups the five RNA leaves into a single legend row, since they share a colour.
 
-Repeat annotations overlap heavily, and this database resolves that by assigning each base to the highest-priority class. The priority order is provided, and passed to [the build](#6-build) below:
+Repeat annotations overlap heavily, and this database resolves that by assigning each base to the highest-priority class. The order is provided, and passed to [the build](#6-build) below:
+
+```bash
+cp docs/recipes/files/chm13v2_repeat.order.txt .
+```
+
+This set needs **two** orderings, and they are not the same file.
+
+`flatten_order:` picks one class per base *before* k-mers are extracted — that is what produces the hard partition this set's BED is. `priority:` decides where a k-mer claimed by several classes lands *at index time*. Passing the flatten order as `priority:` too would force a fully-distinct ranking onto the second job and collapse every shared k-mer onto one class.
 
 ```bash
 cp docs/recipes/files/chm13v2_repeat.priority.txt .
 ```
+
+Nearly every value in the resolution file is `1`. Siblings that tie fall back to the standard lowest common ancestor, which is what puts interior labels in the annotation — `Transposable_Element` 152 Mb, `Interspersed_Repeat` 105 Mb, `Class_I_Retrotransposition` 48 Mb.
+
+Three values are not `1`. `nonrepeat` is `2`, so a k-mer a repeat class shares with unannotated sequence stays on the repeat rather than resolving to the root. `Satellite` is `2` and `Noninterspersed` is `3`, ordering them after `Interspersed_Repeat` under `repeat`.
 
 ## 5. `gene` — RefSeq
 
@@ -173,8 +185,8 @@ feature_sets:
   - name: repeat
     bed: chm13_repeat.bed
     hierarchy: chm13_repeat.tsv
-    priority: chm13v2_repeat.priority.txt
-    flatten: true               # one class per base, by the priority order
+    flatten_order: chm13v2_repeat.order.txt   # one class per base, by the paper's order
+    priority: chm13v2_repeat.priority.txt     # and how a shared k-mer resolves
     colors: chm13_repeat.colors.tsv
     background: nonrepeat
   - name: gene

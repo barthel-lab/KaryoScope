@@ -1,0 +1,34 @@
+# Per-k-mer resolution for the CHM13 v2 repeat set (build's `priority:`).
+# NOT the flatten order -- that is chm13v2_repeat.order.txt, and the two differ.
+# Nearly every value here is 1: siblings that tie fall back to the standard
+# lowest common ancestor, which is what puts interior labels
+# (Transposable_Element, Interspersed_Repeat, ...) in the shipped annotation.
+# Only three distinctions do any work:
+#   repeat(1) < nonrepeat(2)               a k-mer a repeat shares with
+#                                          unannotated sequence stays a repeat
+#                                          instead of resolving to the root
+#   Interspersed_Repeat(1) < Satellite(2) < Noninterspersed(3)
+repeat	1	categorized
+Interspersed_Repeat	1	repeat
+RNA	1	Interspersed_Repeat
+rRNA	1	RNA
+scRNA	1	RNA
+snRNA	1	RNA
+srpRNA	1	RNA
+tRNA	1	RNA
+Transposable_Element	1	Interspersed_Repeat
+Class_I_Retrotransposition	1	Transposable_Element
+LINE	1	Class_I_Retrotransposition
+LINE-dependent_Retroposon	1	Class_I_Retrotransposition
+Retroposon	1	LINE-dependent_Retroposon
+SINE	1	LINE-dependent_Retroposon
+LTR	1	Class_I_Retrotransposition
+Class_II_DNA_Transposition	1	Transposable_Element
+DNA	1	Class_II_DNA_Transposition
+RC	1	Class_II_DNA_Transposition
+Unknown	1	Interspersed_Repeat
+Satellite	2	repeat
+Noninterspersed	3	repeat
+Low_complexity	1	Noninterspersed
+Simple_repeat	1	Noninterspersed
+nonrepeat	2	categorized
