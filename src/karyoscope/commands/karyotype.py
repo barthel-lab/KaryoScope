@@ -30,18 +30,11 @@ import click
 from karyoscope import paths, preflight
 from karyoscope import progress as _progress
 from karyoscope.commands._options import parse_named_path, split_comma
-from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.karyotype_run import karyotype_run
 from karyoscope.core.scaffold import DEFAULT_HUMAN_ACROCENTRICS
 from karyoscope.core.scaffold_run import InputSpec
 from karyoscope.exceptions import (
-    CentromereError,
-    DatabaseLayoutError,
-    DatabaseNotFoundError,
     KaryoscopeError,
-    KaryotypeError,
-    ManifestError,
-    ScaffoldError,
 )
 
 logger = logging.getLogger(__name__)
@@ -516,17 +509,7 @@ def cmd(
             colors_path=colors_path,
             seed_human_chromosomes=not no_human_chroms,
         )
-    except (
-        KaryotypeError,
-        CentromereError,
-        ScaffoldError,
-        DatabaseNotFoundError,
-        DatabaseLayoutError,
-        ManifestError,
-        ToolNotFoundError,
-        ExternalToolError,
-        KaryoscopeError,
-    ) as e:
+    except KaryoscopeError as e:
         raise click.ClickException(str(e)) from e
 
     click.echo("Wrote:")

@@ -35,10 +35,7 @@ from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.exceptions import (
     BinError,
-    DatabaseLayoutError,
-    DatabaseNotFoundError,
     KaryoscopeError,
-    ManifestError,
 )
 from karyoscope.manifest import validate_database_layout
 
@@ -148,12 +145,7 @@ def cmd(
                     manifest.hierarchy,
                 )
                 leaf_set = None
-        except (
-            DatabaseNotFoundError,
-            DatabaseLayoutError,
-            ManifestError,
-            KaryoscopeError,
-        ) as e:
+        except KaryoscopeError as e:
             raise click.ClickException(str(e)) from e
     elif db_id is not None:
         raise click.UsageError("--db requires --feature-set; pass both or neither")

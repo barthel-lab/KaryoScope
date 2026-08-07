@@ -22,12 +22,9 @@ from karyoscope import paths
 from karyoscope.commands._options import parse_named_path
 from karyoscope.core.build import BuildResult, build_database
 from karyoscope.core.buildspec import BuildSpec
-from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.exceptions import (
     BuildError,
-    DatabaseLayoutError,
     KaryoscopeError,
-    ManifestError,
 )
 
 logger = logging.getLogger(__name__)
@@ -260,14 +257,7 @@ def cmd(
             force=force,
             keep_intermediates=keep_intermediates,
         )
-    except (
-        BuildError,
-        ToolNotFoundError,
-        ExternalToolError,
-        DatabaseLayoutError,
-        ManifestError,
-        KaryoscopeError,
-    ) as e:
+    except KaryoscopeError as e:
         raise click.ClickException(str(e)) from e
 
     _report(result)

@@ -35,15 +35,10 @@ import click
 from karyoscope import paths
 from karyoscope import progress as _progress
 from karyoscope.commands._options import parse_named_path, split_comma
-from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.scaffold import DEFAULT_HUMAN_ACROCENTRICS
 from karyoscope.core.scaffold_run import InputSpec, scaffold_run
 from karyoscope.exceptions import (
-    DatabaseLayoutError,
-    DatabaseNotFoundError,
     KaryoscopeError,
-    ManifestError,
-    ScaffoldError,
 )
 
 logger = logging.getLogger(__name__)
@@ -337,15 +332,7 @@ def cmd(
             auto=auto,
             output_dir=output_dir,
         )
-    except (
-        ScaffoldError,
-        DatabaseNotFoundError,
-        DatabaseLayoutError,
-        ManifestError,
-        ToolNotFoundError,
-        ExternalToolError,
-        KaryoscopeError,
-    ) as e:
+    except KaryoscopeError as e:
         raise click.ClickException(str(e)) from e
 
     # --- summarise on stdout ----------------------------------------
