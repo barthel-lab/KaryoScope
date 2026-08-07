@@ -6,6 +6,7 @@ Complete, runnable recipes for rebuilding KaryoScope databases from published so
 | --- | --- | --- |
 | [human-chm13v2.md](human-chm13v2.md) | `HKS_human_CHM13_v2` | `chromosome`, `region`, `repeat`, `gene` |
 | [arabidopsis-colcen.md](arabidopsis-colcen.md) | `HKS_arabidopsis_ColCEN` | `chromosome`, `region`, `repeat`, `gene` |
+| [hpv-pave.md](hpv-pave.md) | `HKS_hpv_PaVE` | `type`, `gene` |
 
 Each recipe gives the exact download URL for every input, a checksum to verify it, the [`prep-bed`](../commands/prep-bed.md) command that converts it, and the [`build`](../commands/build.md) spec that assembles the result.
 
@@ -38,7 +39,7 @@ This is why every input here is pinned by checksum rather than by name.
 
 ## Supporting files
 
-[`files/`](files/) holds the few inputs that nothing derives, because they encode curation or a naming convention rather than data:
+[`files/`](files/) holds the few files a recipe needs that nothing derives — curation, a naming convention, or a download that has no single URL:
 
 | File | Used by |
 | --- | --- |
@@ -46,9 +47,12 @@ This is why every input here is pinned by checksum rather than by name.
 | `colcen_chromosome.hierarchy.txt` | which Col-CEN sequences are nuclear |
 | `chm13v2_repeat.priority.txt` | the published order in which repeat classes win an overlap |
 | `chm13v2_refseq_to_chr.tsv` | RefSeq accession → chromosome name |
+| `fetch_pave_human_ref.py` | walks PaVE's per-genome API into the one JSON input the HPV recipe converts |
 
 Every other hierarchy and priority file in these recipes is written by `prep-bed` as it converts, so there is nothing to supply.
 
 ## A note on exact reproduction
 
-These recipes rebuild the feature sets, and the BEDs they produce are byte-identical to the ones the shipped databases were built from — with one deliberate exception, described in each recipe: the shipped BEDs label the mitochondrion with a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. The recipes use `exclude:`. A label claims the sequence for the feature set; `exclude:` leaves it uncovered, so it reads as `none` everywhere.
+Where a recipe rebuilds a shipped database, the BEDs it produces are byte-identical to the ones that database was built from — with one deliberate exception, described in each recipe: the shipped BEDs label the mitochondrion with a literal `exclude` *label*, a convention that predates `build`'s `exclude:` list. The recipes use `exclude:`. A label claims the sequence for the feature set; `exclude:` leaves it uncovered, so it reads as `none` everywhere.
+
+The HPV recipe builds a database that is not shipped, so it pins its inputs and outputs by checksum instead.

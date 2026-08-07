@@ -196,3 +196,4 @@ karyoscope karyotype -i Col-CEN_v1.2=Col-CEN_v1.2.fasta.gz \
 - [`karyoscope prep-bed`](../commands/prep-bed.md)
 - [`karyoscope build`](../commands/build.md)
 - [Recipe: human CHM13v2](human-chm13v2.md)
+- [Recipe: HPV from PaVE](hpv-pave.md)

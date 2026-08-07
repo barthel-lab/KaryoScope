@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`karyoscope prep-bed pave` — a papillomavirus `gene` feature set from PaVE
+  genome records.** Leaves are the ORFs — `E6`, `E7`, `E1`, `E2`, the
+  genus-specific `E5_*`, `E10`, `L2`, `L1` — plus the `URR`, grouped `early` and
+  `late`.
+
+  The spliced transcripts `E1^E4`, `E8^E2` and `E6*` are excluded: they lie
+  wholly inside the ORFs they are spliced from — 100% of their bases across
+  PaVE's 224 human reference genomes — so a ranking that prefers the primary ORF
+  leaves them holding no sequence. The `E1BS` and `E2BS` binding motifs are
+  excluded as 12–20 bp, shorter than any usable k. A feature name with no leaf
+  raises rather than being dropped to the gap-fill.
+
+  The reading frames overlap, so `--priority` writes a ranking in genome order
+  rather than the set being flattened: 10.2% of bases carry more than one
+  annotated feature, 1.2% once the spliced transcripts are dropped. A feature
+  spanning the origin of a circular genome becomes two records with one label.
+
+  A PaVE record also carries the genome sequence and the ICTV lineage, so
+  `--fasta` writes the FASTA for `build`'s `sequence:` and `--taxonomy` writes
+  the genus → species → type hierarchy for a `type` set whose BED comes from
+  `prep-bed fai`.
+
+- **A recipe for an HPV database, `docs/recipes/hpv-pave.md`.** 224 genomes,
+  1.68 Mb, a 2 s build and a 10.5 MB database with `type` and `gene` sets. Both
+  the input records and every derived file are pinned by checksum, and the
+  download script ships in `docs/recipes/files/`.
+
 - **`karyoscope prep-bed asat` — a per-array alpha-satellite feature set from a
   CenSat annotation.** Where `prep-bed censat` collapses CenSat onto its 14
   broad classes, `asat` reads the same file per array: `hor_1_5(S1C1/5/19H1L)`
