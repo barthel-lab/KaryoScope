@@ -9,12 +9,16 @@ import pytest
 from karyoscope.core.io.hierarchy import REQUIRED_ROOT, Hierarchy, HierarchyRow
 from karyoscope.core.smooth import (
     DEFAULT_MAX_GAP,
+    FeaturesForWorker,
     HierarchyIndex,
     Interval,
     SmoothError,
     _chunked_seq_reader_from_handle,
+    _smooth_one_seq_for_fs,
     merge_adjacent,
+    process_seq_chunk,
     smooth_intervals,
+    worker_initializer,
 )
 
 # --- Test fixture: a small but non-trivial hierarchy ----------------
@@ -356,3 +360,135 @@ def test_chunked_reader_empty_input() -> None:
     fh = io.StringIO("")
     chunks = list(_chunked_seq_reader_from_handle(fh, chunk_size=100))
     assert chunks == []
+
+
+# --- the multiprocessing pool path -----------------------------------
+#
+# worker_initializer + process_seq_chunk are how annotate's KMC-backend
+# smoothing actually runs; until now only the functions they call had
+# direct tests. The oracle is _smooth_one_seq_for_fs applied per
+# sequence in-process; the pool path must produce byte-identical lines
+# through chunk parsing, worker initialisation in a fresh interpreter
+# (spawn), and both output modes.
+
+_POOL_CHUNK_LINES = [
+    "seq1\t0\t100\t1\n",
+    "seq1\t100\t104\t0\n",  # short novel run flanked by rA: smoothing fodder
+    "seq1\t104\t200\t1\n",
+    "seq1\t200\t260\t2\n",
+    "seq2\t0\t50\t1\n",
+    "seq2\t50\t55\t3\n",  # rC island inside rA: promotes toward the LCA
+    "seq2\t55\t120\t1\n",
+    "seq3\t0\t40\t3\n",
+]
+
+
+def _region_worker_state(region_hierarchy: Hierarchy):
+    index = HierarchyIndex.from_hierarchy(region_hierarchy, "region")
+    feats = FeaturesForWorker(
+        feature_set="region",
+        id_to_name={1: "rA", 2: "rB", 3: "rC"},
+        novel_label="novel",
+    )
+    return {"region": index}, {"region": feats}, ["region"]
+
+
+def _expected_by_seq(region_hierarchy: Hierarchy):
+    """The oracle: per-sequence direct smoothing, no chunking, no pool."""
+    indices, feats, _ = _region_worker_state(region_hierarchy)
+    by_seq: dict[str, list[tuple[int, int, int]]] = {}
+    for line in _POOL_CHUNK_LINES:
+        seq, start, end, fid = line.split("\t")
+        by_seq.setdefault(seq, []).append((int(start), int(end), int(fid)))
+    return {
+        seq: _smooth_one_seq_for_fs(
+            seq_name=seq,
+            intervals_raw=raw,
+            feature_set="region",
+            index=indices["region"],
+            features=feats["region"],
+        )
+        for seq, raw in by_seq.items()
+    }
+
+
+def test_process_seq_chunk_matches_direct_smoothing(
+    region_hierarchy: Hierarchy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chunk parsing and per-FS orchestration reproduce the direct path,
+    and a chunk boundary between sequences changes nothing."""
+    import karyoscope.core.smooth as sm
+
+    indices, feats, fs_list = _region_worker_state(region_hierarchy)
+    monkeypatch.setattr(sm, "_worker_indices", indices)
+    monkeypatch.setattr(sm, "_worker_features_by_fs", feats)
+    monkeypatch.setattr(sm, "_worker_feature_sets", fs_list)
+    monkeypatch.setattr(sm, "_worker_tmpdir_by_fs", None)
+
+    expected = _expected_by_seq(region_hierarchy)
+
+    one_chunk = process_seq_chunk(list(_POOL_CHUNK_LINES))["region"]
+    assert set(one_chunk) == set(expected)
+    for seq, (smo, pre) in expected.items():
+        assert one_chunk[seq] == (smo, pre)
+
+    split = [
+        [line for line in _POOL_CHUNK_LINES if line.startswith("seq1")],
+        [line for line in _POOL_CHUNK_LINES if not line.startswith("seq1")],
+    ]
+    merged: dict[str, object] = {}
+    for chunk in split:
+        merged.update(process_seq_chunk(chunk)["region"])
+    assert merged == one_chunk
+
+
+def test_process_seq_chunk_assembly_mode_writes_the_same_lines(
+    region_hierarchy: Hierarchy, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Assembly mode writes per-sequence files holding exactly the lines
+    reads mode returns, and reports their line counts."""
+    import karyoscope.core.smooth as sm
+
+    indices, feats, fs_list = _region_worker_state(region_hierarchy)
+    fs_dir = tmp_path / "region"
+    fs_dir.mkdir()
+    monkeypatch.setattr(sm, "_worker_indices", indices)
+    monkeypatch.setattr(sm, "_worker_features_by_fs", feats)
+    monkeypatch.setattr(sm, "_worker_feature_sets", fs_list)
+    monkeypatch.setattr(sm, "_worker_tmpdir_by_fs", {"region": fs_dir})
+
+    counts = process_seq_chunk(list(_POOL_CHUNK_LINES))["region"]
+    expected = _expected_by_seq(region_hierarchy)
+
+    for seq, (smo, pre) in expected.items():
+        n_pre, n_smo = counts[seq]
+        assert (n_pre, n_smo) == (len(pre), len(smo))
+        assert (fs_dir / f"{seq}.smo").read_text() == "".join(smo)
+        assert (fs_dir / f"{seq}.pre").read_text() == "".join(pre)
+
+
+@pytest.mark.slow
+def test_pool_path_matches_single_process(region_hierarchy: Hierarchy) -> None:
+    """The real spawn pool — worker_initializer in a fresh interpreter,
+    initargs pickled, chunks distributed — matches the direct path."""
+    import multiprocessing as mp
+
+    indices, feats, fs_list = _region_worker_state(region_hierarchy)
+    chunks = [
+        [line for line in _POOL_CHUNK_LINES if line.startswith(seq)]
+        for seq in ("seq1", "seq2", "seq3")
+    ]
+
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(
+        processes=2,
+        initializer=worker_initializer,
+        initargs=(indices, feats, fs_list, None),
+    ) as pool:
+        results = pool.map(process_seq_chunk, chunks)
+
+    merged: dict[str, object] = {}
+    for r in results:
+        merged.update(r["region"])
+    expected = _expected_by_seq(region_hierarchy)
+    assert merged == {seq: (smo, pre) for seq, (smo, pre) in expected.items()}
