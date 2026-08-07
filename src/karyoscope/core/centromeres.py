@@ -36,8 +36,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from karyoscope.core.annotate import _bgzip_file, resolve_database
+from karyoscope.core.annotate import resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
+from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, read_map
 from karyoscope.core.scaffold import (
@@ -538,7 +539,7 @@ def centromeres_run(
         with plain.open("w") as h:
             for contig, (cstart, cend) in ranges.items():
                 h.write(f"{contig}\t{cstart}\t{cend}\n")
-        final = _bgzip_file(plain, threads=threads) if bgzip else plain
+        final = bgzip_file(plain, threads=threads) if bgzip else plain
 
         results[spec.path.name] = CentromereResult(
             input_path=spec.path,

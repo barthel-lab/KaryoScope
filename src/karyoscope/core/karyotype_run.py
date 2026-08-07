@@ -38,7 +38,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from karyoscope.core.annotate import _bgzip_file, annotate, resolve_database
+from karyoscope.core.annotate import annotate, resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.centromeres import (
     DEFAULT_COARSE_BIN_SIZE,
@@ -47,6 +47,7 @@ from karyoscope.core.centromeres import (
     centromeres_run,
     find_centromere_ranges,
 )
+from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.colors import (
     colors_for_set,
     parse_colors_and_groups,
@@ -601,7 +602,7 @@ def _ensure_combined_centromeres(
         for contig, (cstart, cend) in ranges.items():
             h.write(f"{contig}\t{cstart}\t{cend}\n")
     if bgzip:
-        _bgzip_file(plain, threads=threads)
+        bgzip_file(plain, threads=threads)
     return dict(ranges)
 
 

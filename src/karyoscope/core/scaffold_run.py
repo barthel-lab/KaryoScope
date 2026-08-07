@@ -44,7 +44,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from karyoscope.core.annotate import _bgzip_file, annotate, resolve_database
+from karyoscope.core.annotate import annotate, resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.hap_inference import (
     assign_per_input_labels,
@@ -52,6 +52,7 @@ from karyoscope.core.hap_inference import (
     read_fasta_contig_names,
 )
 from karyoscope.core.io.agp import write_agp
+from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.fasta import read_fasta_lengths
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, write_legacy_stats, write_map
@@ -439,7 +440,7 @@ def _write_combined_outputs(
             t_rb = time.perf_counter()
             rewrite_bed_combined(src, out_plain, objects=layout, gzip_out=False)
             logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
-            scaffolded_beds[fs] = _bgzip_file(out_plain, threads=threads) if bgzip else out_plain
+            scaffolded_beds[fs] = bgzip_file(out_plain, threads=threads) if bgzip else out_plain
 
     # Combined FASTA.
     fasta_plain = r.out_dir / f"{r.stem}.{db_id}.scaffolded.{_COMBINED_TAG}.fa"
@@ -454,7 +455,7 @@ def _write_combined_outputs(
         gzip_out=False,
     )
     logger.info("wrote %s in %.1fs", fasta_plain.name, time.perf_counter() - t_rf)
-    scaffolded_fasta = _bgzip_file(fasta_plain, threads=threads) if bgzip else fasta_plain
+    scaffolded_fasta = bgzip_file(fasta_plain, threads=threads) if bgzip else fasta_plain
 
     # AGP: complete description of the FASTA, including kept leftovers.
     agp_path = r.out_dir / f"{r.stem}.{db_id}.scaffolded.{_COMBINED_TAG}.agp"
@@ -793,7 +794,7 @@ def scaffold_run(
                 t_rb = time.perf_counter()
                 rewrite_bed(src, out_plain, map_rows=per_input_rows, gzip_out=False)
                 logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
-                out_final = _bgzip_file(out_plain, threads=threads) if bgzip else out_plain
+                out_final = bgzip_file(out_plain, threads=threads) if bgzip else out_plain
                 scaffolded_beds[fs] = out_final
         elif mode in ("bed", "both") and not write_scaffolded_beds:
             # write_scaffolded_beds=False: caller has opted out of the
@@ -827,7 +828,7 @@ def scaffold_run(
                 gzip_out=False,
             )
             logger.info("wrote %s in %.1fs", fasta_plain.name, time.perf_counter() - t_rf)
-            scaffolded_fasta = _bgzip_file(fasta_plain, threads=threads) if bgzip else fasta_plain
+            scaffolded_fasta = bgzip_file(fasta_plain, threads=threads) if bgzip else fasta_plain
 
         results[r.spec.path.name] = ScaffoldResult(
             input_path=r.spec.path,
