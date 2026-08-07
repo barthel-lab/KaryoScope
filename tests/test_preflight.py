@@ -7,10 +7,12 @@ working installs. Several tests below pin that agreement.
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from karyoscope import preflight
-from karyoscope.exceptions import MissingDependencyError
+from karyoscope.exceptions import IncompatibleVersionError, MissingDependencyError
 
 # --- resolve_binary ---------------------------------------------------
 
@@ -139,3 +141,109 @@ def test_every_dependency_declares_a_kind_and_a_hint() -> None:
         assert dep.name == name
         assert dep.kind in ("binary", "python")
         assert dep.purpose and dep.install_hint
+
+
+# --- minimum versions -------------------------------------------------
+
+
+def _fake_hks(monkeypatch: pytest.MonkeyPatch, banner: str) -> None:
+    """Stub out running hks so its startup banner says ``banner``."""
+    monkeypatch.setattr(preflight, "resolve_binary", lambda name: "/bin/" + name)
+    monkeypatch.setattr(
+        preflight.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a[0], 2, stdout="", stderr=banner),
+    )
+
+
+_BANNER = "[2026-07-28T15:21:23Z INFO  hks] Running hks version {}\n"
+
+
+def test_hks_version_is_read_from_the_startup_banner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """hks has no --version; it logs the version on its way to printing usage."""
+    _fake_hks(monkeypatch, _BANNER.format("0.3.1"))
+    assert preflight.installed_version("hks") == "0.3.1"
+
+
+def test_an_hks_older_than_the_minimum_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """0.2.0 predates --miss-label, so every annotate would die at the lookup."""
+    _fake_hks(monkeypatch, _BANNER.format("0.2.0"))
+    stale = preflight.outdated(["hks"])
+    assert [(dep.name, have) for dep, have in stale] == [("hks", "0.2.0")]
+
+    with pytest.raises(IncompatibleVersionError) as excinfo:
+        preflight.require(["hks"], context="annotate against DB_x")
+    message = str(excinfo.value)
+    assert "0.2.0 is installed" in message
+    assert "0.3.0 or newer" in message
+    assert "annotate against DB_x" in message
+    # The whole point is that it says what to do about it.
+    assert "cargo install" in message
+
+
+def test_an_hks_at_or_above_the_minimum_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    for version in ("0.3.0", "0.3.1", "0.10.0", "1.0.0"):
+        _fake_hks(monkeypatch, _BANNER.format(version))
+        assert preflight.outdated(["hks"]) == [], version
+
+
+def test_an_unreadable_version_is_not_treated_as_outdated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail open.
+
+    Refusing to run over a tool that merely declined to identify itself would
+    break working installs; letting it through costs at worst the tool's own
+    error message.
+    """
+    _fake_hks(monkeypatch, "some future hks that logs nothing recognisable\n")
+    assert preflight.installed_version("hks") is None
+    assert preflight.outdated(["hks"]) == []
+    preflight.require(["hks"], context="testing")
+
+
+def test_a_missing_tool_is_reported_as_missing_not_outdated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One problem, one message: an absent tool has no version to complain about."""
+    monkeypatch.setattr(preflight, "resolve_binary", lambda name: None)
+    assert preflight.installed_version("hks") is None
+    with pytest.raises(MissingDependencyError):
+        preflight.require(["hks"], context="testing")
+
+
+def test_a_probe_that_cannot_run_is_not_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preflight, "resolve_binary", lambda name: "/bin/hks")
+
+    def boom(*a: object, **kw: object) -> None:
+        raise OSError("no such binary")
+
+    monkeypatch.setattr(preflight.subprocess, "run", boom)
+    assert preflight.installed_version("hks") is None
+    assert preflight.outdated(["hks"]) == []
+
+
+def test_the_version_probe_forces_the_banner_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RUST_LOG in the caller's environment must not decide whether we can read it.
+
+    The banner goes through log::info!, so RUST_LOG=error would silence it and
+    make a perfectly good hks look unidentifiable.
+    """
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(preflight, "resolve_binary", lambda name: "/bin/hks")
+    monkeypatch.setenv("RUST_LOG", "error")
+
+    def record(*a: object, **kw: object) -> subprocess.CompletedProcess[str]:
+        seen.update(kw)
+        return subprocess.CompletedProcess([], 2, stdout="", stderr=_BANNER.format("0.3.0"))
+
+    monkeypatch.setattr(preflight.subprocess, "run", record)
+    assert preflight.installed_version("hks") == "0.3.0"
+    assert seen["env"]["RUST_LOG"] == "info"  # type: ignore[index]
+
+
+def test_only_dependencies_with_a_minimum_are_version_checked() -> None:
+    """Every min_version needs a probe, or it would silently never be enforced."""
+    for name, dep in preflight.DEPENDENCIES.items():
+        if dep.min_version is not None:
+            assert name in preflight._VERSION_PROBES, name

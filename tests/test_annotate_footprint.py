@@ -27,6 +27,11 @@ from karyoscope.core.annotate import (
 _HG002_BASES = 5_999_424_718
 _HG002_MEASURED_PEAK = 34_400_000_000
 
+#: The same run's peak once ``hks lookup`` began writing the presmoothed BED
+#: itself: the 5.42 GB TSV was a second copy of a file we were keeping
+#: anyway, and simply stopped existing. Outputs alone, 21.70 + 7.26 GB.
+_HG002_HKS_PEAK = 28_960_000_000
+
 
 # --- input size -------------------------------------------------------
 
@@ -122,13 +127,56 @@ def test_dropping_an_output_lowers_the_estimate() -> None:
     assert presmoothed_only > smoothed_only
 
 
-def test_transient_intermediate_is_always_counted() -> None:
-    """Even a single feature set needs room for its lookup TSV alongside."""
+def test_transient_intermediate_is_counted_when_there_is_one() -> None:
+    """A single feature set still needs room for its intermediate alongside."""
     single = estimate_output_bytes(
         input_bases=1_000_000_000, n_feature_sets=1, keep_presmoothed=False, smooth=True
     )
     outputs_only = 1_000_000_000 * 0.20
     assert single > outputs_only * 2
+
+
+def test_hks_keeping_presmoothed_is_charged_for_no_intermediate() -> None:
+    """`hks lookup` writes the presmoothed BED itself, so nothing is duplicated.
+
+    Charging for an intermediate that no longer exists would refuse runs
+    that fit -- about 5 GB's worth on a diploid human assembly.
+    """
+    estimate = estimate_output_bytes(
+        input_bases=_HG002_BASES,
+        n_feature_sets=6,
+        keep_presmoothed=True,
+        smooth=True,
+        index_type="hks",
+    )
+    assert estimate == pytest.approx(_HG002_HKS_PEAK, rel=0.10)
+    assert estimate < _HG002_MEASURED_PEAK
+
+
+def test_hks_discarding_presmoothed_still_needs_the_temp_file() -> None:
+    """Without --keep-presmoothed the lookup output is a temp file smooth reads."""
+    kept = estimate_output_bytes(
+        input_bases=1_000_000_000,
+        n_feature_sets=1,
+        keep_presmoothed=False,
+        smooth=True,
+        index_type="hks",
+    )
+    outputs_only = 1_000_000_000 * 0.20
+    assert kept > outputs_only * 2
+
+
+def test_an_unknown_backend_errs_high() -> None:
+    """The default must be the conservative one: over-estimating only warns."""
+    assert estimate_output_bytes(
+        input_bases=_HG002_BASES, n_feature_sets=6, keep_presmoothed=True, smooth=True
+    ) == estimate_output_bytes(
+        input_bases=_HG002_BASES,
+        n_feature_sets=6,
+        keep_presmoothed=True,
+        smooth=True,
+        index_type="kmc",
+    )
 
 
 # --- dependency selection ---------------------------------------------

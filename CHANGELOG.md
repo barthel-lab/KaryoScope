@@ -126,6 +126,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A BAM input to `annotate` (HKS backend) is converted to FASTA once**,
   shared by every feature set's lookup, instead of once per feature set.
 
+- **`hks` now writes KaryoScope's BED files directly, and the conversion pass
+  is gone.** `convert_hks_tsv_to_bed` ran twice per feature set — on the raw
+  lookup output and again inside `run_hks_smooth` — and never actually
+  converted a format: the lookup TSV is already BED-shaped, so all it did was
+  drop the header line and rewrite `none` to `novel`. `hks` 0.3.0 can be asked
+  for both directly (`--miss-label`, `--no-header`), so both passes were
+  deleted. Per feature set that removes **two ~5 GB reads and two ~5 GB
+  writes**, on a pass measured between 9.5 s (fast local disk) and 21.0 s
+  (cluster `/scratch`).
+
+  It also **roughly halves peak temp disk** for an HKS run: the raw lookup
+  output and the presmoothed BED were two near-identical multi-gigabyte copies
+  of the same data, and now there is one file that `hks smooth` reads in place.
+  A six-set HG002 run peaks at ~29 GB rather than ~34 GB, and the disk-space
+  preflight no longer charges HKS runs for an intermediate that no longer
+  exists.
+
+  Verified byte-identical against the previous two-step pipeline on a real
+  index, for both the presmoothed and the smoothed BED.
+- **`annotate` requires `hks` >= 0.3.0**, checked before the run starts. `hks`
+  has no `--version` flag, so KaryoScope reads the version it logs on startup.
+  The check fails open — an unreadable version is not treated as too old — but
+  a readable, too-old one stops the run with an upgrade message instead of
+  letting it die partway through on `unexpected argument '--miss-label'`.
+- **`annotate` reports per-phase timing, bytes and peak memory.** Each `hks`
+  lookup and smooth logs its own wall time, output size and throughput, and
+  peak memory is reported from `ru_maxrss` across the `hks` processes — where
+  it actually lives. Previously one elapsed time per feature set covered both
+  phases, which cannot attribute a change to either. `hks` 0.3.0 likewise
+  times its base-index and labeling loads separately rather than reporting one
+  combined figure.
+
 ### Fixed
 
 - **The `samtools | get_featureIDs` BAM pipeline can no longer deadlock on a

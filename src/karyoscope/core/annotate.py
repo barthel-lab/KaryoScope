@@ -52,7 +52,6 @@ from karyoscope.core.io.hierarchy import (
 )
 from karyoscope.core.io.hks import (
     convert_bam_to_fasta,
-    convert_hks_tsv_to_bed,
     run_hks_lookup,
     run_hks_smooth,
 )
@@ -232,12 +231,18 @@ PRESMOOTHED_BYTES_PER_BASE = 0.60
 SMOOTHED_BYTES_PER_BASE = 0.20
 
 #: Transient intermediate allowance, as a multiple of one feature set's
-#: presmoothed estimate. Covers the HKS raw lookup TSV (one at a time,
-#: deleted after each set) and the KMC combined BED. Both are "one row per
-#: k-mer run" files dominated by the sequence name and coordinates that a
-#: presmoothed BED also carries, so one feature set's worth is the right
+#: presmoothed estimate. Covers the KMC combined BED, and the HKS lookup
+#: output in the one case where it is still a temp file. Both are "one row
+#: per k-mer run" files dominated by the sequence name and coordinates that
+#: a presmoothed BED also carries, so one feature set's worth is the right
 #: scale; the 1.5 absorbs the spread between feature sets (the largest set
 #: measured 1.48x the six-set average).
+#:
+#: The HKS backend usually needs none of it. ``hks lookup`` writes the
+#: presmoothed BED directly, so when that output is being kept there is no
+#: second copy on disk at any point — the allowance only applies under
+#: ``--no-keep-presmoothed``, where the same file becomes a temp one that
+#: ``hks smooth`` reads and we then delete.
 TRANSIENT_INTERMEDIATE_FACTOR = 1.5
 
 #: Uncompressed-to-compressed ratio assumed for a gzipped nucleotide
@@ -314,6 +319,7 @@ def estimate_output_bytes(
     n_feature_sets: int,
     keep_presmoothed: bool,
     smooth: bool,
+    index_type: str = "kmc",
 ) -> int:
     """Estimate peak bytes written to the output directory by one annotate run.
 
@@ -321,6 +327,12 @@ def estimate_output_bytes(
     them have been written, so it shrinks the result but not the high-water
     mark. ``--no-keep-presmoothed`` and ``--no-smooth`` do reduce it, and
     are reflected here.
+
+    ``index_type`` decides whether a transient intermediate is counted at
+    all. An HKS run keeping its presmoothed output writes no second copy of
+    anything, so charging it for one would refuse runs that fit — about
+    5 GB's worth on a diploid human assembly. The default is the
+    conservative backend, so a caller that does not know errs high.
     """
     per_set = 0.0
     if keep_presmoothed:
@@ -328,7 +340,13 @@ def estimate_output_bytes(
     if smooth:
         per_set += SMOOTHED_BYTES_PER_BASE
     outputs = input_bases * per_set * n_feature_sets
-    transient = input_bases * PRESMOOTHED_BYTES_PER_BASE * TRANSIENT_INTERMEDIATE_FACTOR
+
+    needs_intermediate = index_type != "hks" or not keep_presmoothed
+    transient = (
+        input_bases * PRESMOOTHED_BYTES_PER_BASE * TRANSIENT_INTERMEDIATE_FACTOR
+        if needs_intermediate
+        else 0.0
+    )
     return int(outputs + transient)
 
 
@@ -970,6 +988,34 @@ def _human_bytes(n: int) -> str:
     return f"{n / 1024**2:.1f} MB"
 
 
+def _peak_child_rss_bytes() -> int | None:
+    """Peak resident set size across every child process reaped so far.
+
+    This is the number that decides how much machine an ``annotate`` run
+    needs. KaryoScope's own footprint is small next to the ``hks``
+    invocations it waits on, and those are not visible in this process's
+    own ``ru_maxrss``.
+
+    It is a high-water mark over all reaped children, so it only ever rises
+    — report it as a running peak, never as one step's cost. Returns None
+    where ``resource`` is unavailable.
+    """
+    try:
+        import resource
+    except ImportError:  # pragma: no cover — not a platform we ship for
+        return None
+    raw = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    # ru_maxrss is kilobytes on Linux and bytes on macOS.
+    return raw if sys.platform == "darwin" else raw * 1024
+
+
+def _rate(nbytes: int, seconds: float) -> str:
+    """Render a throughput, or ``"-"`` when the elapsed time is unusable."""
+    if seconds <= 0:
+        return "-"
+    return f"{nbytes / 1024**3 / seconds:.2f} GB/s"
+
+
 # --- HKS backend ------------------------------------------------------
 
 
@@ -995,14 +1041,19 @@ def _run_hks_backend(
     ids), HKS queries one ``.hksf`` per feature set and reads label names
     directly. Each feature set is processed independently:
 
-    1. ``hks lookup`` against ``<basename>.<fs>.hksf`` -> a raw TSV.
-    2. If ``keep_presmoothed``: convert the raw TSV to the presmoothed BED.
-    3. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
-       -> the smoothed BED.
+    1. ``hks lookup`` against ``<basename>.<fs>.hksf`` -> the presmoothed BED.
+    2. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
+       reads that same file -> the smoothed BED.
 
-    The raw TSV is a per-feature-set temp file, deleted after each set. ``k`` is
-    the query k-mer length (``manifest.kmer.size`` unless overridden for a
-    variable-k index).
+    There is no conversion step between them. ``hks`` is told the output shape
+    KaryoScope wants -- headerless, ``novel`` for misses -- so the lookup output
+    *is* the presmoothed BED, and smooth reads it in place. When the caller does
+    not want the presmoothed BED kept, the lookup still has to write somewhere
+    for smooth to read, so it goes to a per-feature-set temp file deleted after
+    each set.
+
+    ``k`` is the query k-mer length (``manifest.kmer.size`` unless overridden
+    for a variable-k index).
     """
     base_path = db_dir / (manifest.index.basename + ".hksb")
 
@@ -1032,7 +1083,15 @@ def _run_hks_backend(
             t_fs = time.perf_counter()
             fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
             hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
-            raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
+            # The lookup output is already the presmoothed BED, so when it is being
+            # kept it is written straight to its final home rather than copied
+            # there. Otherwise smooth still needs it on disk to read, and it is a
+            # temp file we drop afterwards.
+            lookup_out = (
+                presmoothed_paths[fs]
+                if keep_presmoothed
+                else output_dir / f"{prefix}.{fs}.lookup_raw.tmp.bed"
+            )
 
             logger.info(
                 "running hks lookup for feature set %r on %s (threads=%d)",
@@ -1040,39 +1099,71 @@ def _run_hks_backend(
                 input_path.name,
                 threads,
             )
+            t_lookup = time.perf_counter()
             run_hks_lookup(
                 base_path=base_path,
                 feature_set_file=fs_file,
                 k=k,
                 input_path=query_path,
-                output_path=raw_tsv,
+                output_path=lookup_out,
                 threads=threads,
                 report_query_names=not is_reads,
                 capture=True,
             )
-            if not raw_tsv.is_file():
-                raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
+            dt_lookup = time.perf_counter() - t_lookup
+            if not lookup_out.is_file():
+                raise KaryoscopeError(f"hks lookup did not produce expected output at {lookup_out}")
+
+            # Timed and sized per phase rather than per feature set. The two do
+            # very different work -- the lookup is the parallel k-mer query, the
+            # smooth a largely serial pass over what it wrote -- so a single
+            # per-feature-set number cannot say which of them a change moved.
+            lookup_bytes = lookup_out.stat().st_size
+            # Deliberately no throughput here. A lookup's time is dominated by
+            # loading the index and querying the input, not by writing its
+            # output, so output-bytes-per-second would be a rate of nothing --
+            # it read 0.02 GB/s on a real run purely because the index load is
+            # large and the BED is small. `hks -vv` reports the phases that do
+            # have meaningful rates.
+            logger.info(
+                "hks lookup for %r wrote %s in %.1fs",
+                fs,
+                _human_bytes(lookup_bytes),
+                dt_lookup,
+            )
 
             try:
-                if keep_presmoothed:
-                    convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
-
                 if smooth:
                     t_smo = time.perf_counter()
                     logger.info("running hks smooth for feature set %r", fs)
                     run_hks_smooth(
                         hierarchy_file=hierarchy_file,
-                        input_path=raw_tsv,
+                        input_path=lookup_out,
                         output_path=smoothed_paths[fs],
                         threads=threads,
                         capture=True,
                     )
-                    logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
+                    dt_smo = time.perf_counter() - t_smo
+                    smoothed_bytes = smoothed_paths[fs].stat().st_size
+                    logger.info(
+                        "hks smooth for %r wrote %s in %.1fs (read %s at %s)",
+                        fs,
+                        _human_bytes(smoothed_bytes),
+                        dt_smo,
+                        _human_bytes(lookup_bytes),
+                        _rate(lookup_bytes, dt_smo),
+                    )
             finally:
-                try:
-                    raw_tsv.unlink()
-                except OSError as exc:
-                    logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
+                if not keep_presmoothed:
+                    try:
+                        lookup_out.unlink()
+                    except OSError as exc:
+                        logger.warning(
+                            "could not remove temp lookup output %s: %s", lookup_out, exc
+                        )
+            peak = _peak_child_rss_bytes()
+            if peak is not None:
+                logger.info("peak hks memory so far: %s", _human_bytes(peak))
             # Reported here rather than per sub-step: one line per feature set
             # is the granularity a user waiting on the run actually needs, and
             # HKS processes them strictly in sequence so the counter is honest.
@@ -1081,10 +1172,12 @@ def _run_hks_backend(
         if tmp_fasta is not None:
             tmp_fasta.unlink(missing_ok=True)
 
+    peak = _peak_child_rss_bytes()
     logger.info(
-        "hks backend complete in %.1fs (%d feature set(s))",
+        "hks backend complete in %.1fs (%d feature set(s)%s)",
         time.perf_counter() - t_hks_start,
         len(requested),
+        f", peak hks memory {_human_bytes(peak)}" if peak is not None else "",
     )
 
 
@@ -1222,6 +1315,7 @@ def annotate(
         n_feature_sets=len(requested),
         keep_presmoothed=keep_presmoothed,
         smooth=smooth,
+        index_type=manifest.index.type,
     )
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp of input",

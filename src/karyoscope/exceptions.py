@@ -42,7 +42,8 @@ class UnsupportedSchemeError(FetchError):
 
 
 class IncompatibleVersionError(KaryoscopeError):
-    """A database requires a newer KaryoScope version than the one installed."""
+    """Something installed is too old: a KaryoScope a database needs, or an
+    external binary whose interface KaryoScope depends on."""
 
 
 class BinError(KaryoscopeError):

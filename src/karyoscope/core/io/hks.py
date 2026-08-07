@@ -38,7 +38,10 @@ logger = logging.getLogger(__name__)
 BINARY_NAME = "hks"
 ENV_OVERRIDE = "KARYOSCOPE_HKS"
 
-#: Label HKS emits for k-mers not found in the index.
+#: Label HKS emits for k-mers not found in the index, unless told otherwise.
+#: KaryoScope overrides it with ``--miss-label`` so that HKS writes its own
+#: :data:`~karyoscope.core.io.features.NOVEL_NAME` sentinel and no pass over
+#: the output is needed to rewrite it.
 _HKS_MISS_LABEL = "none"
 
 #: Default max-gap (bases) passed to ``hks smooth``, matching karyoscope's Python default.
@@ -57,6 +60,26 @@ _INPUT_EXTENSIONS: tuple[str, ...] = (
     ".fq",
     ".bam",
 )
+
+
+def _relay_hks_log(result, what: str) -> None:
+    """Forward a captured ``hks`` run's own log lines into ours, at DEBUG.
+
+    ``hks`` is invoked with ``capture=True`` so a normal run does not
+    interleave two tools' logs on stderr. That also means everything it
+    reports about itself — how long the base index and the labeling each
+    took to load, how long the query and the smoothing ran — is discarded on
+    success, and only ever surfaces in the error message of a run that
+    failed. Those are exactly the numbers needed to tell which phase a
+    change moved, so ``-vv`` gets them.
+    """
+    if result is None:
+        return
+    for stream in (result.stderr, result.stdout):
+        for line in (stream or "").splitlines():
+            line = line.strip()
+            if line:
+                logger.debug("hks[%s]: %s", what, line)
 
 
 def get_hks_binary() -> str:
@@ -100,80 +123,6 @@ def _infer_prefix(input_path: Path, db_basename: str) -> str:
     return f"{input_basename}.{db_basename}"
 
 
-#: Bytes read per block by :func:`convert_hks_tsv_to_bed`. Large enough
-#: that per-block Python overhead vanishes against the memchr-speed scan
-#: inside ``bytes.replace``, small enough that the buffer is irrelevant
-#: beside the k-mer index this runs alongside. Exposed as a parameter only
-#: so tests can shrink it and hammer the block-boundary logic.
-_CONVERT_BLOCK_BYTES = 8 << 20  # 8 MiB
-
-
-def convert_hks_tsv_to_bed(
-    tsv_path: Path, bed_path: Path, *, block_bytes: int = _CONVERT_BLOCK_BYTES
-) -> None:
-    """Convert HKS TSV output (with header) to a headerless BED file.
-
-    Strips the header line and replaces the HKS miss label ``none`` with
-    KaryoScope's ``novel`` sentinel.
-
-    Runs twice per feature set — once on the raw lookup TSV to make the
-    presmoothed BED, once inside :func:`run_hks_smooth` on the smoothed
-    TSV — and on human-scale input those two passes were ~10% of
-    ``annotate``'s wall time (129 s of a 21-minute HG002 run), single
-    threaded, while the rest of the machine idled. The previous version
-    looped in Python over every line of a multi-GB file and paid a decode
-    plus an encode per line; this one reads binary blocks and lets
-    ``bytes.replace`` do the scan in C.
-
-    Still streams: memory is one block plus at most one partial line, so a
-    reads TSV of tens of GB is fine.
-
-    Correctness at block boundaries
-    ------------------------------
-    Only whole lines are ever handed to ``replace``: each block is cut at
-    its **last newline** and the remainder carried into the next block.
-    That makes a straddling match impossible, because ``miss`` ends in a
-    newline — an occurrence extending past the cut would have to end at a
-    newline beyond the last one, which by definition does not exist.
-    ``miss`` also contains no interior newline, so it can never match
-    across two lines. The carried remainder is a partial final line and
-    cannot contain a complete match.
-
-    Byte-for-byte identical output to the line-by-line version on any
-    input, including a final line with no trailing newline (whose label,
-    lacking the terminating newline, is left alone by both).
-    """
-    miss = f"\t{_HKS_MISS_LABEL}\n".encode()
-    novel = f"\t{NOVEL_NAME}\n".encode()
-
-    with tsv_path.open("rb") as inp, bed_path.open("wb") as out:
-        # Drop the header, which may in principle span more than one read.
-        pending = b""
-        while True:
-            block = inp.read(block_bytes)
-            if not block:
-                return  # empty or header-only: no records to write
-            pending += block
-            newline = pending.find(b"\n")
-            if newline != -1:
-                pending = pending[newline + 1 :]
-                break
-
-        while True:
-            block = inp.read(block_bytes)
-            if not block:
-                break
-            pending += block
-            cut = pending.rfind(b"\n")
-            if cut == -1:
-                continue  # a line longer than one block; keep accumulating
-            out.write(pending[: cut + 1].replace(miss, novel))
-            pending = pending[cut + 1 :]
-
-        if pending:
-            out.write(pending.replace(miss, novel))
-
-
 def run_hks_lookup(
     *,
     base_path: Path,
@@ -199,7 +148,9 @@ def run_hks_lookup(
         FASTA or FASTQ input (plain or gzipped). For BAM inputs, pass the
         ``.bam`` path — it will be converted via ``samtools fasta`` internally.
     output_path
-        Where to write the raw HKS lookup TSV (header + ``none`` for misses).
+        Where to write the lookup output. This is already KaryoScope's
+        presmoothed BED -- headerless, ``novel`` for misses -- not a TSV
+        awaiting conversion.
     threads
         Number of worker threads (0 = let HKS decide, effectively ``4`` by default).
     report_query_names
@@ -257,6 +208,17 @@ def run_hks_lookup(
         cmd.append("--report-query-names")
     cmd += [
         "--report-misses",
+        # Emit KaryoScope's sentinel for misses rather than HKS's default
+        # ``none``. Must match what run_hks_smooth passes: ``hks smooth``
+        # parses this token out of its input as well as writing it, so a
+        # mismatch turns every miss run into an unknown feature name.
+        "--miss-label",
+        NOVEL_NAME,
+        # With this, the output is a BED file rather than a TSV that has to
+        # be rewritten into one. Note the label column then holds names only
+        # because --report-label-ids is absent; smooth is given the same
+        # default, and with no header to disagree with, the two agree.
+        "--no-header",
         "-t",
         str(n_threads),
         "-o",
@@ -264,7 +226,7 @@ def run_hks_lookup(
     ]
     logger.debug("running: %s", " ".join(cmd))
 
-    run_tool(cmd, capture=capture)
+    _relay_hks_log(run_tool(cmd, capture=capture), "lookup")
     return output_path
 
 
@@ -354,14 +316,28 @@ def run_hks_smooth(
     threads: int = 0,
     capture: bool = False,
 ) -> Path:
-    """Invoke ``hks smooth`` on a lookup TSV and write the result as a BED file.
+    """Invoke ``hks smooth`` on a presmoothed BED, writing the smoothed one.
+
+    ``hks smooth`` is told the output shape we want -- headerless, ``novel``
+    for misses -- so its output *is* the smoothed BED. Previously it wrote a
+    TSV to a temp file that a second pass then rewrote into place, which cost
+    a full read plus a full write of a multi-gigabyte file per feature set,
+    single threaded, for what amounts to one substitution and a dropped line.
+
+    The miss label is not just cosmetic to smooth: it parses that same token
+    out of its input to recognise a miss run. It therefore has to match what
+    :func:`run_hks_lookup` wrote, which is why both pass ``NOVEL_NAME`` and
+    neither hardcodes HKS's ``none`` default. The same goes for the label
+    vocabulary: the input has no header to declare it, so both sides rely on
+    ``--report-label-ids`` being absent, i.e. names.
 
     Parameters
     ----------
     hierarchy_file
         Path to the HKS hierarchy file (``*.hierarchy.txt``) for this feature set.
     input_path
-        Raw TSV produced by ``hks lookup`` (with header, ``none`` for misses).
+        The presmoothed BED written by :func:`run_hks_lookup` (headerless,
+        ``novel`` for misses).
     output_path
         Where to write the smoothed BED (headerless, ``novel`` for misses).
     max_gap
@@ -390,32 +366,25 @@ def run_hks_smooth(
 
     n_threads = threads if threads > 0 else 4
 
-    # Next to the output, not the system tempdir: the smoothed TSV is the
-    # size of the lookup TSV (GBs for an assembly, tens of GBs for reads),
-    # and /tmp on cluster nodes is often small or RAM-backed.
-    with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False, dir=output_path.parent) as tmp:
-        smooth_tsv = Path(tmp.name)
-
-    try:
-        cmd: list[str] = [
-            binary,
-            "smooth",
-            "--feature-hierarchy",
-            str(hierarchy_file),
-            "-i",
-            str(input_path),
-            "-o",
-            str(smooth_tsv),
-            "--max-gap",
-            str(max_gap),
-            "-t",
-            str(n_threads),
-        ]
-        logger.debug("running: %s", " ".join(cmd))
-        run_tool(cmd, capture=capture)
-        convert_hks_tsv_to_bed(smooth_tsv, output_path)
-    finally:
-        smooth_tsv.unlink(missing_ok=True)
+    cmd: list[str] = [
+        binary,
+        "smooth",
+        "--feature-hierarchy",
+        str(hierarchy_file),
+        "-i",
+        str(input_path),
+        "-o",
+        str(output_path),
+        "--max-gap",
+        str(max_gap),
+        "-t",
+        str(n_threads),
+        "--miss-label",
+        NOVEL_NAME,
+        "--no-header",
+    ]
+    logger.debug("running: %s", " ".join(cmd))
+    _relay_hks_log(run_tool(cmd, capture=capture), "smooth")
 
     return output_path
 

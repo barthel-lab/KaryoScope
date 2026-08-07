@@ -12,43 +12,10 @@ from karyoscope.core.io.hks import (
     _HKS_MISS_LABEL,
     ENV_OVERRIDE,
     _infer_prefix,
-    convert_hks_tsv_to_bed,
     get_hks_binary,
     run_hks_lookup,
+    run_hks_smooth,
 )
-
-
-def test_convert_hks_tsv_to_bed_strips_header_and_maps_none(tmp_path: Path) -> None:
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text(
-        "query_name\tfrom_kmer\tto_kmer\tlabel_name\n"
-        "chr1\t0\t10\tchr1\n"
-        "chr1\t10\t20\tnone\n"
-        "chr1\t20\t30\tcentromere\n"
-    )
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed)
-
-    lines = bed.read_text().splitlines()
-    # Header dropped.
-    assert lines[0] == "chr1\t0\t10\tchr1"
-    # `none` miss label rewritten to the KaryoScope `novel` sentinel.
-    assert lines[1] == f"chr1\t10\t20\t{NOVEL_NAME}"
-    assert lines[2] == "chr1\t20\t30\tcentromere"
-    assert len(lines) == 3
-
-
-def test_convert_hks_tsv_only_none_in_label_column(tmp_path: Path) -> None:
-    """A feature literally containing 'none' as a substring is not corrupted."""
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text(
-        "query_name\tfrom_kmer\tto_kmer\tlabel_name\nchr1\t0\t10\tnonesuch\nchr1\t10\t20\tnone\n"
-    )
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed)
-    lines = bed.read_text().splitlines()
-    assert lines[0] == "chr1\t0\t10\tnonesuch"
-    assert lines[1] == f"chr1\t10\t20\t{NOVEL_NAME}"
 
 
 def _capture_lookup_cmd(
@@ -90,26 +57,85 @@ def test_run_hks_lookup_omits_names_for_reads(
     assert "--report-misses" in cmd
 
 
-def test_convert_hks_tsv_header_only_yields_empty_bed(tmp_path: Path) -> None:
-    """A TSV with only a header (no records) produces an empty BED."""
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text("query_name\tfrom_kmer\tto_kmer\tlabel_name\n")
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed)
-    assert bed.read_text() == ""
+def _capture_smooth_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, out: Path | None = None
+) -> list[str]:
+    """Run ``run_hks_smooth`` with the binary + subprocess stubbed, return the cmd."""
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr(
+        "karyoscope.core.io.hks.run_tool",
+        lambda cmd, capture=False: captured.__setitem__("cmd", cmd),
+    )
+    run_hks_smooth(
+        hierarchy_file=tmp_path / "features.chromosome.hierarchy.txt",
+        input_path=tmp_path / "raw.tsv",
+        output_path=out if out is not None else tmp_path / "smoothed.bed",
+    )
+    return captured["cmd"]
 
 
-def test_convert_hks_tsv_last_line_without_newline(tmp_path: Path) -> None:
-    """A final row lacking a trailing newline is passed through unchanged."""
-    tsv = tmp_path / "raw.tsv"
-    # No trailing newline on the last line: the miss-label pattern requires a
-    # trailing newline, so it is (correctly) not rewritten -- matching the
-    # previous splitlines(keepends=True) behavior.
-    tsv.write_text("query_name\tfrom_kmer\tto_kmer\tlabel_name\n0\t0\t10\tchr1\n0\t10\t20\tnone")
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed)
-    lines = bed.read_text().splitlines()
-    assert lines == ["0\t0\t10\tchr1", "0\t10\t20\tnone"]
+def _flag_value(cmd: list[str], flag: str) -> str:
+    return cmd[cmd.index(flag) + 1]
+
+
+def test_run_hks_smooth_writes_the_bed_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """smooth is pointed at the final BED, not a temp TSV needing a rewrite."""
+    out = tmp_path / "smoothed.bed"
+    cmd = _capture_smooth_cmd(tmp_path, monkeypatch, out=out)
+    assert _flag_value(cmd, "-o") == str(out)
+    assert "--no-header" in cmd
+    assert _flag_value(cmd, "--miss-label") == NOVEL_NAME
+
+
+def test_run_hks_lookup_writes_the_presmoothed_bed_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lookup output is the presmoothed BED, so it carries no header."""
+    cmd = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    assert "--no-header" in cmd
+
+
+def test_lookup_and_smooth_agree_on_the_label_vocabulary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither may ask for numeric label ids.
+
+    With no header in between to declare which vocabulary the fourth column
+    uses, this is the only thing keeping the two in step: smooth resolves
+    those tokens against the hierarchy, and would reject every name if it
+    expected ids.
+    """
+    lookup = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    smooth = _capture_smooth_cmd(tmp_path, monkeypatch)
+    assert "--report-label-ids" not in lookup
+    assert "--report-label-ids" not in smooth
+
+
+def test_lookup_and_smooth_agree_on_the_miss_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant the whole scheme rests on.
+
+    ``hks smooth`` parses the miss token out of its input as well as writing
+    it, so if lookup wrote a different one every miss run would be read as an
+    unknown feature name. Neither may quietly fall back to HKS's ``none``.
+    """
+    lookup = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    smooth = _capture_smooth_cmd(tmp_path, monkeypatch)
+    assert _flag_value(lookup, "--miss-label") == _flag_value(smooth, "--miss-label")
+    assert _flag_value(lookup, "--miss-label") == NOVEL_NAME
+    assert _flag_value(lookup, "--miss-label") != _HKS_MISS_LABEL
+
+
+def test_run_hks_lookup_emits_the_karyoscope_miss_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Misses come out of lookup already labelled ``novel``, not ``none``."""
+    cmd = _capture_lookup_cmd(tmp_path, monkeypatch, report_query_names=True)
+    assert _flag_value(cmd, "--miss-label") == NOVEL_NAME
 
 
 def test_infer_prefix_strips_extension() -> None:
@@ -235,162 +261,9 @@ def test_validate_sibling_priorities() -> None:
     assert len(issues) == 1 and "mixed priorities" in issues[0]
 
 
-# --- convert_hks_tsv_to_bed: block-boundary correctness ------------------
-#
-# The conversion reads binary blocks and lets bytes.replace do the scan,
-# rather than looping per line in Python (it was ~10% of annotate's wall
-# time on human input). Correctness then hinges entirely on never handing
-# a partial line to replace, so these tests drive the block size down to a
-# few bytes and compare against the obvious line-by-line implementation.
-
-
 def _reference_convert(tsv_text: str) -> str:
     """The original line-by-line implementation, as an oracle."""
     miss = f"\t{_HKS_MISS_LABEL}\n"
     novel = f"\t{NOVEL_NAME}\n"
     lines = tsv_text.splitlines(keepends=True)
     return "".join(line.replace(miss, novel) for line in lines[1:])
-
-
-@pytest.mark.parametrize("block", [1, 2, 3, 5, 6, 7, 8, 13, 64, 8192])
-def test_convert_matches_line_by_line_at_every_block_size(tmp_path: Path, block: int) -> None:
-    """Output must not depend on where blocks happen to fall.
-
-    Block sizes of 5-7 straddle the 6-byte '\\tnone\\n' token specifically.
-    """
-    tsv_text = (
-        "query_name\tfrom_kmer\tto_kmer\tlabel_name\n"
-        "chr1\t0\t10\tchr1\n"
-        "chr1\t10\t20\tnone\n"
-        "chr1\t20\t30\tnone\n"
-        "chr1\t30\t40\tnonesuch\n"
-        "chr2\t0\t5\tcentromere\n"
-        "chr2\t5\t9\tnone\n"
-    )
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text(tsv_text)
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed, block_bytes=block)
-    assert bed.read_text() == _reference_convert(tsv_text)
-
-
-def test_convert_handles_a_final_line_without_a_newline(tmp_path: Path) -> None:
-    """Both implementations leave an unterminated trailing 'none' alone.
-
-    The token includes its newline, so a label at EOF with no newline
-    isn't a match. Pinned because the block version carries that partial
-    line through a different path than the rest.
-    """
-    tsv_text = "hdr\nchr1\t0\t10\tnone\nchr1\t10\t20\tnone"
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text(tsv_text)
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed, block_bytes=4)
-    out = bed.read_text()
-    assert out == _reference_convert(tsv_text)
-    assert out.endswith("chr1\t10\t20\tnone")  # unterminated: untouched
-
-
-def test_convert_of_an_empty_file_writes_nothing(tmp_path: Path) -> None:
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_bytes(b"")
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed)
-    assert bed.read_bytes() == b""
-
-
-def test_convert_of_a_header_only_file_writes_nothing(tmp_path: Path) -> None:
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text("query_name\tfrom_kmer\tto_kmer\tlabel_name\n")
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed, block_bytes=3)
-    assert bed.read_bytes() == b""
-
-
-def test_convert_drops_a_header_longer_than_one_block(tmp_path: Path) -> None:
-    """The header may span reads when the block size is small."""
-    tsv_text = "a_very_long_header_line_indeed\nchr1\t0\t10\tnone\n"
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text(tsv_text)
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed, block_bytes=4)
-    assert bed.read_text() == f"chr1\t0\t10\t{NOVEL_NAME}\n"
-
-
-def test_convert_handles_a_line_longer_than_a_block(tmp_path: Path) -> None:
-    """A record longer than one block must accumulate, not be split."""
-    long_name = "contig_" + "x" * 500
-    tsv_text = f"hdr\n{long_name}\t0\t10\tnone\n{long_name}\t10\t20\tsat\n"
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text(tsv_text)
-    bed = tmp_path / "out.bed"
-    convert_hks_tsv_to_bed(tsv, bed, block_bytes=16)
-    assert bed.read_text() == _reference_convert(tsv_text)
-
-
-@pytest.mark.slow
-def test_convert_is_byte_identical_on_pseudorandom_records(tmp_path: Path) -> None:
-    """Fuzz the label mix and line lengths against the oracle."""
-    import random
-
-    rng = random.Random(20260727)
-    labels = ["none", "novel", "nonesuch", "sat", "a", "none", "rDNA_none", ""]
-    rows = [
-        f"ctg{rng.randrange(100)}\t{i}\t{i + rng.randrange(1, 9)}\t{rng.choice(labels)}"
-        for i in range(4000)
-    ]
-    tsv_text = "header\n" + "\n".join(rows) + "\n"
-    tsv = tmp_path / "raw.tsv"
-    tsv.write_text(tsv_text)
-    expected = _reference_convert(tsv_text)
-    for block in (7, 64, 997, 65536):
-        bed = tmp_path / f"out_{block}.bed"
-        convert_hks_tsv_to_bed(tsv, bed, block_bytes=block)
-        assert bed.read_text() == expected, f"mismatch at block_bytes={block}"
-
-
-# --- convert_bam_to_fasta (stubbed samtools) -------------------------
-
-
-def test_convert_bam_to_fasta_runs_samtools_into_dest_dir(tmp_path, monkeypatch) -> None:
-    """The conversion runs `samtools fasta <bam>` with stdout in dest_dir."""
-    from types import SimpleNamespace
-
-    from karyoscope.core.io import hks as hks_mod
-
-    seen: dict[str, object] = {}
-
-    def fake_run(cmd, stdout=None, stderr=None, check=False):
-        seen["cmd"] = cmd
-        stdout.write(b">r1\nACGT\n")
-        return SimpleNamespace(returncode=0, stderr=None)
-
-    monkeypatch.setattr(hks_mod, "require_tool", lambda name, **kw: "samtools-stub")
-    monkeypatch.setattr(hks_mod.subprocess, "run", fake_run)
-
-    bam = tmp_path / "reads.bam"
-    fasta = hks_mod.convert_bam_to_fasta(bam, tmp_path)
-    try:
-        assert seen["cmd"] == ["samtools-stub", "fasta", str(bam)]
-        assert fasta.parent == tmp_path
-        assert fasta.read_text() == ">r1\nACGT\n"
-    finally:
-        fasta.unlink(missing_ok=True)
-
-
-def test_convert_bam_to_fasta_failure_raises_and_cleans_up(tmp_path, monkeypatch) -> None:
-    """A non-zero samtools exit raises ExternalToolError and removes the temp FASTA."""
-    from types import SimpleNamespace
-
-    from karyoscope.core.external import ExternalToolError
-    from karyoscope.core.io import hks as hks_mod
-
-    def fake_run(cmd, stdout=None, stderr=None, check=False):
-        return SimpleNamespace(returncode=1, stderr=b"boom")
-
-    monkeypatch.setattr(hks_mod, "require_tool", lambda name, **kw: "samtools-stub")
-    monkeypatch.setattr(hks_mod.subprocess, "run", fake_run)
-
-    with pytest.raises(ExternalToolError, match="boom"):
-        hks_mod.convert_bam_to_fasta(tmp_path / "reads.bam", tmp_path, capture=True)
-    assert list(tmp_path.glob("*.fasta")) == []
