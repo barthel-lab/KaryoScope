@@ -414,17 +414,13 @@ def test_cram_conversion_passes_the_reference(
     assert "-T" not in cmd
 
 
-def test_cram_without_reference_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cram_without_reference_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A CRAM cannot be decoded without its reference, so the run stops early."""
     with pytest.raises(KaryoscopeError, match="CRAM"):
         _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".cram", reference=None)
 
 
-def test_bam_conversion_needs_no_reference(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bam_conversion_needs_no_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """BAM is self-contained; no --reference is added and no error is raised."""
     cmd = _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".bam", reference=None)
     assert "--reference" not in cmd
@@ -443,3 +439,75 @@ def test_conversion_states_flag_filter_and_mate_suffix_explicitly(
     cmd = _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".bam", reference=None)
     assert cmd[cmd.index("-F") + 1] == "0x900"
     assert "-N" in cmd
+
+
+def test_materialised_queries_decodes_once_and_passes_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Already-seekable inputs cost nothing; alignments are decoded exactly once.
+
+    The decode used to live inside run_hks_lookup_batch, which the annotate
+    backend calls once per feature set -- so a six-set database decoded the same
+    CRAM six times, ~25 minutes each on a 56 GB input.
+    """
+    from karyoscope.core.io.hks import materialised_queries
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stderr = b""
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        stdout = kwargs.get("stdout")
+        if stdout is not None:
+            stdout.close()
+        return _Result()
+
+    monkeypatch.setattr("karyoscope.core.io.hks.require_tool", lambda *a, **kw: "samtools")
+    monkeypatch.setattr("karyoscope.core.io.hks.subprocess.run", _fake_run)
+
+    plain = tmp_path / "reads.fastq"
+    plain.write_text("")
+    bam = tmp_path / "aln.bam"
+    bam.write_bytes(b"")
+    with materialised_queries([plain, bam], threads=4) as resolved:
+        # a seekable input is handed straight back, unconverted
+        assert resolved[plain] == plain
+        # the alignment became a temp FASTA
+        assert resolved[bam] != bam
+        tmp_fasta = resolved[bam]
+    assert len(calls) == 1, "exactly one decode for one alignment"
+    assert not tmp_fasta.exists(), "temp FASTA removed on exit"
+
+
+def test_materialised_queries_tees_the_name_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sidecar comes off the SAME decode, not a second pass over the input."""
+    from karyoscope.core.io.hks import materialised_queries
+
+    captured: dict[str, object] = {}
+
+    class _Result:
+        returncode = 0
+        stderr = b""
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _Result()
+
+    monkeypatch.setattr("karyoscope.core.io.hks.require_tool", lambda *a, **kw: "samtools")
+    monkeypatch.setattr("karyoscope.core.io.hks.subprocess.run", _fake_run)
+
+    bam = tmp_path / "aln.bam"
+    bam.write_bytes(b"")
+    sidecar = tmp_path / "names.txt.gz"
+    with materialised_queries([bam], threads=2, query_names_sidecar={bam: sidecar}):
+        pass
+    joined = " ".join(captured["cmd"])
+    # one process: samtools teed into the sidecar writer AND the FASTA
+    assert "tee" in joined
+    assert str(sidecar) in joined
+    assert "samtools fasta" in joined

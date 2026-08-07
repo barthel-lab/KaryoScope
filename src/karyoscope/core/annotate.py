@@ -52,6 +52,7 @@ from karyoscope.core.io.hierarchy import (
 )
 from karyoscope.core.io.hks import (
     estimate_hks_memory_bytes,
+    materialised_queries,
     run_hks_lookup_batch,
     run_hks_smooth,
 )
@@ -1140,6 +1141,7 @@ def _run_hks_backend(
     k: int,
     reference: Path | None = None,
     query_names: bool | None = None,
+    query_names_sidecar: bool = False,
     progress: Progress = SILENT,
 ) -> None:
     """Run the HKS lookup and optional smoothing for every requested feature set.
@@ -1179,6 +1181,81 @@ def _run_hks_backend(
 
     t_hks_start = time.perf_counter()
     tracker = progress.track(requested)
+
+    # Decode alignment inputs ONCE, outside the feature-set loop. The conversion
+    # used to happen inside run_hks_lookup_batch, which is called per feature
+    # set, so a BAM/CRAM was decoded once PER SET -- six times over for a
+    # six-set database, ~25 minutes each on a 56 GB CRAM. The context manager
+    # also tees the query-name sidecar off that same decode when asked, instead
+    # of the caller decoding the input a second time to recover names.
+    sidecars = (
+        # Named from the INPUT stem only, not the db-qualified prefix: the
+        # rank -> name mapping is a property of the input, so annotating one CRAM
+        # against two databases must not write two identical sidecars.
+        {p: output_dir / f"{_derive_input_basename(p)}.query_names.txt.gz" for p in input_paths}
+        if query_names_sidecar
+        else None
+    )
+    with materialised_queries(
+        input_paths,
+        dest_dir=output_dir,
+        reference=reference,
+        threads=threads,
+        query_names_sidecar=sidecars,
+        capture=True,
+    ) as resolved:
+        _run_hks_feature_sets(
+            manifest=manifest,
+            db_dir=db_dir,
+            base_path=base_path,
+            input_paths=input_paths,
+            resolved=resolved,
+            prefixes=prefixes,
+            output_dir=output_dir,
+            requested=requested,
+            smooth=smooth,
+            keep_presmoothed=keep_presmoothed,
+            presmoothed_by_input=presmoothed_by_input,
+            smoothed_by_input=smoothed_by_input,
+            threads=threads,
+            k=k,
+            query_names=query_names,
+            progress=progress,
+            tracker=tracker,
+            t_hks_start=t_hks_start,
+        )
+    if sidecars:
+        for path in sidecars.values():
+            if path.is_file():
+                logger.info("wrote query-name sidecar %s", path)
+
+
+def _run_hks_feature_sets(
+    *,
+    manifest,
+    db_dir: Path,
+    base_path: Path,
+    input_paths: list[Path],
+    resolved: dict[Path, Path],
+    prefixes: dict[Path, str],
+    output_dir: Path,
+    requested: list[str],
+    smooth: bool,
+    keep_presmoothed: bool,
+    presmoothed_by_input: dict[Path, dict[str, Path]],
+    smoothed_by_input: dict[Path, dict[str, Path]],
+    threads: int,
+    k: int,
+    query_names: bool | None,
+    progress: Progress,
+    tracker,
+    t_hks_start: float,
+) -> None:
+    """Query every feature set against inputs that are ALREADY seekable.
+
+    Split out of :func:`_run_hks_backend` so the alignment decode happens once,
+    in the caller, rather than once per feature set.
+    """
     for fs in requested:
         t_fs = time.perf_counter()
         fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
@@ -1214,10 +1291,9 @@ def _run_hks_backend(
                 base_path=base_path,
                 feature_set_file=fs_file,
                 k=k,
-                io_pairs=[(p, lookup_by_input[p]) for p in group],
+                io_pairs=[(resolved[p], lookup_by_input[p]) for p in group],
                 threads=threads,
                 report_query_names=report_names,
-                reference=reference,
                 capture=True,
             )
         dt_lookup = time.perf_counter() - t_lookup
@@ -1317,6 +1393,7 @@ def annotate(
     check_space: bool = True,
     reference: Path | None = None,
     query_names: bool | None = None,
+    query_names_sidecar: bool = False,
     progress: Progress = SILENT,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
@@ -1570,6 +1647,7 @@ def annotate(
             k=query_k,
             reference=reference,
             query_names=query_names,
+            query_names_sidecar=query_names_sidecar,
             progress=progress,
         )
     else:  # "kmc" -- the only other supported type (guaranteed by parse_manifest)
@@ -1747,6 +1825,7 @@ def annotate_batch(
     check_space: bool = True,
     reference: Path | None = None,
     query_names: bool | None = None,
+    query_names_sidecar: bool = False,
     progress: Progress = SILENT,
 ) -> dict[Path, AnnotateResult]:
     """Annotate several inputs, loading the index once per feature set (HKS).
@@ -1794,6 +1873,7 @@ def annotate_batch(
                 check_space=check_space,
                 reference=reference,
                 query_names=query_names,
+                query_names_sidecar=query_names_sidecar,
                 progress=progress,
             )
         }
@@ -1830,6 +1910,7 @@ def annotate_batch(
                 check_space=check_space,
                 reference=reference,
                 query_names=query_names,
+                query_names_sidecar=query_names_sidecar,
                 progress=progress,
             )
             for p in input_paths
@@ -1973,6 +2054,7 @@ def annotate_batch(
         k=query_k,
         reference=reference,
         query_names=query_names,
+        query_names_sidecar=query_names_sidecar,
         progress=progress,
     )
 

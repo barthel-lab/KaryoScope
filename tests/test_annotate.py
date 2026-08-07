@@ -7,6 +7,7 @@ runs on the default unit-test pass.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -409,9 +410,7 @@ def test_cram_input_declares_a_samtools_dependency() -> None:
     """The preflight resolves tools from the input format rather than assuming."""
     from karyoscope.core.annotate import _annotate_dependencies
 
-    needed = _annotate_dependencies(
-        index_type="hks", input_path=Path("s.cram"), bgzip=False
-    )
+    needed = _annotate_dependencies(index_type="hks", input_path=Path("s.cram"), bgzip=False)
     assert "samtools" in needed
     assert "hks" in needed
 
@@ -493,6 +492,14 @@ def _hks_cmd_for(tmp_path: Path, monkeypatch, *, input_name: str, query_names):
 
     monkeypatch.setattr(ann_mod, "run_hks_lookup_batch", _fake_batch)
     monkeypatch.setattr(ann_mod, "run_hks_smooth", lambda **kw: None)
+
+    # The decode now happens in the caller (once for all feature sets), so it has
+    # to be stubbed too -- otherwise a .cram input tries to reach samtools.
+    @contextlib.contextmanager
+    def _identity(paths, **kwargs):
+        yield {p: p for p in paths}
+
+    monkeypatch.setattr(ann_mod, "materialised_queries", _identity)
 
     class _Manifest:
         class index:

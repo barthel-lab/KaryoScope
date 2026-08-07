@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **A BAM/CRAM input is now decoded ONCE per run, not once per feature set.** The
+  `samtools fasta` conversion lived inside `run_hks_lookup_batch`, which the
+  annotate backend calls once per feature set -- so a six-feature-set database
+  decoded the same alignment six times. On a 56 GB CRAM that is ~25 minutes each,
+  ~2.5 hours of pure redundancy. The conversion is now a context manager
+  (`materialised_queries`) that the backend enters once and reuses across every
+  set. Single-feature-set runs are unaffected; already-seekable inputs pass
+  straight through and cost nothing.
+
 ### Added
+
+- **`--query-names-sidecar`** writes `<outdir>/<input>.query_names.txt.gz` for
+  BAM/CRAM input: the record names in the order hks assigns ranks, one per line.
+  It is **teed off the decode annotate performs anyway**, so it is nearly free.
+
+  This exists because read-level output is identified by ordinal rank (names OOM
+  the lookup -- see below), and recovering the mapping afterwards means decoding
+  the whole alignment a second time: ~25 minutes and a full re-read of a 56 GB
+  CRAM. Anything that joins rank-identified output back to reads needs it --
+  pairing paired-end mates, for instance, since mates are not adjacent in a
+  coordinate-sorted CRAM.
+
+  Verified byte-identical to `samtools fasta -F 0x900 -N | grep '^>'` on a real
+  CRAM, and named from the input stem rather than the db-qualified prefix, since
+  the mapping is a property of the input rather than the database.
 
 - **`annotate` reads CRAM.** `--input` accepts `.cram`, and a new `--reference`
   option supplies the FASTA the alignment was encoded against. CRAM stores
@@ -24,9 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Both backends are covered. KMC streams `samtools fasta` straight into
   `get_featureIDs` with no temp file; HKS cannot (`hks lookup` needs a seekable
-  path) and so materialises a temp FASTA in `$TMPDIR` first. That file is
+  path) and so materialises a temp FASTA next to the output first — the system
+  tempdir on cluster nodes is often small or RAM-backed. That file is
   **full size** — a 64x human WGS CRAM measured 28.9 GB in, 254 GB out — so
-  `$TMPDIR` must point at node-local scratch, never at a shared filesystem.
+  budget that space on the output filesystem on top of the BEDs.
 
 - **`--query-names/--no-query-names`** controls which identifier the output BED
   carries, and **`--query-names` is now refused outright for read-level input**
