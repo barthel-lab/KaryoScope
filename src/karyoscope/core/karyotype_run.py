@@ -38,7 +38,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from karyoscope.core.annotate import annotate_batch, resolve_database
+from karyoscope.core.annotate import annotate_batch
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.centromeres import (
     DEFAULT_COARSE_BIN_SIZE,
@@ -72,6 +72,7 @@ from karyoscope.core.scaffold import (
 )
 from karyoscope.core.scaffold_run import InputSpec, _resolve_roles, scaffold_run
 from karyoscope.exceptions import KaryotypeError
+from karyoscope.installed import resolve_database
 from karyoscope.manifest import validate_database_layout
 from karyoscope.progress import SILENT, Progress
 

@@ -11,8 +11,8 @@ from click.testing import CliRunner
 
 from karyoscope import installed as _installed
 from karyoscope.cli import main
-from karyoscope.core.annotate import resolve_database
 from karyoscope.exceptions import DatabaseNotFoundError
+from karyoscope.installed import resolve_database
 
 from .conftest import DUMMY_DB_ID, _extractall_compat
 

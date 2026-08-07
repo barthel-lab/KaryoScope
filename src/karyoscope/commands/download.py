@@ -36,7 +36,13 @@ from karyoscope.exceptions import (
 
 
 def _format_size_gb(gb: float) -> str:
-    """Render a size in GB with one decimal."""
+    """Render a size in GB with one decimal.
+
+    Deliberately not :func:`karyoscope.diskspace.format_bytes`: registry
+    entries declare their sizes in GB, and the listing keeps every row in
+    that one unit so entries can be compared down a column (format_bytes
+    would render a small database in MB).
+    """
     return f"{gb:.1f} GB"
 
 

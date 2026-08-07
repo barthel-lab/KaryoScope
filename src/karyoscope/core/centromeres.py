@@ -36,7 +36,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from karyoscope.core.annotate import resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.hierarchy import parse_hierarchy
@@ -49,6 +48,7 @@ from karyoscope.core.scaffold import (
 )
 from karyoscope.core.scaffold_run import InputSpec, scaffold_run
 from karyoscope.exceptions import CentromereError
+from karyoscope.installed import resolve_database
 from karyoscope.manifest import validate_database_layout
 
 logger = logging.getLogger(__name__)
