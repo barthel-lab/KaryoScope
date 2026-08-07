@@ -230,7 +230,6 @@ def run_hks_lookup(
 
     if input_path.suffix.lower() == ".bam":
         return _run_hks_lookup_from_bam(
-            binary=binary,
             base_path=base_path,
             feature_set_file=feature_set_file,
             k=k,
@@ -269,22 +268,14 @@ def run_hks_lookup(
     return output_path
 
 
-def _run_hks_lookup_from_bam(
-    *,
-    binary: str,
-    base_path: Path,
-    feature_set_file: Path,
-    k: int,
-    bam_path: Path,
-    output_path: Path,
-    threads: int,
-    report_query_names: bool = True,
-    capture: bool,
-) -> Path:
-    """Convert a BAM to FASTA in a temp file and run HKS lookup on it.
+def convert_bam_to_fasta(bam_path: Path, dest_dir: Path, *, capture: bool = False) -> Path:
+    """Convert a BAM to a temporary FASTA via ``samtools fasta``.
 
-    HKS requires a seekable file path, so we materialise the samtools
-    output to a temporary FASTA rather than streaming via a named pipe.
+    HKS requires a seekable file path, so the samtools output is
+    materialised rather than streamed via a named pipe. The FASTA is
+    created in ``dest_dir`` — it is input-sized, so it belongs on the
+    output's filesystem, not the system tempdir. The caller owns the
+    returned file and must delete it.
     """
     samtools = require_tool(
         "samtools",
@@ -296,20 +287,18 @@ def _run_hks_lookup_from_bam(
         ),
     )
 
-    # Next to the output, not the system tempdir: the FASTA is input-sized
-    # (whole genome or read set), and /tmp on cluster nodes is often small
-    # or RAM-backed.
-    with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False, dir=output_path.parent) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False, dir=dest_dir) as tmp:
         tmp_fasta = Path(tmp.name)
 
     try:
         logger.debug("converting BAM to FASTA: %s -> %s", bam_path, tmp_fasta)
-        samtools_result = subprocess.run(
-            [samtools, "fasta", str(bam_path)],
-            stdout=tmp_fasta.open("wb"),
-            stderr=subprocess.PIPE if capture else None,
-            check=False,
-        )
+        with tmp_fasta.open("wb") as out:
+            samtools_result = subprocess.run(
+                [samtools, "fasta", str(bam_path)],
+                stdout=out,
+                stderr=subprocess.PIPE if capture else None,
+                check=False,
+            )
         if samtools_result.returncode != 0:
             stderr = samtools_result.stderr.decode() if samtools_result.stderr else ""
             raise ExternalToolError(
@@ -317,6 +306,31 @@ def _run_hks_lookup_from_bam(
                 returncode=samtools_result.returncode,
                 stderr=stderr,
             )
+    except BaseException:
+        tmp_fasta.unlink(missing_ok=True)
+        raise
+    return tmp_fasta
+
+
+def _run_hks_lookup_from_bam(
+    *,
+    base_path: Path,
+    feature_set_file: Path,
+    k: int,
+    bam_path: Path,
+    output_path: Path,
+    threads: int,
+    report_query_names: bool = True,
+    capture: bool,
+) -> Path:
+    """Convert a BAM to FASTA in a temp file and run HKS lookup on it.
+
+    One conversion per call: a caller querying several feature sets
+    against the same BAM should convert once with
+    :func:`convert_bam_to_fasta` and pass the FASTA instead.
+    """
+    tmp_fasta = convert_bam_to_fasta(bam_path, output_path.parent, capture=capture)
+    try:
         return run_hks_lookup(
             base_path=base_path,
             feature_set_file=feature_set_file,
@@ -328,8 +342,7 @@ def _run_hks_lookup_from_bam(
             capture=capture,
         )
     finally:
-        if tmp_fasta.exists():
-            tmp_fasta.unlink()
+        tmp_fasta.unlink(missing_ok=True)
 
 
 def run_hks_smooth(

@@ -51,6 +51,7 @@ from karyoscope.core.io.hierarchy import (
     validate_hierarchy,
 )
 from karyoscope.core.io.hks import (
+    convert_bam_to_fasta,
     convert_hks_tsv_to_bed,
     run_hks_lookup,
     run_hks_smooth,
@@ -1042,57 +1043,74 @@ def _run_hks_backend(
     # which map to karyotype chromosomes).
     is_reads = _is_reads_input(input_path)
 
+    # A BAM is converted to FASTA once, up front: run_hks_lookup would
+    # otherwise re-run samtools fasta for every feature set.
+    query_path = input_path
+    tmp_fasta: Path | None = None
+    if input_path.suffix.lower() == ".bam":
+        logger.info(
+            "converting BAM %s to FASTA once for %d feature set(s)",
+            input_path.name,
+            len(requested),
+        )
+        tmp_fasta = convert_bam_to_fasta(input_path, output_dir, capture=True)
+        query_path = tmp_fasta
+
     t_hks_start = time.perf_counter()
     tracker = progress.track(requested)
-    for fs in requested:
-        t_fs = time.perf_counter()
-        fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
-        hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
-        raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
+    try:
+        for fs in requested:
+            t_fs = time.perf_counter()
+            fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
+            hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
+            raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
 
-        logger.info(
-            "running hks lookup for feature set %r on %s (threads=%d)",
-            fs,
-            input_path.name,
-            threads,
-        )
-        run_hks_lookup(
-            base_path=base_path,
-            feature_set_file=fs_file,
-            k=k,
-            input_path=input_path,
-            output_path=raw_tsv,
-            threads=threads,
-            report_query_names=not is_reads,
-            capture=True,
-        )
-        if not raw_tsv.is_file():
-            raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
+            logger.info(
+                "running hks lookup for feature set %r on %s (threads=%d)",
+                fs,
+                input_path.name,
+                threads,
+            )
+            run_hks_lookup(
+                base_path=base_path,
+                feature_set_file=fs_file,
+                k=k,
+                input_path=query_path,
+                output_path=raw_tsv,
+                threads=threads,
+                report_query_names=not is_reads,
+                capture=True,
+            )
+            if not raw_tsv.is_file():
+                raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
 
-        try:
-            if keep_presmoothed:
-                convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
-
-            if smooth:
-                t_smo = time.perf_counter()
-                logger.info("running hks smooth for feature set %r", fs)
-                run_hks_smooth(
-                    hierarchy_file=hierarchy_file,
-                    input_path=raw_tsv,
-                    output_path=smoothed_paths[fs],
-                    threads=threads,
-                    capture=True,
-                )
-                logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
-        finally:
             try:
-                raw_tsv.unlink()
-            except OSError as exc:
-                logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
-        # Reported here rather than per sub-step: one line per feature set
-        # is the granularity a user waiting on the run actually needs, and
-        # HKS processes them strictly in sequence so the counter is honest.
-        tracker.step(fs, time.perf_counter() - t_fs)
+                if keep_presmoothed:
+                    convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
+
+                if smooth:
+                    t_smo = time.perf_counter()
+                    logger.info("running hks smooth for feature set %r", fs)
+                    run_hks_smooth(
+                        hierarchy_file=hierarchy_file,
+                        input_path=raw_tsv,
+                        output_path=smoothed_paths[fs],
+                        threads=threads,
+                        capture=True,
+                    )
+                    logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
+            finally:
+                try:
+                    raw_tsv.unlink()
+                except OSError as exc:
+                    logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
+            # Reported here rather than per sub-step: one line per feature set
+            # is the granularity a user waiting on the run actually needs, and
+            # HKS processes them strictly in sequence so the counter is honest.
+            tracker.step(fs, time.perf_counter() - t_fs)
+    finally:
+        if tmp_fasta is not None:
+            tmp_fasta.unlink(missing_ok=True)
 
     logger.info(
         "hks backend complete in %.1fs (%d feature set(s))",
