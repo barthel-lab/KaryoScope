@@ -20,7 +20,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from karyoscope.exceptions import KaryoscopeError
+from karyoscope.exceptions import DatabaseNotFoundError, KaryoscopeError
+from karyoscope.manifest import validate_database_layout
 
 INSTALLED_FILENAME = "installed.json"
 SCHEMA_VERSION = 1
@@ -171,3 +172,56 @@ def uninstall(db_root: Path, db_id: str) -> bool:
 
     remove_install_record(db_root, db_id)
     return True
+
+
+def resolve_database(
+    db_root: Path,
+    db_id: str | None,
+) -> tuple[str, Path]:
+    """Locate and validate the database to use.
+
+    Returns ``(database_id, database_directory)``. Raises a clean error
+    if the user requested an unknown id or if the layout is invalid.
+
+    Shared by every command that opens a database (annotate, bin,
+    scaffold, centromeres, karyotype).
+    """
+    state = load(db_root)
+
+    if db_id is not None:
+        record = state.databases.get(db_id)
+        if record is None:
+            installed_ids = sorted(state.databases.keys())
+            raise DatabaseNotFoundError(
+                f"database {db_id!r} is not installed at {db_root}. "
+                f"Installed databases: {installed_ids or '(none)'}. "
+                "Run `karyoscope download --list` to see what's available."
+            )
+        db_dir = db_root / record.directory
+    else:
+        # No explicit id — use the only installed db if there's exactly
+        # one, otherwise complain.
+        if not state.databases:
+            raise DatabaseNotFoundError(
+                f"no databases installed at {db_root}. "
+                "Install one with `karyoscope download`, or point --db-root at a "
+                "directory that already has one (then --db <ID> selects it)."
+            )
+        if len(state.databases) > 1:
+            ids = sorted(state.databases.keys())
+            raise DatabaseNotFoundError(
+                f"multiple databases installed; pass --db to choose one. Installed: {ids}"
+            )
+        db_id, record = next(iter(state.databases.items()))
+        db_dir = db_root / record.directory
+
+    if not db_dir.is_dir():
+        raise DatabaseNotFoundError(
+            f"database {db_id!r} is recorded but its directory {db_dir} is missing on disk."
+        )
+
+    # Surface layout errors early rather than letting get_featureIDs fail
+    # with a less informative message later.
+    validate_database_layout(db_dir)
+
+    return db_id, db_dir

@@ -30,13 +30,13 @@ from pathlib import Path
 import click
 
 from karyoscope import paths
-from karyoscope.core.annotate import resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.exceptions import (
     BinError,
     KaryoscopeError,
 )
+from karyoscope.installed import resolve_database
 from karyoscope.manifest import validate_database_layout
 
 logger = logging.getLogger(__name__)

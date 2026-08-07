@@ -37,6 +37,7 @@ from karyoscope.core.io.hierarchy import (
     parse_hierarchy,
     validate_hierarchy,
 )
+from karyoscope.diskspace import format_bytes
 from karyoscope.exceptions import (
     DatabaseLayoutError,
     DatabaseNotFoundError,
@@ -53,15 +54,6 @@ logger = logging.getLogger(__name__)
 
 
 # --- formatting helpers ----------------------------------------------------
-
-
-def _format_size(num_bytes: float) -> str:
-    """Format a byte count using SI-style units (KB, MB, GB)."""
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if num_bytes < 1024.0 or unit == "TB":
-            return f"{num_bytes:.1f} {unit}"
-        num_bytes /= 1024.0
-    return f"{num_bytes:.1f} TB"  # pragma: no cover (unreachable)
 
 
 def _dir_size(path: Path) -> int:
@@ -99,13 +91,13 @@ def _list_installed(db_root: Path) -> None:
             "installed.json (perhaps unpacked manually):"
         )
         for db in loose:
-            click.echo(f"  {db.name}  ({_format_size(_dir_size(db))})")
+            click.echo(f"  {db.name}  ({format_bytes(_dir_size(db))})")
         return
 
     click.echo(f"\nInstalled databases ({len(state.databases)}):")
     for db_id, rec in sorted(state.databases.items()):
         db_dir = db_root / rec.directory
-        size = _format_size(_dir_size(db_dir)) if db_dir.is_dir() else "missing"
+        size = format_bytes(_dir_size(db_dir)) if db_dir.is_dir() else "missing"
         click.echo(f"  {db_id}")
         click.echo(f"    Version:   {rec.version}")
         click.echo(f"    Installed: {rec.installed_at}")
@@ -147,7 +139,7 @@ def _print_manifest_summary(manifest: Manifest, db_dir: Path, size_line: str | N
         for k, v in sorted(manifest.smoothing.items()):
             click.echo(f"  Smoothing ({k}): {v}")
     if size_line is None:
-        click.echo(f"  Size on disk:           {_format_size(_dir_size(db_dir))}")
+        click.echo(f"  Size on disk:           {format_bytes(_dir_size(db_dir))}")
     else:
         click.echo(size_line)
 
@@ -331,7 +323,7 @@ def _stage_archive(path: Path, staging: Path) -> tuple[set[str], int, int]:
 
 def _show_archive(path: Path) -> None:
     """Validate a database archive's layout without unpacking it."""
-    click.echo(f"  Type: database archive ({_format_size(path.stat().st_size)})")
+    click.echo(f"  Type: database archive ({format_bytes(path.stat().st_size)})")
 
     with tempfile.TemporaryDirectory(prefix="karyoscope-info-") as tmp:
         staging = Path(tmp)
@@ -355,7 +347,7 @@ def _show_archive(path: Path) -> None:
         root_name = next(iter(top_level))
         root = staging / root_name
         click.echo(f"  Top-level directory: {root_name}")
-        click.echo(f"  Contents: {n_files} files, {_format_size(total_bytes)} extracted")
+        click.echo(f"  Contents: {n_files} files, {format_bytes(total_bytes)} extracted")
 
         if not (root / "manifest.yaml").is_file():
             click.echo(f"  Layout valid: NO (no manifest.yaml in {root_name}/)")
@@ -379,7 +371,7 @@ def _show_archive(path: Path) -> None:
         _print_manifest_summary(
             manifest,
             root,
-            size_line=f"  Size extracted:         {_format_size(total_bytes)}",
+            size_line=f"  Size extracted:         {format_bytes(total_bytes)}",
         )
         _print_hierarchy_summary(manifest, root, report_colors=False)
 
@@ -418,21 +410,21 @@ def _show_path(path: Path) -> None:
                 manifest = validate_database_layout(path)
             except (ManifestError, DatabaseLayoutError) as e:
                 click.echo(f"  Layout valid: NO ({e})")
-                click.echo(f"  Size on disk: {_format_size(_dir_size(path))}")
+                click.echo(f"  Size on disk: {format_bytes(_dir_size(path))}")
                 return
             click.echo(f"  Database id:  {manifest.id}")
             _print_manifest_summary(manifest, path)
             _print_hierarchy_summary(manifest, path)
         else:
             click.echo("  Type: directory")
-            click.echo(f"  Size: {_format_size(_dir_size(path))}")
+            click.echo(f"  Size: {format_bytes(_dir_size(path))}")
         return
 
     if path.is_file():
         if _looks_like_archive(path):
             _show_archive(path)
             return
-        size = _format_size(path.stat().st_size)
+        size = format_bytes(path.stat().st_size)
         click.echo(f"  Type: file ({size})")
         return
 

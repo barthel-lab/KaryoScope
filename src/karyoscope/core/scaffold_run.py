@@ -44,7 +44,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from karyoscope.core.annotate import annotate, annotate_batch, resolve_database
+from karyoscope.core.annotate import annotate, annotate_batch
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.hap_inference import (
     assign_per_input_labels,
@@ -71,6 +71,7 @@ from karyoscope.core.scaffold import (
     write_combined_fasta,
 )
 from karyoscope.exceptions import ScaffoldError
+from karyoscope.installed import resolve_database
 from karyoscope.manifest import validate_database_layout
 from karyoscope.progress import SILENT, Progress
 

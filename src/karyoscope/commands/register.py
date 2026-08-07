@@ -8,7 +8,7 @@ another machine — and unpacked into the database root directly. Such a
 database is valid on disk yet invisible to ``annotate``, ``bin``,
 ``scaffold``, ``centromeres``, and ``karyotype``, because those commands
 resolve databases through ``installed.json`` only (see
-:func:`karyoscope.core.annotate.resolve_database`).
+:func:`karyoscope.installed.resolve_database`).
 
 ``register`` closes that gap: point it at an already-present database
 directory and it writes the ``installed.json`` entry, deriving everything

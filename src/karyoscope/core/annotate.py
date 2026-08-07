@@ -42,7 +42,6 @@ from typing import TextIO
 
 from karyoscope import cpus as _cpus
 from karyoscope import diskspace, memory, preflight
-from karyoscope import installed as _installed
 from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.features import NOVEL_NAME, Features, parse_features, render_feature
 from karyoscope.core.io.hierarchy import (
@@ -71,9 +70,9 @@ from karyoscope.core.smooth import (
     worker_initializer,
 )
 from karyoscope.exceptions import (
-    DatabaseNotFoundError,
     KaryoscopeError,
 )
+from karyoscope.installed import resolve_database
 from karyoscope.manifest import validate_database_layout
 from karyoscope.progress import SILENT, Progress
 
@@ -469,60 +468,6 @@ def _annotate_dependencies(*, index_type: str, input_path: Path, bgzip: bool) ->
     if bgzip:
         needed.append("bgzip")
     return needed
-
-
-def resolve_database(
-    db_root: Path,
-    db_id: str | None,
-) -> tuple[str, Path]:
-    """Locate and validate the database to use.
-
-    Returns ``(database_id, database_directory)``. Raises a clean error
-    if the user requested an unknown id or if the layout is invalid.
-
-    Shared across :mod:`karyoscope.commands.annotate`,
-    :mod:`karyoscope.commands.bin_cmd`, and (eventually)
-    :mod:`karyoscope.commands.scaffold`.
-    """
-    state = _installed.load(db_root)
-
-    if db_id is not None:
-        record = state.databases.get(db_id)
-        if record is None:
-            installed_ids = sorted(state.databases.keys())
-            raise DatabaseNotFoundError(
-                f"database {db_id!r} is not installed at {db_root}. "
-                f"Installed databases: {installed_ids or '(none)'}. "
-                "Run `karyoscope download --list` to see what's available."
-            )
-        db_dir = db_root / record.directory
-    else:
-        # No explicit id — use the only installed db if there's exactly
-        # one, otherwise complain.
-        if not state.databases:
-            raise DatabaseNotFoundError(
-                f"no databases installed at {db_root}. "
-                "Install one with `karyoscope download`, or point --db-root at a "
-                "directory that already has one (then --db <ID> selects it)."
-            )
-        if len(state.databases) > 1:
-            ids = sorted(state.databases.keys())
-            raise DatabaseNotFoundError(
-                f"multiple databases installed; pass --db to choose one. Installed: {ids}"
-            )
-        db_id, record = next(iter(state.databases.items()))
-        db_dir = db_root / record.directory
-
-    if not db_dir.is_dir():
-        raise DatabaseNotFoundError(
-            f"database {db_id!r} is recorded but its directory {db_dir} is missing on disk."
-        )
-
-    # Surface layout errors early rather than letting get_featureIDs fail
-    # with a less informative message later.
-    validate_database_layout(db_dir)
-
-    return db_id, db_dir
 
 
 def _iter_bed_records(handle: TextIO) -> Iterator[tuple[str, int, int, int]]:
@@ -1087,13 +1032,6 @@ def _concat_per_sequence_to_bed(
                 shutil.copyfileobj(src, out_h)
 
 
-def _human_bytes(n: int) -> str:
-    """Render a byte count as ``"X.YY GB"`` (>=1 GB) or ``"X.Y MB"``."""
-    if n >= 1024**3:
-        return f"{n / 1024**3:.2f} GB"
-    return f"{n / 1024**2:.1f} MB"
-
-
 def _peak_child_rss_bytes() -> int | None:
     """Peak resident set size across every child process reaped so far.
 
@@ -1314,7 +1252,7 @@ def _run_hks_feature_sets(
         logger.info(
             "hks lookup for %r wrote %s over %d input(s) in %.1fs",
             fs,
-            _human_bytes(lookup_bytes),
+            diskspace.format_bytes(lookup_bytes),
             len(input_paths),
             dt_lookup,
         )
@@ -1337,9 +1275,9 @@ def _run_hks_feature_sets(
                 logger.info(
                     "hks smooth for %r wrote %s in %.1fs (read %s at %s)",
                     fs,
-                    _human_bytes(smoothed_bytes),
+                    diskspace.format_bytes(smoothed_bytes),
                     dt_smooth,
-                    _human_bytes(lookup_bytes),
+                    diskspace.format_bytes(lookup_bytes),
                     _rate(lookup_bytes, dt_smooth),
                 )
         finally:
@@ -1356,7 +1294,7 @@ def _run_hks_feature_sets(
 
         peak = _peak_child_rss_bytes()
         if peak is not None:
-            logger.info("peak hks memory so far: %s", _human_bytes(peak))
+            logger.info("peak hks memory so far: %s", diskspace.format_bytes(peak))
         # Reported here rather than per sub-step: one line per feature set
         # is the granularity a user waiting on the run actually needs, and
         # HKS processes them strictly in sequence so the counter is honest.
@@ -1368,7 +1306,7 @@ def _run_hks_feature_sets(
         time.perf_counter() - t_hks_start,
         len(requested),
         len(input_paths),
-        f", peak hks memory {_human_bytes(peak)}" if peak is not None else "",
+        f", peak hks memory {diskspace.format_bytes(peak)}" if peak is not None else "",
     )
 
 
@@ -1518,7 +1456,7 @@ def annotate(
     )
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp of input",
-        _human_bytes(needed_bytes),
+        diskspace.format_bytes(needed_bytes),
         len(requested),
         input_bases / 1e9,
     )
@@ -1557,7 +1495,7 @@ def annotate(
     progress.start(
         f"Annotating {input_path.name} against {db_id_resolved}",
         f"{len(requested)} feature set(s), {n_threads} thread(s), "
-        f"~{_human_bytes(needed_bytes)} estimated output",
+        f"~{diskspace.format_bytes(needed_bytes)} estimated output",
     )
 
     t_annotate_start = time.perf_counter()
@@ -1666,12 +1604,12 @@ def annotate(
             logger.info(
                 "reusing existing combined BED from a previous run (%s): %s "
                 "-- skipping get_featureIDs. Pass --force to regenerate.",
-                _human_bytes(combined_bed.stat().st_size),
+                diskspace.format_bytes(combined_bed.stat().st_size),
                 combined_bed,
             )
             progress.note(
                 f"reusing the combined BED from a previous run "
-                f"({_human_bytes(combined_bed.stat().st_size)}); skipping the k-mer query"
+                f"({diskspace.format_bytes(combined_bed.stat().st_size)}); skipping the k-mer query"
             )
         else:
             logger.info(
@@ -1696,7 +1634,7 @@ def annotate(
             logger.info(
                 "ran get_featureIDs in %.1fs (combined BED: %s)",
                 time.perf_counter() - t_kmc_start,
-                _human_bytes(combined_bed.stat().st_size),
+                diskspace.format_bytes(combined_bed.stat().st_size),
             )
             # Named stages rather than [i/N]: the KMC backend runs one
             # combined query and then one streaming smoothing pass over
@@ -1978,7 +1916,7 @@ def annotate_batch(
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp "
         "of input across %d file(s)",
-        _human_bytes(needed_bytes),
+        diskspace.format_bytes(needed_bytes),
         len(requested),
         total_bases / 1e9,
         len(input_paths),
@@ -2015,7 +1953,7 @@ def annotate_batch(
     progress.start(
         f"Annotating {len(input_paths)} inputs against {db_id_resolved}",
         f"{len(requested)} feature set(s), {n_threads} thread(s), "
-        f"~{_human_bytes(needed_bytes)} estimated output",
+        f"~{diskspace.format_bytes(needed_bytes)} estimated output",
         "one index load per feature set for the whole batch",
     )
 
