@@ -465,6 +465,1143 @@ class _CellLayout:
     image_width: int = 0
 
 
+# --- aggregate all inputs into rendered-set views ----------------
+
+
+@dataclass(frozen=True)
+class _RenderViews:
+    """Rendered-set views aggregated across all inputs."""
+
+    map_by_name: dict[str, MapRow]
+    tel_start_sequences: set[str]
+    tel_stop_sequences: set[str]
+    sequence_lengths: dict[str, int]
+    chromosomes: list[str]
+    haplotypes: list[str]
+    centromere_coords: dict[str, tuple[int, int]]
+    max_centromere_length: int
+
+
+def _aggregate_inputs(
+    inputs: list[RenderInput],
+    *,
+    mode: Mode,
+    seed_human_chromosomes: bool,
+    expected_chromosomes: list[str] | None,
+) -> _RenderViews:
+    """Aggregate the per-input records into the views the renderer draws from."""
+    # New_name -> MapRow (across all inputs).
+    map_by_name: dict[str, MapRow] = {}
+    for ri in inputs:
+        for row in ri.map_rows:
+            map_by_name[row.new_name] = row
+
+    # Telomere flags from the stats string.
+    tel_start_sequences: set[str] = set()
+    tel_stop_sequences: set[str] = set()
+    for name, row in map_by_name.items():
+        has_start, has_stop = _telomere_flags_from_stats(row.stats)
+        if has_start:
+            tel_start_sequences.add(name)
+        if has_stop:
+            tel_stop_sequences.add(name)
+
+    # Per-sequence (contig) length from the binned BED -- max stop seen.
+    sequence_lengths: dict[str, int] = {}
+    for ri in inputs:
+        for name, intervals in ri.binned_bed.items():
+            if not intervals:
+                continue
+            seq_max = max(stop for _, stop, _ in intervals)
+            sequence_lengths[name] = max(sequence_lengths.get(name, 0), seq_max)
+
+    # CHROMOSOMES and HAPLOTYPES.
+    chroms_seen: set[str] = set()
+    haps_seen: set[str] = set()
+    for row in map_by_name.values():
+        chroms_seen.add(row.chromosome)
+        haps_seen.add(_effective_hap(row))
+
+    # Seed the layout with the database's declared chromosome set (the
+    # chromosome feature-set leaves) so a chromosome missing from the sample
+    # still gets an empty column. ``seed_human_chromosomes`` (the
+    # ``--no-human-chroms`` gate, kept for compatibility) turns seeding off to
+    # show only chromosomes present in the data. Non-karyotype sequences
+    # (organelles) should be kept out of the chromosome set (or `build
+    # --exclude`d) rather than appearing as empty columns.
+    CHROMOSOMES: list[str] = []
+    if seed_human_chromosomes and expected_chromosomes:
+        CHROMOSOMES = list(expected_chromosomes)
+    for c in chroms_seen:
+        if c not in CHROMOSOMES:
+            CHROMOSOMES.append(c)
+    CHROMOSOMES.sort(key=chromosome_sort_key)
+
+    HAPLOTYPES: list[str] = sorted(haps_seen, key=_haps_natural_sort_key)
+    if not HAPLOTYPES:
+        HAPLOTYPES = ["hap1", "hap2"]
+
+    # Centromere coordinates (centromere mode only).
+    centromere_coords: dict[str, tuple[int, int]] = {}
+    if mode == "centromere":
+        for ri in inputs:
+            if ri.centromere_ranges is None:
+                continue
+            for name, (cstart, cend) in ri.centromere_ranges.items():
+                if name in centromere_coords:
+                    existing_start, existing_end = centromere_coords[name]
+                    centromere_coords[name] = (
+                        min(existing_start, cstart),
+                        max(existing_end, cend),
+                    )
+                else:
+                    centromere_coords[name] = (cstart, cend)
+        if not centromere_coords:
+            raise KaryotypeError(
+                "centromere mode requires centromere coordinates; none were provided "
+                "across any of the inputs"
+            )
+        max_centromere_length = max(end - start for start, end in centromere_coords.values())
+    else:
+        max_centromere_length = 0
+
+    return _RenderViews(
+        map_by_name=map_by_name,
+        tel_start_sequences=tel_start_sequences,
+        tel_stop_sequences=tel_stop_sequences,
+        sequence_lengths=sequence_lengths,
+        chromosomes=CHROMOSOMES,
+        haplotypes=HAPLOTYPES,
+        centromere_coords=centromere_coords,
+        max_centromere_length=max_centromere_length,
+    )
+
+
+# --- layout constants (from archive) -----------------------------
+
+
+@dataclass(frozen=True)
+class _Geometry:
+    """Layout constants and the effective zoom for one render call."""
+
+    mode_params: _ModeParams
+    pixels_per_pos: float
+    min_label_width: int
+    initial_x: int
+    sequence_gap: int
+    hap_gap: int
+    chrom_gap: int
+    circle_radius: int
+    x_border: int
+    y_border: int
+    title_band_height: int
+    chrom_label_y: int
+    chrom_line_y: int
+    hap_label_y: int
+    hap_line_y: int
+    initial_y: int
+    min_q_arm_offset: int
+    text_color: str
+    outline_color: str
+    sequence_outline_stroke: float
+    legend_row_height: int
+    legend_swatch_size: int
+    legend_text_size: int
+    legend_swatch_stroke: float
+    q_arm_start_y: float
+    q_arm_height: float
+    final_image_height: int
+
+    # --- helpers depending on layout consts --------------------------
+
+    def pos_to_y(self, pos: int) -> int:
+        """Data position -> canvas y at the current zoom."""
+        return int(self.initial_y + floor(pos * self.pixels_per_pos))
+
+
+def _layout_geometry(
+    views: _RenderViews,
+    *,
+    mode: Mode,
+    background_color: str,
+    show_title: bool,
+    subtelomere_boundary: int,
+    pixels_per_mb: float | None,
+) -> _Geometry:
+    """Compute the layout constants and effective zoom for this render."""
+    mode_params = _MODE_PARAMS[mode]
+    pixels_per_pos = mode_params.pixels_per_pos
+
+    # Zoom: an explicit ``pixels_per_mb`` fixes the scale (e.g. to compare
+    # plots across assemblies); otherwise it's data-driven so the mode's
+    # longest extent fills a target height. This keeps human output at the
+    # old fixed scale while small genomes (Arabidopsis) fill the same height
+    # instead of rendering tiny. ``subtelomere`` keeps its fixed-window scale.
+    if pixels_per_mb is not None:
+        pixels_per_pos = pixels_per_mb / 1_000_000
+    elif mode == "genome":
+        longest = max(views.sequence_lengths.values(), default=0)
+        if longest > 0:
+            pixels_per_pos = _GENOME_TARGET_PX / longest
+    elif mode == "centromere" and views.max_centromere_length > 0:
+        pixels_per_pos = _CENTROMERE_TARGET_PX / views.max_centromere_length
+
+    min_label_width = 15 if len(views.haplotypes) > 1 else 25
+    initial_x = 50
+    sequence_gap = 15
+    hap_gap = 10
+    chrom_gap = 24
+    circle_radius = 3
+    x_border = initial_x + sequence_gap - 1
+    y_border = 25
+    # Title band (optional, drawn above the karyotype). All
+    # below-title-band y constants get offset by ``title_band_height``
+    # via ``title_offset``.
+    title_band_height = 35 if show_title else 0
+    title_offset = title_band_height
+    chrom_label_y = 23 + title_offset
+    chrom_line_y = 28 + title_offset
+    hap_label_y = 43 + title_offset
+    hap_line_y = 48 + title_offset
+    initial_y = (60 if len(views.haplotypes) > 1 else 40) + title_offset
+    min_q_arm_offset = 5
+    text_color = "#000000" if background_color == "white" else "#FFFFFF"
+    # Outlines follow the text, for the same reason: a fill the same colour
+    # as the backdrop is otherwise invisible. That is not hypothetical --
+    # the cytoband palette contains pure #000000 (the gpos100 bands), which
+    # on a black background disappeared entirely, as did every legend swatch
+    # (they were drawn with a hardcoded black stroke regardless of theme).
+    outline_color = text_color
+    # Sequence columns are only ``2 * circle_radius`` px wide (6 px at the
+    # default), and a stroke straddles the path -- so a 1 px border ate a
+    # sixth of the column and read as a white cage rather than an edge.
+    sequence_outline_stroke = 0.5
+
+    # Legend band (optional, drawn at the right margin). The total
+    # width is computed dynamically after the feature pre-pass below,
+    # so the canvas stays tight against the longest legend label.
+    # Text size matches the chromosome/hap label size (14 pt) so the
+    # legend reads with the same visual weight as the chromosome
+    # columns; the swatch and row height are scaled to match.
+    legend_row_height = 20
+    legend_swatch_size = 14
+    legend_text_size = 14
+    legend_swatch_stroke = 0.5
+
+    P_Q_ARM_GAP = 50
+    q_arm_start_y = 0.0
+    q_arm_height = 0.0
+    if mode == "subtelomere":
+        p_arm_height = subtelomere_boundary * pixels_per_pos
+        q_arm_start_y = initial_y + p_arm_height + P_Q_ARM_GAP
+        q_arm_height = subtelomere_boundary * pixels_per_pos
+        final_image_height = int(q_arm_start_y + q_arm_height + initial_y)
+    elif mode == "centromere":
+        final_image_height = int(
+            initial_y + (views.max_centromere_length * pixels_per_pos) + y_border + initial_y
+        )
+    else:  # genome
+        final_image_height = 0  # computed later from max_stop_y
+
+    return _Geometry(
+        mode_params=mode_params,
+        pixels_per_pos=pixels_per_pos,
+        min_label_width=min_label_width,
+        initial_x=initial_x,
+        sequence_gap=sequence_gap,
+        hap_gap=hap_gap,
+        chrom_gap=chrom_gap,
+        circle_radius=circle_radius,
+        x_border=x_border,
+        y_border=y_border,
+        title_band_height=title_band_height,
+        chrom_label_y=chrom_label_y,
+        chrom_line_y=chrom_line_y,
+        hap_label_y=hap_label_y,
+        hap_line_y=hap_line_y,
+        initial_y=initial_y,
+        min_q_arm_offset=min_q_arm_offset,
+        text_color=text_color,
+        outline_color=outline_color,
+        sequence_outline_stroke=sequence_outline_stroke,
+        legend_row_height=legend_row_height,
+        legend_swatch_size=legend_swatch_size,
+        legend_text_size=legend_text_size,
+        legend_swatch_stroke=legend_swatch_stroke,
+        q_arm_start_y=q_arm_start_y,
+        q_arm_height=q_arm_height,
+        final_image_height=final_image_height,
+    )
+
+
+# --- Pass 1: collect sequences to plot ---------------------------
+
+
+@dataclass(frozen=True)
+class _SequenceCollection:
+    """The contigs selected for plotting (Pass 1)."""
+
+    sequences_to_plot: list[str]
+    seen_sequences: set[str]
+    max_stop_y: int
+
+
+def _collect_sequences(
+    inputs: list[RenderInput],
+    views: _RenderViews,
+    geom: _Geometry,
+    *,
+    mode: Mode,
+    max_num_sequences: int,
+) -> _SequenceCollection:
+    """Select the contigs to draw, applying the mode filter and the contig cap."""
+    telomeric_sequences_set = views.tel_start_sequences | views.tel_stop_sequences
+    sequences_to_plot: list[str] = []
+    seen_sequences: set[str] = set()
+    max_stop_y = 0
+
+    # We iterate per-input in input order; within each input, map order
+    # (canonical chromosome x hap x category x length).
+    for ri in inputs:
+        for row in ri.map_rows:
+            seq = row.new_name
+            if mode == "subtelomere" and seq not in telomeric_sequences_set:
+                continue
+            if mode == "centromere" and seq not in views.centromere_coords:
+                continue
+            if seq in seen_sequences:
+                continue
+            if len(sequences_to_plot) >= max_num_sequences:
+                logger.warning(
+                    "max_num_sequences=%d reached; dropping contig %r",
+                    max_num_sequences,
+                    seq,
+                )
+                continue
+            sequences_to_plot.append(seq)
+            seen_sequences.add(seq)
+            if mode == "genome":
+                stop = views.sequence_lengths.get(seq, 0)
+                if stop:
+                    max_stop_y = max(max_stop_y, geom.pos_to_y(stop))
+
+    return _SequenceCollection(
+        sequences_to_plot=sequences_to_plot,
+        seen_sequences=seen_sequences,
+        max_stop_y=max_stop_y,
+    )
+
+
+# --- Pre-pass for the legend -------------------------------------
+
+
+def _legend_rows(
+    inputs: list[RenderInput],
+    seen_sequences: set[str],
+    *,
+    pixels_per_pos: float,
+    feature_order: list[str] | None,
+    legend_groups: dict[str, str] | None,
+    legend_group_order: list[str] | None,
+) -> tuple[list[str], dict[str, str]]:
+    """Collect, order, and (optionally) group the legend's feature rows.
+
+    Returns the ordered legend row labels and the per-row swatch
+    feature (the feature whose colour a grouped row displays).
+    """
+    # Walk the binned BEDs once (filtered to seen_sequences only) to
+    # collect every feature label that will be drawn. Used for both
+    # legend ordering and dynamic width sizing.
+    # Accumulate each feature's total drawn extent, not merely its presence,
+    # so sub-pixel features can be kept out of the legend (see
+    # :data:`_LEGEND_MIN_DRAWN_PX`).
+    drawn_bp: dict[str, int] = {}
+    for ri in inputs:
+        for seq, intervals in ri.binned_bed.items():
+            if seq not in seen_sequences:
+                continue
+            for start, stop, feature in intervals:
+                drawn_bp[feature] = drawn_bp.get(feature, 0) + max(0, stop - start)
+
+    features_in_data = {
+        feature for feature, bp in drawn_bp.items() if bp * pixels_per_pos >= _LEGEND_MIN_DRAWN_PX
+    }
+    dropped = len(drawn_bp) - len(features_in_data)
+    if dropped:
+        logger.info(
+            "legend: omitted %d feature(s) drawn below %.2g px (%s)",
+            dropped,
+            _LEGEND_MIN_DRAWN_PX,
+            ", ".join(sorted(set(drawn_bp) - features_in_data)),
+        )
+
+    # Legend sort: see :func:`_legend_sort_key` for the full rule.
+    # Briefly: chromosomes (chr*) at the top in natural order, then
+    # "categorized", then hierarchy-order features (autosome /
+    # acrocentric / etc.), then unranked features alphabetical,
+    # "novel" at the bottom.
+    sorted_legend_features = sorted(
+        features_in_data,
+        key=lambda f: _legend_sort_key(f, feature_order),
+    )
+
+    # Collapse to legend groups when the database declares them. A feature
+    # set can carry hundreds of features in a handful of colours (CHM13
+    # cytoband: 833 rendered features, 8 colours), where a per-feature
+    # legend dwarfs the figure AND silently truncates to whatever fits the
+    # canvas -- so the reader sees an arbitrary subset with no indication
+    # any were dropped.
+    #
+    # Group order follows first appearance in colors.tsv, which the database
+    # controls, rather than anything derived here. `novel` is never grouped:
+    # it is the renderer's own sentinel, injected rather than declared, and
+    # `_legend_sort_key` already sinks it to the bottom.
+    legend_swatch_feature: dict[str, str] = {}
+    if legend_groups:
+        grouped: list[str] = []
+        first_member: dict[str, str] = {}
+        for feature in sorted_legend_features:
+            group = legend_groups.get(feature)
+            if group is None or feature == NOVEL_NAME:
+                grouped.append(feature)
+                legend_swatch_feature[feature] = feature
+                continue
+            if group not in first_member:
+                first_member[group] = feature
+                legend_swatch_feature[group] = feature
+                grouped.append(group)
+        if legend_group_order:
+            rank = {g: i for i, g in enumerate(legend_group_order)}
+            order = {name: i for i, name in enumerate(grouped)}
+
+            def _row_key(name: str) -> tuple[int, int, str]:
+                # Groups first, in the order the database declared; then
+                # anything ungrouped, keeping the order _legend_sort_key
+                # already gave it -- which is what leaves ``novel`` at the
+                # bottom, where that key deliberately puts it.
+                if name in first_member:
+                    return (0, rank.get(name, len(rank)), name)
+                return (1, order[name], name)
+
+            grouped.sort(key=_row_key)
+        n_before, n_after = len(sorted_legend_features), len(grouped)
+        sorted_legend_features = grouped
+        logger.info("legend grouped: %d feature(s) collapsed into %d row(s)", n_before, n_after)
+
+    return sorted_legend_features, legend_swatch_feature
+
+
+# --- group by chromosome and haplotype ---------------------------
+
+
+def _group_by_chrom_hap(
+    sequences_to_plot: list[str],
+    views: _RenderViews,
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, int]]:
+    """Bucket plotted contigs per (chromosome, haplotype), recording intra-hap order."""
+    sequences_per_chrom_hap: dict[str, dict[str, list[str]]] = {
+        c: {h: [] for h in views.haplotypes} for c in views.chromosomes
+    }
+    intra_hap_indices: dict[str, int] = {}
+    for seq in sequences_to_plot:
+        row = views.map_by_name[seq]
+        chrom, hap = row.chromosome, _effective_hap(row)
+        sequences_per_chrom_hap.setdefault(chrom, {}).setdefault(hap, []).append(seq)
+        intra_hap_indices[seq] = len(sequences_per_chrom_hap[chrom][hap]) - 1
+    return sequences_per_chrom_hap, intra_hap_indices
+
+
+# --- Pass 2: x-axis layout ---------------------------------------
+
+
+def _layout_columns(
+    views: _RenderViews,
+    geom: _Geometry,
+    sequences_per_chrom_hap: dict[str, dict[str, list[str]]],
+    *,
+    sex: str | None,
+    sex_determination_system: str | dict,
+) -> tuple[_CellLayout, int]:
+    """Lay out the chromosome / haplotype columns along the x axis.
+
+    Returns the per-cell layout and the karyotype content's right edge.
+    """
+    layout = _CellLayout()
+    current_x = geom.initial_x
+
+    for chromosome in views.chromosomes:
+        # Pass sequences_per_chrom_hap so get_expected_haps can infer
+        # which hap holds the heterogametic chromosome from the data
+        # (correctly handles maternal/paternal labelling; see
+        # _infer_heterogametic_hap docstring).
+        expected_haps = get_expected_haps(
+            chromosome,
+            sex,
+            views.haplotypes,
+            sex_determination_system,
+            sequences_per_chrom_hap=sequences_per_chrom_hap,
+        )
+        actual_haps_with_data = [
+            h for h, seqs in sequences_per_chrom_hap.get(chromosome, {}).items() if seqs
+        ]
+        expected_filtered = [h for h in expected_haps if h != "unassigned"]
+        combined = set(expected_filtered) | set(actual_haps_with_data)
+        haps_to_draw = [h for h in views.haplotypes if h in combined]
+        if "unassigned" in combined and "unassigned" not in haps_to_draw:
+            haps_to_draw.append("unassigned")
+        if not haps_to_draw:
+            continue
+
+        layout.hap_block_widths[chromosome] = {}
+        layout.drawable_haps_per_chrom[chromosome] = haps_to_draw
+        total_chrom_width = 0
+        for hap in haps_to_draw:
+            seqs = sequences_per_chrom_hap.get(chromosome, {}).get(hap, [])
+            n = len(seqs)
+            width_from_seqs = (2 * geom.circle_radius) + (n - 1) * geom.sequence_gap if n > 0 else 0
+            block_width = max(width_from_seqs, geom.min_label_width)
+            layout.hap_block_widths[chromosome][hap] = block_width
+            total_chrom_width += block_width
+        if len(haps_to_draw) > 1:
+            total_chrom_width += geom.hap_gap * (len(haps_to_draw) - 1)
+
+        layout.chrom_block_widths[chromosome] = total_chrom_width
+        layout.chrom_start_x[chromosome] = current_x
+        hap_current_x = current_x
+        layout.hap_start_x[chromosome] = {}
+        for hap in haps_to_draw:
+            layout.hap_start_x[chromosome][hap] = hap_current_x
+            hap_current_x += layout.hap_block_widths[chromosome][hap] + geom.hap_gap
+        current_x += total_chrom_width + geom.chrom_gap
+
+    # Karyotype right edge = end of last drawn chromosome content
+    # (current_x at this point is "next chromosome start", so subtract
+    # the trailing chrom_gap to land on the last column's right edge).
+    karyotype_content_right = current_x - geom.chrom_gap
+
+    return layout, karyotype_content_right
+
+
+def _size_canvas(
+    geom: _Geometry,
+    karyotype_content_right: int,
+    sorted_legend_features: list[str],
+    *,
+    mode: Mode,
+    show_legend: bool,
+    show_title: bool,
+    sample_label: str | None,
+    database_id: str | None,
+    feature_set_label: str | None,
+    smoothed: bool,
+) -> tuple[float, str, float]:
+    """Size the canvas width around the columns, legend band, and title.
+
+    Returns ``(image_width, title_text, title_center)``.
+    """
+    # Legend sizing. ``legend_band_width`` is computed dynamically
+    # from the longest feature label so the canvas stays tight; the
+    # old fixed-width approach left tens of pixels of empty space.
+    # Rough text-width estimate: 8 px per char for 14pt sans-serif
+    # (was 6 px/char back when the legend was 11 pt).
+    if show_legend and sorted_legend_features:
+        max_label_chars = max(len(label) for label in sorted_legend_features)
+        legend_text_px = max(25, max_label_chars * 8)
+        legend_inner_width = geom.legend_swatch_size + 4 + legend_text_px
+        legend_right_pad = 10  # small padding to the SVG right edge
+        legend_band_width = geom.chrom_gap + legend_inner_width + legend_right_pad
+        karyotype_right_edge = karyotype_content_right + geom.chrom_gap
+    else:
+        legend_band_width = 0
+        karyotype_right_edge = karyotype_content_right + geom.x_border
+
+    image_width = (
+        karyotype_content_right + legend_band_width if legend_band_width else karyotype_right_edge
+    )
+
+    # Compose the title before fixing the canvas width: over few chromosomes
+    # a long title would otherwise overflow the narrow canvas and be clipped
+    # on both sides. We centre it over the karyotype columns, but never let it
+    # run off the left edge, and widen the canvas to hold its right edge.
+    title_text = ""
+    title_center = karyotype_right_edge / 2
+    if show_title:
+        title_parts: list[str] = []
+        if sample_label:
+            title_parts.append(sample_label)
+        if database_id:
+            title_parts.append(f"{database_id} database")
+        title_parts.append(f"{mode} view")
+        if feature_set_label:
+            title_parts.append(f"{feature_set_label} feature set")
+        if smoothed:
+            title_parts.append("smoothed")
+        title_text = "  |  ".join(title_parts)
+        title_margin = 15
+        title_half = (len(title_text) * _TITLE_PX_PER_CHAR) / 2
+        title_center = max(title_center, title_half + title_margin)
+        image_width = max(image_width, title_center + title_half + title_margin)
+
+    return image_width, title_text, title_center
+
+
+# --- title band (top) ------------------------------------------
+
+
+def _draw_title(
+    d: draw.Drawing,
+    geom: _Geometry,
+    title_text: str,
+    title_center: float,
+) -> None:
+    """Draw the title band text at the top of the canvas."""
+    if title_text:
+        d.append(
+            draw.Text(
+                title_text,
+                14,
+                title_center,
+                geom.title_band_height - 12,
+                text_anchor="middle",
+                fill=geom.text_color,
+                font_weight="bold",
+                font_family=_FONT_FAMILY,
+            )
+        )
+
+
+def _compute_x_coords(
+    layout: _CellLayout,
+    geom: _Geometry,
+    sequences_per_chrom_hap: dict[str, dict[str, list[str]]],
+    intra_hap_indices: dict[str, int],
+) -> dict[str, float]:
+    """Compute each plotted contig's column-centre x coordinate."""
+    x_coords: dict[str, float] = {}
+    for chromosome, haps in layout.drawable_haps_per_chrom.items():
+        for hap in haps:
+            seqs = sequences_per_chrom_hap.get(chromosome, {}).get(hap, [])
+            if not seqs:
+                continue
+            block_start_x = layout.hap_start_x[chromosome][hap]
+            block_width = layout.hap_block_widths[chromosome][hap]
+            width_from_seqs = (2 * geom.circle_radius) + (len(seqs) - 1) * geom.sequence_gap
+            padding = (block_width - width_from_seqs) / 2
+            for seq in seqs:
+                if seq in intra_hap_indices:
+                    seq_index = intra_hap_indices[seq]
+                    x_coords[seq] = (
+                        block_start_x
+                        + padding
+                        + geom.circle_radius
+                        + (seq_index * geom.sequence_gap)
+                    )
+    return x_coords
+
+
+# --- Pass 3: header labels --------------------------------------
+
+
+def _draw_header_labels(
+    d: draw.Drawing,
+    layout: _CellLayout,
+    geom: _Geometry,
+    views: _RenderViews,
+    *,
+    mode: Mode,
+) -> None:
+    """Draw the chromosome (and haplotype) header lines and labels."""
+    for chromosome, start_x in layout.chrom_start_x.items():
+        block_width = layout.chrom_block_widths[chromosome]
+        d.append(draw.Rectangle(start_x, geom.chrom_line_y, block_width, 1, fill=geom.text_color))
+        chromosome_text = f"{chromosome}p" if mode == "subtelomere" else chromosome
+        d.append(
+            draw.Text(
+                chromosome_text,
+                14,
+                start_x + (block_width / 2),
+                geom.chrom_label_y,
+                text_anchor="middle",
+                fill=geom.text_color,
+                font_family=_FONT_FAMILY,
+            )
+        )
+        if len(views.haplotypes) > 1:
+            for hap in layout.drawable_haps_per_chrom.get(chromosome, []):
+                hap_start = layout.hap_start_x[chromosome][hap]
+                hap_width = layout.hap_block_widths[chromosome][hap]
+                # Compact column designator so the narrow columns stay
+                # legible without widening the layout: "h1"/"h2" for
+                # haplotypes, a single-letter tag otherwise ("u" for
+                # unassigned, "m"/"p" for maternal/paternal).
+                hap_text = (
+                    f"h{hap[3:]}" if (hap.startswith("hap") and hap[3:].isdigit()) else hap[:1]
+                )
+                d.append(
+                    draw.Rectangle(hap_start, geom.hap_line_y, hap_width, 1, fill=geom.text_color)
+                )
+                d.append(
+                    draw.Text(
+                        hap_text,
+                        14,
+                        hap_start + (hap_width / 2),
+                        geom.hap_label_y,
+                        text_anchor="middle",
+                        fill=geom.text_color,
+                        font_family=_FONT_FAMILY,
+                    )
+                )
+
+
+# --- Final pass: draw colored rectangles per feature ------------
+
+
+def _color_for(feature: str, colors: dict[str, str]) -> str:
+    """Colour for ``feature``, hard-failing when it has no entry."""
+    # Hard fail on missing colour: ``karyotype_run`` runs
+    # :func:`validate_colors` before calling us, so a missing
+    # colour here means either the renderer was called with an
+    # incomplete colours dict (caller bug) or a feature
+    # appeared in the data that isn't in the hierarchy (the
+    # earlier validation would have caught it from
+    # hierarchy.tsv). Either way, silent white would be wrong
+    # -- it conflates real categorisation with the
+    # ``novel``-rendered-white sentinel.
+    if feature in colors:
+        return colors[feature]
+    raise KaryotypeError(
+        f"feature {feature!r} appeared in the binned BED but has no "
+        "colour entry; this should have been caught by validate_colors "
+        "upstream. If you're calling render_karyotype directly, make "
+        "sure the colors dict includes every feature your data uses."
+    )
+
+
+def _draw_feature_rects(
+    d: draw.Drawing,
+    inputs: list[RenderInput],
+    views: _RenderViews,
+    geom: _Geometry,
+    seen_sequences: set[str],
+    x_coords: dict[str, float],
+    colors: dict[str, str],
+    *,
+    mode: Mode,
+    subtelomere_boundary: int,
+) -> None:
+    """Draw the coloured feature rectangles for every plotted contig."""
+    pixels_per_pos = geom.pixels_per_pos
+    for ri in inputs:
+        for seq, intervals in ri.binned_bed.items():
+            if seq not in seen_sequences:
+                continue
+            x = x_coords.get(seq)
+            if x is None:
+                continue
+            for start, stop, feature in intervals:
+                color = _color_for(feature, colors)
+                if mode == "subtelomere":
+                    seq_len = views.sequence_lengths.get(seq)
+                    if not seq_len:
+                        continue
+                    # P-arm chunk
+                    if seq in views.tel_start_sequences and start < subtelomere_boundary:
+                        draw_start = max(0, start)
+                        draw_stop = min(subtelomere_boundary, stop)
+                        start_y = geom.initial_y + (draw_start * pixels_per_pos)
+                        stop_y = geom.initial_y + (draw_stop * pixels_per_pos)
+                        if stop_y > start_y:
+                            d.append(
+                                draw.Rectangle(
+                                    x - geom.circle_radius,
+                                    start_y,
+                                    2 * geom.circle_radius,
+                                    stop_y - start_y,
+                                    fill=color,
+                                )
+                            )
+                    # Q-arm chunk
+                    if seq in views.tel_stop_sequences and stop > seq_len - subtelomere_boundary:
+                        draw_start = max(seq_len - subtelomere_boundary, start)
+                        draw_stop = min(seq_len, stop)
+                        q_rel_start = draw_start - (seq_len - subtelomere_boundary)
+                        q_rel_stop = draw_stop - (seq_len - subtelomere_boundary)
+                        start_y = geom.q_arm_start_y + (q_rel_start * pixels_per_pos)
+                        stop_y = geom.q_arm_start_y + (q_rel_stop * pixels_per_pos)
+                        if stop_y > start_y:
+                            d.append(
+                                draw.Rectangle(
+                                    x - geom.circle_radius,
+                                    start_y,
+                                    2 * geom.circle_radius,
+                                    stop_y - start_y,
+                                    fill=color,
+                                )
+                            )
+                elif mode == "centromere":
+                    cen_start, cen_stop = views.centromere_coords[seq]
+                    draw_start = max(start, cen_start)
+                    draw_stop = min(stop, cen_stop)
+                    if draw_stop > draw_start:
+                        y_rel_start = draw_start - cen_start
+                        y_rel_stop = draw_stop - cen_start
+                        start_y = geom.initial_y + (y_rel_start * pixels_per_pos)
+                        stop_y = geom.initial_y + (y_rel_stop * pixels_per_pos)
+                        d.append(
+                            draw.Rectangle(
+                                x - geom.circle_radius,
+                                start_y,
+                                2 * geom.circle_radius,
+                                stop_y - start_y,
+                                fill=color,
+                            )
+                        )
+                else:  # genome
+                    start_y = geom.pos_to_y(start)
+                    stop_y = geom.pos_to_y(stop)
+                    d.append(
+                        draw.Rectangle(
+                            x - geom.circle_radius,
+                            start_y,
+                            2 * geom.circle_radius,
+                            stop_y - start_y,
+                            fill=color,
+                        )
+                    )
+
+
+# --- sequence outlines --------------------------------------------
+
+
+def _draw_sequence_outlines(
+    d: draw.Drawing,
+    views: _RenderViews,
+    geom: _Geometry,
+    x_coords: dict[str, float],
+    *,
+    mode: Mode,
+    subtelomere_boundary: int,
+) -> None:
+    """Draw each contig's border rectangle.
+
+    Drawn on every background, not just white. They used to be white-only
+    and hardcoded black, which left a black-background plot with no border
+    at all -- and the cytoband palette's pure-black bands then merged into
+    the backdrop and vanished. The outline is what separates a sequence
+    from the page, so it has to contrast with the page.
+    """
+
+    def _outline(x: float, top_y: float, height: float) -> draw.Rectangle:
+        """One sequence's border: same geometry as its column, no fill."""
+        return draw.Rectangle(
+            x - geom.circle_radius,
+            top_y,
+            2 * geom.circle_radius,
+            height,
+            fill="none",
+            stroke=geom.outline_color,
+            stroke_width=geom.sequence_outline_stroke,
+        )
+
+    for seq, x in x_coords.items():
+        if mode == "subtelomere":
+            # Two boxes, one per telomeric end, and only where there is one.
+            height = subtelomere_boundary * geom.pixels_per_pos
+            if seq in views.tel_start_sequences:
+                d.append(_outline(x, geom.initial_y, height))
+            if seq in views.tel_stop_sequences:
+                d.append(_outline(x, geom.q_arm_start_y, height))
+        elif mode == "centromere":
+            cen_start, cen_stop = views.centromere_coords[seq]
+            d.append(_outline(x, geom.initial_y, (cen_stop - cen_start) * geom.pixels_per_pos))
+        else:  # genome
+            seq_len = views.sequence_lengths.get(seq)
+            if seq_len:
+                d.append(_outline(x, geom.initial_y, geom.pos_to_y(seq_len) - geom.initial_y))
+
+
+# --- telomere indicator circles (genome mode only) ----------------
+
+
+def _draw_telomere_circles(
+    d: draw.Drawing,
+    views: _RenderViews,
+    geom: _Geometry,
+    x_coords: dict[str, float],
+    *,
+    mode: Mode,
+) -> None:
+    """Draw the telomere indicator circles at contig ends (genome mode only)."""
+    if mode == "genome":
+        telomere_color = "#006884"
+        for seq, x in x_coords.items():
+            if seq in views.tel_start_sequences:
+                d.append(
+                    draw.Circle(
+                        x,
+                        geom.initial_y,
+                        2 * geom.circle_radius,
+                        fill=telomere_color,
+                        stroke=geom.outline_color,
+                        stroke_width=1,
+                    )
+                )
+            if seq in views.tel_stop_sequences:
+                seq_len = views.sequence_lengths.get(seq)
+                if seq_len:
+                    q_arm_y = max(geom.pos_to_y(seq_len), geom.initial_y + geom.min_q_arm_offset)
+                    d.append(
+                        draw.Circle(
+                            x,
+                            q_arm_y,
+                            2 * geom.circle_radius,
+                            fill=telomere_color,
+                            stroke=geom.outline_color,
+                            stroke_width=1,
+                        )
+                    )
+
+
+# --- scale bar ---------------------------------------------------
+
+
+def _draw_scale_bar(
+    d: draw.Drawing,
+    geom: _Geometry,
+    *,
+    mode: Mode,
+) -> None:
+    """Draw the scale bar and its labels (both arms in subtelomere mode)."""
+    pixels_per_pos = geom.pixels_per_pos
+    # Data-driven scale bar: a "nice" round length that renders near a target
+    # height at the current zoom (respects --pixels-per-mb). Non-regressive for
+    # human (genome -> 10 Mbp, centromere -> 1 Mbp, subtelomere -> 10 kbp).
+    scale_bar_length = _nice_round(_SCALE_BAR_TARGET_PX / pixels_per_pos)
+    scale_bar_label = _format_bp(scale_bar_length)
+    scale_bar_pixel_height = scale_bar_length * pixels_per_pos
+    scale_bar_x = 40
+    scale_bar_width = 2
+    label1_x = 35
+    label2_x = 20
+    pos_per_pixel = 1 / pixels_per_pos
+    if pos_per_pixel >= 1000:
+        resolution_label_text = f"1px = {pos_per_pixel / 1000:.1f} kbp".replace(".0", "")
+    else:
+        resolution_label_text = f"1px = {int(pos_per_pixel)} bp"
+    label_y_center = geom.initial_y + (scale_bar_pixel_height / 2)
+    d.append(
+        draw.Rectangle(
+            scale_bar_x,
+            geom.initial_y,
+            scale_bar_width,
+            scale_bar_pixel_height,
+            fill=geom.text_color,
+        )
+    )
+    d.append(
+        draw.Text(
+            scale_bar_label,
+            10,
+            label1_x,
+            label_y_center,
+            text_anchor="middle",
+            fill=geom.text_color,
+            transform=f"rotate(-90, {label1_x}, {label_y_center})",
+            font_family=_FONT_FAMILY,
+        )
+    )
+    d.append(
+        draw.Text(
+            resolution_label_text,
+            10,
+            label2_x,
+            label_y_center,
+            text_anchor="middle",
+            fill=geom.text_color,
+            transform=f"rotate(-90, {label2_x}, {label_y_center})",
+            font_family=_FONT_FAMILY,
+        )
+    )
+    if mode == "subtelomere":
+        q_arm_end_y = geom.q_arm_start_y + geom.q_arm_height
+        scale_bar_start_y = q_arm_end_y - scale_bar_pixel_height
+        q_arm_label_y_center = scale_bar_start_y + (scale_bar_pixel_height / 2)
+        d.append(
+            draw.Rectangle(
+                scale_bar_x,
+                scale_bar_start_y,
+                scale_bar_width,
+                scale_bar_pixel_height,
+                fill=geom.text_color,
+            )
+        )
+        d.append(
+            draw.Text(
+                geom.mode_params.scale_bar_label,
+                10,
+                label1_x,
+                q_arm_label_y_center,
+                text_anchor="middle",
+                fill=geom.text_color,
+                transform=f"rotate(-90, {label1_x}, {q_arm_label_y_center})",
+                font_family=_FONT_FAMILY,
+            )
+        )
+        d.append(
+            draw.Text(
+                resolution_label_text,
+                10,
+                label2_x,
+                q_arm_label_y_center,
+                text_anchor="middle",
+                fill=geom.text_color,
+                transform=f"rotate(-90, {label2_x}, {q_arm_label_y_center})",
+                font_family=_FONT_FAMILY,
+            )
+        )
+
+
+# --- footer labels (subtelomere mode only) -----------------------
+
+
+def _draw_footer_labels(
+    d: draw.Drawing,
+    layout: _CellLayout,
+    geom: _Geometry,
+    views: _RenderViews,
+    *,
+    mode: Mode,
+    subtelomere_boundary: int,
+) -> None:
+    """Draw the q-arm chromosome / haplotype labels below the columns (subtelomere mode only)."""
+    if mode == "subtelomere":
+        drawing_end_y = geom.q_arm_start_y + (subtelomere_boundary * geom.pixels_per_pos)
+        for chromosome, start_x in layout.chrom_start_x.items():
+            block_width = layout.chrom_block_widths[chromosome]
+            chromosome_text = f"{chromosome}q"
+            if len(views.haplotypes) == 1:
+                bottom_chrom_line_y = drawing_end_y + 12
+                bottom_chrom_label_y = drawing_end_y + 27
+                d.append(
+                    draw.Rectangle(
+                        start_x, bottom_chrom_line_y, block_width, 1, fill=geom.text_color
+                    )
+                )
+                d.append(
+                    draw.Text(
+                        chromosome_text,
+                        14,
+                        start_x + (block_width / 2),
+                        bottom_chrom_label_y,
+                        text_anchor="middle",
+                        fill=geom.text_color,
+                        font_family=_FONT_FAMILY,
+                    )
+                )
+            else:
+                bottom_hap_line_y = drawing_end_y + 12
+                bottom_hap_label_y = drawing_end_y + 27
+                bottom_chrom_line_y = drawing_end_y + 32
+                bottom_chrom_label_y = drawing_end_y + 47
+                for hap in layout.drawable_haps_per_chrom.get(chromosome, []):
+                    hap_start = layout.hap_start_x[chromosome][hap]
+                    hap_width = layout.hap_block_widths[chromosome][hap]
+                    hap_text = f"h{hap[3:]}" if hap.startswith("hap") else hap[:1]
+                    d.append(
+                        draw.Rectangle(
+                            hap_start, bottom_hap_line_y, hap_width, 1, fill=geom.text_color
+                        )
+                    )
+                    d.append(
+                        draw.Text(
+                            hap_text,
+                            14,
+                            hap_start + (hap_width / 2),
+                            bottom_hap_label_y,
+                            text_anchor="middle",
+                            fill=geom.text_color,
+                            font_family=_FONT_FAMILY,
+                        )
+                    )
+                d.append(
+                    draw.Rectangle(
+                        start_x, bottom_chrom_line_y, block_width, 1, fill=geom.text_color
+                    )
+                )
+                d.append(
+                    draw.Text(
+                        chromosome_text,
+                        14,
+                        start_x + (block_width / 2),
+                        bottom_chrom_label_y,
+                        text_anchor="middle",
+                        fill=geom.text_color,
+                        font_family=_FONT_FAMILY,
+                    )
+                )
+
+
+# --- legend (right margin) --------------------------------------
+
+
+def _draw_legend(
+    d: draw.Drawing,
+    geom: _Geometry,
+    sorted_legend_features: list[str],
+    legend_swatch_feature: dict[str, str],
+    colors: dict[str, str],
+    karyotype_content_right: int,
+    image_height: int,
+    *,
+    show_legend: bool,
+) -> None:
+    """Draw the colour legend in the right margin."""
+    if show_legend and sorted_legend_features:
+        # ``legend_x`` sits one ``chrom_gap`` to the right of the
+        # last chromosome's content, matching the spacing between
+        # adjacent chromosomes so the legend reads as just another
+        # "column" of the figure. ``sorted_legend_features`` was
+        # computed up front using either the database's hierarchy
+        # order (preferred) or a natural chr-then-alpha fallback.
+        legend_x = karyotype_content_right + geom.chrom_gap
+        legend_y = geom.initial_y
+        for i, feature in enumerate(sorted_legend_features):
+            row_y = legend_y + i * geom.legend_row_height
+            # Bail out if the legend would overflow the SVG height
+            # (rare on tall karyotypes but possible for small ones).
+            if row_y + geom.legend_swatch_size > image_height - 5:
+                logger.warning(
+                    "legend truncated at %d of %d entries: the rest fall outside "
+                    "the SVG height and are NOT shown. The figure understates the "
+                    "features present.",
+                    i,
+                    len(sorted_legend_features),
+                )
+                break
+            d.append(
+                draw.Rectangle(
+                    legend_x,
+                    row_y,
+                    geom.legend_swatch_size,
+                    geom.legend_swatch_size,
+                    fill=_color_for(legend_swatch_feature.get(feature, feature), colors),
+                    stroke=geom.outline_color,
+                    stroke_width=geom.legend_swatch_stroke,
+                )
+            )
+            d.append(
+                draw.Text(
+                    feature,
+                    geom.legend_text_size,
+                    legend_x + geom.legend_swatch_size + 4,
+                    row_y + geom.legend_swatch_size - 2,
+                    text_anchor="start",
+                    fill=geom.text_color,
+                    font_family=_FONT_FAMILY,
+                )
+            )
+
+
 def render_karyotype(
     inputs: list[RenderInput],
     *,
@@ -545,387 +1682,65 @@ def render_karyotype(
     if NOVEL_NAME not in colors:
         colors = {NOVEL_NAME: "#ffffff", **colors}
 
-    mode_params = _MODE_PARAMS[mode]
-    pixels_per_pos = mode_params.pixels_per_pos
+    views = _aggregate_inputs(
+        inputs,
+        mode=mode,
+        seed_human_chromosomes=seed_human_chromosomes,
+        expected_chromosomes=expected_chromosomes,
+    )
+    geom = _layout_geometry(
+        views,
+        mode=mode,
+        background_color=background_color,
+        show_title=show_title,
+        subtelomere_boundary=subtelomere_boundary,
+        pixels_per_mb=pixels_per_mb,
+    )
 
-    # --- aggregate all inputs into rendered-set views ----------------
+    collected = _collect_sequences(
+        inputs, views, geom, mode=mode, max_num_sequences=max_num_sequences
+    )
+    seen_sequences = collected.seen_sequences
 
-    # New_name -> MapRow (across all inputs).
-    map_by_name: dict[str, MapRow] = {}
-    for ri in inputs:
-        for row in ri.map_rows:
-            map_by_name[row.new_name] = row
-
-    # Telomere flags from the stats string.
-    tel_start_sequences: set[str] = set()
-    tel_stop_sequences: set[str] = set()
-    for name, row in map_by_name.items():
-        has_start, has_stop = _telomere_flags_from_stats(row.stats)
-        if has_start:
-            tel_start_sequences.add(name)
-        if has_stop:
-            tel_stop_sequences.add(name)
-
-    # Per-sequence (contig) length from the binned BED -- max stop seen.
-    sequence_lengths: dict[str, int] = {}
-    for ri in inputs:
-        for name, intervals in ri.binned_bed.items():
-            if not intervals:
-                continue
-            seq_max = max(stop for _, stop, _ in intervals)
-            sequence_lengths[name] = max(sequence_lengths.get(name, 0), seq_max)
-
-    # CHROMOSOMES and HAPLOTYPES.
-    chroms_seen: set[str] = set()
-    haps_seen: set[str] = set()
-    for row in map_by_name.values():
-        chroms_seen.add(row.chromosome)
-        haps_seen.add(_effective_hap(row))
-
-    # Seed the layout with the database's declared chromosome set (the
-    # chromosome feature-set leaves) so a chromosome missing from the sample
-    # still gets an empty column. ``seed_human_chromosomes`` (the
-    # ``--no-human-chroms`` gate, kept for compatibility) turns seeding off to
-    # show only chromosomes present in the data. Non-karyotype sequences
-    # (organelles) should be kept out of the chromosome set (or `build
-    # --exclude`d) rather than appearing as empty columns.
-    CHROMOSOMES: list[str] = []
-    if seed_human_chromosomes and expected_chromosomes:
-        CHROMOSOMES = list(expected_chromosomes)
-    for c in chroms_seen:
-        if c not in CHROMOSOMES:
-            CHROMOSOMES.append(c)
-    CHROMOSOMES.sort(key=chromosome_sort_key)
-
-    HAPLOTYPES: list[str] = sorted(haps_seen, key=_haps_natural_sort_key)
-    if not HAPLOTYPES:
-        HAPLOTYPES = ["hap1", "hap2"]
-
-    # Centromere coordinates (centromere mode only).
-    centromere_coords: dict[str, tuple[int, int]] = {}
-    if mode == "centromere":
-        for ri in inputs:
-            if ri.centromere_ranges is None:
-                continue
-            for name, (cstart, cend) in ri.centromere_ranges.items():
-                if name in centromere_coords:
-                    existing_start, existing_end = centromere_coords[name]
-                    centromere_coords[name] = (
-                        min(existing_start, cstart),
-                        max(existing_end, cend),
-                    )
-                else:
-                    centromere_coords[name] = (cstart, cend)
-        if not centromere_coords:
-            raise KaryotypeError(
-                "centromere mode requires centromere coordinates; none were provided "
-                "across any of the inputs"
-            )
-        max_centromere_length = max(end - start for start, end in centromere_coords.values())
-    else:
-        max_centromere_length = 0
-
-    # Zoom: an explicit ``pixels_per_mb`` fixes the scale (e.g. to compare
-    # plots across assemblies); otherwise it's data-driven so the mode's
-    # longest extent fills a target height. This keeps human output at the
-    # old fixed scale while small genomes (Arabidopsis) fill the same height
-    # instead of rendering tiny. ``subtelomere`` keeps its fixed-window scale.
-    if pixels_per_mb is not None:
-        pixels_per_pos = pixels_per_mb / 1_000_000
-    elif mode == "genome":
-        longest = max(sequence_lengths.values(), default=0)
-        if longest > 0:
-            pixels_per_pos = _GENOME_TARGET_PX / longest
-    elif mode == "centromere" and max_centromere_length > 0:
-        pixels_per_pos = _CENTROMERE_TARGET_PX / max_centromere_length
-
-    # --- layout constants (from archive) -----------------------------
-
-    min_label_width = 15 if len(HAPLOTYPES) > 1 else 25
-    initial_x = 50
-    sequence_gap = 15
-    hap_gap = 10
-    chrom_gap = 24
-    circle_radius = 3
-    x_border = initial_x + sequence_gap - 1
-    y_border = 25
-    # Title band (optional, drawn above the karyotype). All
-    # below-title-band y constants get offset by ``title_band_height``
-    # via :data:`title_offset`.
-    title_band_height = 35 if show_title else 0
-    title_offset = title_band_height
-    chrom_label_y = 23 + title_offset
-    chrom_line_y = 28 + title_offset
-    hap_label_y = 43 + title_offset
-    hap_line_y = 48 + title_offset
-    initial_y = (60 if len(HAPLOTYPES) > 1 else 40) + title_offset
-    min_q_arm_offset = 5
-    text_color = "#000000" if background_color == "white" else "#FFFFFF"
-    # Outlines follow the text, for the same reason: a fill the same colour
-    # as the backdrop is otherwise invisible. That is not hypothetical --
-    # the cytoband palette contains pure #000000 (the gpos100 bands), which
-    # on a black background disappeared entirely, as did every legend swatch
-    # (they were drawn with a hardcoded black stroke regardless of theme).
-    outline_color = text_color
-    # Sequence columns are only ``2 * circle_radius`` px wide (6 px at the
-    # default), and a stroke straddles the path -- so a 1 px border ate a
-    # sixth of the column and read as a white cage rather than an edge.
-    sequence_outline_stroke = 0.5
-
-    # Legend band (optional, drawn at the right margin). The total
-    # width is computed dynamically after the feature pre-pass below,
-    # so the canvas stays tight against the longest legend label.
-    # Text size matches the chromosome/hap label size (14 pt) so the
-    # legend reads with the same visual weight as the chromosome
-    # columns; the swatch and row height are scaled to match.
-    legend_row_height = 20
-    legend_swatch_size = 14
-    legend_text_size = 14
-    legend_swatch_stroke = 0.5
-
-    P_Q_ARM_GAP = 50
-    if mode == "subtelomere":
-        p_arm_height = subtelomere_boundary * pixels_per_pos
-        q_arm_start_y = initial_y + p_arm_height + P_Q_ARM_GAP
-        q_arm_height = subtelomere_boundary * pixels_per_pos
-        final_image_height = int(q_arm_start_y + q_arm_height + initial_y)
-    elif mode == "centromere":
-        final_image_height = int(
-            initial_y + (max_centromere_length * pixels_per_pos) + y_border + initial_y
-        )
-    else:  # genome
-        final_image_height = 0  # computed below from max_stop_y
-
-    # --- helpers depending on layout consts --------------------------
-
-    def pos_to_y(pos: int) -> int:
-        return int(initial_y + floor(pos * pixels_per_pos))
-
-    # --- Pass 1: collect sequences to plot ---------------------------
-
-    telomeric_sequences_set = tel_start_sequences | tel_stop_sequences
-    sequences_to_plot: list[str] = []
-    seen_sequences: set[str] = set()
-    max_stop_y = 0
-
-    # We iterate per-input in input order; within each input, map order
-    # (canonical chromosome x hap x category x length).
-    for ri in inputs:
-        for row in ri.map_rows:
-            seq = row.new_name
-            if mode == "subtelomere" and seq not in telomeric_sequences_set:
-                continue
-            if mode == "centromere" and seq not in centromere_coords:
-                continue
-            if seq in seen_sequences:
-                continue
-            if len(sequences_to_plot) >= max_num_sequences:
-                logger.warning(
-                    "max_num_sequences=%d reached; dropping contig %r",
-                    max_num_sequences,
-                    seq,
-                )
-                continue
-            sequences_to_plot.append(seq)
-            seen_sequences.add(seq)
-            if mode == "genome":
-                stop = sequence_lengths.get(seq, 0)
-                if stop:
-                    max_stop_y = max(max_stop_y, pos_to_y(stop))
-
+    # Genome mode's image height is data-driven (the other modes fixed
+    # theirs in the geometry above).
+    final_image_height = geom.final_image_height
     if mode == "genome":
-        final_image_height = int(max_stop_y + y_border)
+        final_image_height = int(collected.max_stop_y + geom.y_border)
 
-    # --- Pre-pass for the legend -------------------------------------
-    # Walk the binned BEDs once (filtered to seen_sequences only) to
-    # collect every feature label that will be drawn. Used for both
-    # legend ordering and dynamic width sizing.
-    # Accumulate each feature's total drawn extent, not merely its presence,
-    # so sub-pixel features can be kept out of the legend (see
-    # :data:`_LEGEND_MIN_DRAWN_PX`).
-    drawn_bp: dict[str, int] = {}
-    for ri in inputs:
-        for seq, intervals in ri.binned_bed.items():
-            if seq not in seen_sequences:
-                continue
-            for start, stop, feature in intervals:
-                drawn_bp[feature] = drawn_bp.get(feature, 0) + max(0, stop - start)
-
-    features_in_data = {
-        feature for feature, bp in drawn_bp.items() if bp * pixels_per_pos >= _LEGEND_MIN_DRAWN_PX
-    }
-    dropped = len(drawn_bp) - len(features_in_data)
-    if dropped:
-        logger.info(
-            "legend: omitted %d feature(s) drawn below %.2g px (%s)",
-            dropped,
-            _LEGEND_MIN_DRAWN_PX,
-            ", ".join(sorted(set(drawn_bp) - features_in_data)),
-        )
-
-    # Legend sort: see :func:`_legend_sort_key` for the full rule.
-    # Briefly: chromosomes (chr*) at the top in natural order, then
-    # "categorized", then hierarchy-order features (autosome /
-    # acrocentric / etc.), then unranked features alphabetical,
-    # "novel" at the bottom.
-    sorted_legend_features = sorted(
-        features_in_data,
-        key=lambda f: _legend_sort_key(f, feature_order),
+    sorted_legend_features, legend_swatch_feature = _legend_rows(
+        inputs,
+        seen_sequences,
+        pixels_per_pos=geom.pixels_per_pos,
+        feature_order=feature_order,
+        legend_groups=legend_groups,
+        legend_group_order=legend_group_order,
     )
 
-    # Collapse to legend groups when the database declares them. A feature
-    # set can carry hundreds of features in a handful of colours (CHM13
-    # cytoband: 833 rendered features, 8 colours), where a per-feature
-    # legend dwarfs the figure AND silently truncates to whatever fits the
-    # canvas -- so the reader sees an arbitrary subset with no indication
-    # any were dropped.
-    #
-    # Group order follows first appearance in colors.tsv, which the database
-    # controls, rather than anything derived here. `novel` is never grouped:
-    # it is the renderer's own sentinel, injected rather than declared, and
-    # `_legend_sort_key` already sinks it to the bottom.
-    legend_swatch_feature: dict[str, str] = {}
-    if legend_groups:
-        grouped: list[str] = []
-        first_member: dict[str, str] = {}
-        for feature in sorted_legend_features:
-            group = legend_groups.get(feature)
-            if group is None or feature == NOVEL_NAME:
-                grouped.append(feature)
-                legend_swatch_feature[feature] = feature
-                continue
-            if group not in first_member:
-                first_member[group] = feature
-                legend_swatch_feature[group] = feature
-                grouped.append(group)
-        if legend_group_order:
-            rank = {g: i for i, g in enumerate(legend_group_order)}
-            order = {name: i for i, name in enumerate(grouped)}
-
-            def _row_key(name: str) -> tuple[int, int, str]:
-                # Groups first, in the order the database declared; then
-                # anything ungrouped, keeping the order _legend_sort_key
-                # already gave it -- which is what leaves ``novel`` at the
-                # bottom, where that key deliberately puts it.
-                if name in first_member:
-                    return (0, rank.get(name, len(rank)), name)
-                return (1, order[name], name)
-
-            grouped.sort(key=_row_key)
-        n_before, n_after = len(sorted_legend_features), len(grouped)
-        sorted_legend_features = grouped
-        logger.info("legend grouped: %d feature(s) collapsed into %d row(s)", n_before, n_after)
-
-    # --- group by chromosome and haplotype ---------------------------
-
-    sequences_per_chrom_hap: dict[str, dict[str, list[str]]] = {
-        c: {h: [] for h in HAPLOTYPES} for c in CHROMOSOMES
-    }
-    intra_hap_indices: dict[str, int] = {}
-    for seq in sequences_to_plot:
-        row = map_by_name[seq]
-        chrom, hap = row.chromosome, _effective_hap(row)
-        sequences_per_chrom_hap.setdefault(chrom, {}).setdefault(hap, []).append(seq)
-        intra_hap_indices[seq] = len(sequences_per_chrom_hap[chrom][hap]) - 1
-
-    # --- Pass 2: x-axis layout ---------------------------------------
-
-    layout = _CellLayout()
-    current_x = initial_x
-
-    for chromosome in CHROMOSOMES:
-        # Pass sequences_per_chrom_hap so get_expected_haps can infer
-        # which hap holds the heterogametic chromosome from the data
-        # (correctly handles maternal/paternal labelling; see
-        # _infer_heterogametic_hap docstring).
-        expected_haps = get_expected_haps(
-            chromosome,
-            sex,
-            HAPLOTYPES,
-            sex_determination_system,
-            sequences_per_chrom_hap=sequences_per_chrom_hap,
-        )
-        actual_haps_with_data = [
-            h for h, seqs in sequences_per_chrom_hap.get(chromosome, {}).items() if seqs
-        ]
-        expected_filtered = [h for h in expected_haps if h != "unassigned"]
-        combined = set(expected_filtered) | set(actual_haps_with_data)
-        haps_to_draw = [h for h in HAPLOTYPES if h in combined]
-        if "unassigned" in combined and "unassigned" not in haps_to_draw:
-            haps_to_draw.append("unassigned")
-        if not haps_to_draw:
-            continue
-
-        layout.hap_block_widths[chromosome] = {}
-        layout.drawable_haps_per_chrom[chromosome] = haps_to_draw
-        total_chrom_width = 0
-        for hap in haps_to_draw:
-            seqs = sequences_per_chrom_hap.get(chromosome, {}).get(hap, [])
-            n = len(seqs)
-            width_from_seqs = (2 * circle_radius) + (n - 1) * sequence_gap if n > 0 else 0
-            block_width = max(width_from_seqs, min_label_width)
-            layout.hap_block_widths[chromosome][hap] = block_width
-            total_chrom_width += block_width
-        if len(haps_to_draw) > 1:
-            total_chrom_width += hap_gap * (len(haps_to_draw) - 1)
-
-        layout.chrom_block_widths[chromosome] = total_chrom_width
-        layout.chrom_start_x[chromosome] = current_x
-        hap_current_x = current_x
-        layout.hap_start_x[chromosome] = {}
-        for hap in haps_to_draw:
-            layout.hap_start_x[chromosome][hap] = hap_current_x
-            hap_current_x += layout.hap_block_widths[chromosome][hap] + hap_gap
-        current_x += total_chrom_width + chrom_gap
-
-    # Karyotype right edge = end of last drawn chromosome content
-    # (current_x at this point is "next chromosome start", so subtract
-    # the trailing chrom_gap to land on the last column's right edge).
-    karyotype_content_right = current_x - chrom_gap
-
-    # Legend sizing. ``legend_band_width`` is computed dynamically
-    # from the longest feature label so the canvas stays tight; the
-    # old fixed-width approach left tens of pixels of empty space.
-    # Rough text-width estimate: 8 px per char for 14pt sans-serif
-    # (was 6 px/char back when the legend was 11 pt).
-    if show_legend and sorted_legend_features:
-        max_label_chars = max(len(label) for label in sorted_legend_features)
-        legend_text_px = max(25, max_label_chars * 8)
-        legend_inner_width = legend_swatch_size + 4 + legend_text_px
-        legend_right_pad = 10  # small padding to the SVG right edge
-        legend_band_width = chrom_gap + legend_inner_width + legend_right_pad
-        karyotype_right_edge = karyotype_content_right + chrom_gap
-    else:
-        legend_band_width = 0
-        karyotype_right_edge = karyotype_content_right + x_border
-
-    image_width = (
-        karyotype_content_right + legend_band_width if legend_band_width else karyotype_right_edge
+    sequences_per_chrom_hap, intra_hap_indices = _group_by_chrom_hap(
+        collected.sequences_to_plot, views
     )
 
-    # Compose the title before fixing the canvas width: over few chromosomes
-    # a long title would otherwise overflow the narrow canvas and be clipped
-    # on both sides. We centre it over the karyotype columns, but never let it
-    # run off the left edge, and widen the canvas to hold its right edge.
-    title_text = ""
-    title_center = karyotype_right_edge / 2
-    if show_title:
-        title_parts: list[str] = []
-        if sample_label:
-            title_parts.append(sample_label)
-        if database_id:
-            title_parts.append(f"{database_id} database")
-        title_parts.append(f"{mode} view")
-        if feature_set_label:
-            title_parts.append(f"{feature_set_label} feature set")
-        if smoothed:
-            title_parts.append("smoothed")
-        title_text = "  |  ".join(title_parts)
-        title_margin = 15
-        title_half = (len(title_text) * _TITLE_PX_PER_CHAR) / 2
-        title_center = max(title_center, title_half + title_margin)
-        image_width = max(image_width, title_center + title_half + title_margin)
+    layout, karyotype_content_right = _layout_columns(
+        views,
+        geom,
+        sequences_per_chrom_hap,
+        sex=sex,
+        sex_determination_system=sex_determination_system,
+    )
 
+    image_width, title_text, title_center = _size_canvas(
+        geom,
+        karyotype_content_right,
+        sorted_legend_features,
+        mode=mode,
+        show_legend=show_legend,
+        show_title=show_title,
+        sample_label=sample_label,
+        database_id=database_id,
+        feature_set_label=feature_set_label,
+        smoothed=smoothed,
+    )
     layout.image_width = image_width
     image_height = final_image_height
 
@@ -934,439 +1749,46 @@ def render_karyotype(
     d = draw.Drawing(layout.image_width, image_height, id_prefix="k")
     d.append(draw.Rectangle(0, 0, layout.image_width, image_height, fill=background_color))
 
-    # --- title band (top) ------------------------------------------
+    _draw_title(d, geom, title_text, title_center)
 
-    if title_text:
-        d.append(
-            draw.Text(
-                title_text,
-                14,
-                title_center,
-                title_band_height - 12,
-                text_anchor="middle",
-                fill=text_color,
-                font_weight="bold",
-                font_family=_FONT_FAMILY,
-            )
-        )
+    x_coords = _compute_x_coords(layout, geom, sequences_per_chrom_hap, intra_hap_indices)
 
-    x_coords: dict[str, float] = {}
-    for chromosome, haps in layout.drawable_haps_per_chrom.items():
-        for hap in haps:
-            seqs = sequences_per_chrom_hap.get(chromosome, {}).get(hap, [])
-            if not seqs:
-                continue
-            block_start_x = layout.hap_start_x[chromosome][hap]
-            block_width = layout.hap_block_widths[chromosome][hap]
-            width_from_seqs = (2 * circle_radius) + (len(seqs) - 1) * sequence_gap
-            padding = (block_width - width_from_seqs) / 2
-            for seq in seqs:
-                if seq in intra_hap_indices:
-                    seq_index = intra_hap_indices[seq]
-                    x_coords[seq] = (
-                        block_start_x + padding + circle_radius + (seq_index * sequence_gap)
-                    )
+    _draw_header_labels(d, layout, geom, views, mode=mode)
 
-    # --- Pass 3: header labels --------------------------------------
-
-    for chromosome, start_x in layout.chrom_start_x.items():
-        block_width = layout.chrom_block_widths[chromosome]
-        d.append(draw.Rectangle(start_x, chrom_line_y, block_width, 1, fill=text_color))
-        chromosome_text = f"{chromosome}p" if mode == "subtelomere" else chromosome
-        d.append(
-            draw.Text(
-                chromosome_text,
-                14,
-                start_x + (block_width / 2),
-                chrom_label_y,
-                text_anchor="middle",
-                fill=text_color,
-                font_family=_FONT_FAMILY,
-            )
-        )
-        if len(HAPLOTYPES) > 1:
-            for hap in layout.drawable_haps_per_chrom.get(chromosome, []):
-                hap_start = layout.hap_start_x[chromosome][hap]
-                hap_width = layout.hap_block_widths[chromosome][hap]
-                # Compact column designator so the narrow columns stay
-                # legible without widening the layout: "h1"/"h2" for
-                # haplotypes, a single-letter tag otherwise ("u" for
-                # unassigned, "m"/"p" for maternal/paternal).
-                hap_text = (
-                    f"h{hap[3:]}" if (hap.startswith("hap") and hap[3:].isdigit()) else hap[:1]
-                )
-                d.append(draw.Rectangle(hap_start, hap_line_y, hap_width, 1, fill=text_color))
-                d.append(
-                    draw.Text(
-                        hap_text,
-                        14,
-                        hap_start + (hap_width / 2),
-                        hap_label_y,
-                        text_anchor="middle",
-                        fill=text_color,
-                        font_family=_FONT_FAMILY,
-                    )
-                )
-
-    # --- Final pass: draw colored rectangles per feature ------------
-
-    def _color_for(feature: str) -> str:
-        # Hard fail on missing colour: ``karyotype_run`` runs
-        # :func:`validate_colors` before calling us, so a missing
-        # colour here means either the renderer was called with an
-        # incomplete colours dict (caller bug) or a feature
-        # appeared in the data that isn't in the hierarchy (the
-        # earlier validation would have caught it from
-        # hierarchy.tsv). Either way, silent white would be wrong
-        # -- it conflates real categorisation with the
-        # ``novel``-rendered-white sentinel.
-        if feature in colors:
-            return colors[feature]
-        raise KaryotypeError(
-            f"feature {feature!r} appeared in the binned BED but has no "
-            "colour entry; this should have been caught by validate_colors "
-            "upstream. If you're calling render_karyotype directly, make "
-            "sure the colors dict includes every feature your data uses."
-        )
-
-    for ri in inputs:
-        for seq, intervals in ri.binned_bed.items():
-            if seq not in seen_sequences:
-                continue
-            x = x_coords.get(seq)
-            if x is None:
-                continue
-            for start, stop, feature in intervals:
-                color = _color_for(feature)
-                if mode == "subtelomere":
-                    seq_len = sequence_lengths.get(seq)
-                    if not seq_len:
-                        continue
-                    # P-arm chunk
-                    if seq in tel_start_sequences and start < subtelomere_boundary:
-                        draw_start = max(0, start)
-                        draw_stop = min(subtelomere_boundary, stop)
-                        start_y = initial_y + (draw_start * pixels_per_pos)
-                        stop_y = initial_y + (draw_stop * pixels_per_pos)
-                        if stop_y > start_y:
-                            d.append(
-                                draw.Rectangle(
-                                    x - circle_radius,
-                                    start_y,
-                                    2 * circle_radius,
-                                    stop_y - start_y,
-                                    fill=color,
-                                )
-                            )
-                    # Q-arm chunk
-                    if seq in tel_stop_sequences and stop > seq_len - subtelomere_boundary:
-                        draw_start = max(seq_len - subtelomere_boundary, start)
-                        draw_stop = min(seq_len, stop)
-                        q_rel_start = draw_start - (seq_len - subtelomere_boundary)
-                        q_rel_stop = draw_stop - (seq_len - subtelomere_boundary)
-                        start_y = q_arm_start_y + (q_rel_start * pixels_per_pos)
-                        stop_y = q_arm_start_y + (q_rel_stop * pixels_per_pos)
-                        if stop_y > start_y:
-                            d.append(
-                                draw.Rectangle(
-                                    x - circle_radius,
-                                    start_y,
-                                    2 * circle_radius,
-                                    stop_y - start_y,
-                                    fill=color,
-                                )
-                            )
-                elif mode == "centromere":
-                    cen_start, cen_stop = centromere_coords[seq]
-                    draw_start = max(start, cen_start)
-                    draw_stop = min(stop, cen_stop)
-                    if draw_stop > draw_start:
-                        y_rel_start = draw_start - cen_start
-                        y_rel_stop = draw_stop - cen_start
-                        start_y = initial_y + (y_rel_start * pixels_per_pos)
-                        stop_y = initial_y + (y_rel_stop * pixels_per_pos)
-                        d.append(
-                            draw.Rectangle(
-                                x - circle_radius,
-                                start_y,
-                                2 * circle_radius,
-                                stop_y - start_y,
-                                fill=color,
-                            )
-                        )
-                else:  # genome
-                    start_y = pos_to_y(start)
-                    stop_y = pos_to_y(stop)
-                    d.append(
-                        draw.Rectangle(
-                            x - circle_radius,
-                            start_y,
-                            2 * circle_radius,
-                            stop_y - start_y,
-                            fill=color,
-                        )
-                    )
-
-    # --- sequence outlines --------------------------------------------
-    #
-    # Drawn on every background, not just white. They used to be white-only
-    # and hardcoded black, which left a black-background plot with no border
-    # at all -- and the cytoband palette's pure-black bands then merged into
-    # the backdrop and vanished. The outline is what separates a sequence
-    # from the page, so it has to contrast with the page.
-
-    def _outline(x: float, top_y: float, height: float) -> draw.Rectangle:
-        """One sequence's border: same geometry as its column, no fill."""
-        return draw.Rectangle(
-            x - circle_radius,
-            top_y,
-            2 * circle_radius,
-            height,
-            fill="none",
-            stroke=outline_color,
-            stroke_width=sequence_outline_stroke,
-        )
-
-    for seq, x in x_coords.items():
-        if mode == "subtelomere":
-            # Two boxes, one per telomeric end, and only where there is one.
-            height = subtelomere_boundary * pixels_per_pos
-            if seq in tel_start_sequences:
-                d.append(_outline(x, initial_y, height))
-            if seq in tel_stop_sequences:
-                d.append(_outline(x, q_arm_start_y, height))
-        elif mode == "centromere":
-            cen_start, cen_stop = centromere_coords[seq]
-            d.append(_outline(x, initial_y, (cen_stop - cen_start) * pixels_per_pos))
-        else:  # genome
-            seq_len = sequence_lengths.get(seq)
-            if seq_len:
-                d.append(_outline(x, initial_y, pos_to_y(seq_len) - initial_y))
-
-    # --- telomere indicator circles (genome mode only) ----------------
-
-    if mode == "genome":
-        telomere_color = "#006884"
-        for seq, x in x_coords.items():
-            if seq in tel_start_sequences:
-                d.append(
-                    draw.Circle(
-                        x,
-                        initial_y,
-                        2 * circle_radius,
-                        fill=telomere_color,
-                        stroke=outline_color,
-                        stroke_width=1,
-                    )
-                )
-            if seq in tel_stop_sequences:
-                seq_len = sequence_lengths.get(seq)
-                if seq_len:
-                    q_arm_y = max(pos_to_y(seq_len), initial_y + min_q_arm_offset)
-                    d.append(
-                        draw.Circle(
-                            x,
-                            q_arm_y,
-                            2 * circle_radius,
-                            fill=telomere_color,
-                            stroke=outline_color,
-                            stroke_width=1,
-                        )
-                    )
-
-    # --- scale bar ---------------------------------------------------
-
-    # Data-driven scale bar: a "nice" round length that renders near a target
-    # height at the current zoom (respects --pixels-per-mb). Non-regressive for
-    # human (genome -> 10 Mbp, centromere -> 1 Mbp, subtelomere -> 10 kbp).
-    scale_bar_length = _nice_round(_SCALE_BAR_TARGET_PX / pixels_per_pos)
-    scale_bar_label = _format_bp(scale_bar_length)
-    scale_bar_pixel_height = scale_bar_length * pixels_per_pos
-    scale_bar_x = 40
-    scale_bar_width = 2
-    label1_x = 35
-    label2_x = 20
-    pos_per_pixel = 1 / pixels_per_pos
-    if pos_per_pixel >= 1000:
-        resolution_label_text = f"1px = {pos_per_pixel / 1000:.1f} kbp".replace(".0", "")
-    else:
-        resolution_label_text = f"1px = {int(pos_per_pixel)} bp"
-    label_y_center = initial_y + (scale_bar_pixel_height / 2)
-    d.append(
-        draw.Rectangle(
-            scale_bar_x, initial_y, scale_bar_width, scale_bar_pixel_height, fill=text_color
-        )
+    _draw_feature_rects(
+        d,
+        inputs,
+        views,
+        geom,
+        seen_sequences,
+        x_coords,
+        colors,
+        mode=mode,
+        subtelomere_boundary=subtelomere_boundary,
     )
-    d.append(
-        draw.Text(
-            scale_bar_label,
-            10,
-            label1_x,
-            label_y_center,
-            text_anchor="middle",
-            fill=text_color,
-            transform=f"rotate(-90, {label1_x}, {label_y_center})",
-            font_family=_FONT_FAMILY,
-        )
+
+    _draw_sequence_outlines(
+        d, views, geom, x_coords, mode=mode, subtelomere_boundary=subtelomere_boundary
     )
-    d.append(
-        draw.Text(
-            resolution_label_text,
-            10,
-            label2_x,
-            label_y_center,
-            text_anchor="middle",
-            fill=text_color,
-            transform=f"rotate(-90, {label2_x}, {label_y_center})",
-            font_family=_FONT_FAMILY,
-        )
+
+    _draw_telomere_circles(d, views, geom, x_coords, mode=mode)
+
+    _draw_scale_bar(d, geom, mode=mode)
+
+    _draw_footer_labels(
+        d, layout, geom, views, mode=mode, subtelomere_boundary=subtelomere_boundary
     )
-    if mode == "subtelomere":
-        q_arm_end_y = q_arm_start_y + q_arm_height
-        scale_bar_start_y = q_arm_end_y - scale_bar_pixel_height
-        q_arm_label_y_center = scale_bar_start_y + (scale_bar_pixel_height / 2)
-        d.append(
-            draw.Rectangle(
-                scale_bar_x,
-                scale_bar_start_y,
-                scale_bar_width,
-                scale_bar_pixel_height,
-                fill=text_color,
-            )
-        )
-        d.append(
-            draw.Text(
-                mode_params.scale_bar_label,
-                10,
-                label1_x,
-                q_arm_label_y_center,
-                text_anchor="middle",
-                fill=text_color,
-                transform=f"rotate(-90, {label1_x}, {q_arm_label_y_center})",
-                font_family=_FONT_FAMILY,
-            )
-        )
-        d.append(
-            draw.Text(
-                resolution_label_text,
-                10,
-                label2_x,
-                q_arm_label_y_center,
-                text_anchor="middle",
-                fill=text_color,
-                transform=f"rotate(-90, {label2_x}, {q_arm_label_y_center})",
-                font_family=_FONT_FAMILY,
-            )
-        )
 
-    # --- footer labels (subtelomere mode only) -----------------------
-
-    if mode == "subtelomere":
-        drawing_end_y = q_arm_start_y + (subtelomere_boundary * pixels_per_pos)
-        for chromosome, start_x in layout.chrom_start_x.items():
-            block_width = layout.chrom_block_widths[chromosome]
-            chromosome_text = f"{chromosome}q"
-            if len(HAPLOTYPES) == 1:
-                bottom_chrom_line_y = drawing_end_y + 12
-                bottom_chrom_label_y = drawing_end_y + 27
-                d.append(
-                    draw.Rectangle(start_x, bottom_chrom_line_y, block_width, 1, fill=text_color)
-                )
-                d.append(
-                    draw.Text(
-                        chromosome_text,
-                        14,
-                        start_x + (block_width / 2),
-                        bottom_chrom_label_y,
-                        text_anchor="middle",
-                        fill=text_color,
-                        font_family=_FONT_FAMILY,
-                    )
-                )
-            else:
-                bottom_hap_line_y = drawing_end_y + 12
-                bottom_hap_label_y = drawing_end_y + 27
-                bottom_chrom_line_y = drawing_end_y + 32
-                bottom_chrom_label_y = drawing_end_y + 47
-                for hap in layout.drawable_haps_per_chrom.get(chromosome, []):
-                    hap_start = layout.hap_start_x[chromosome][hap]
-                    hap_width = layout.hap_block_widths[chromosome][hap]
-                    hap_text = f"h{hap[3:]}" if hap.startswith("hap") else hap[:1]
-                    d.append(
-                        draw.Rectangle(hap_start, bottom_hap_line_y, hap_width, 1, fill=text_color)
-                    )
-                    d.append(
-                        draw.Text(
-                            hap_text,
-                            14,
-                            hap_start + (hap_width / 2),
-                            bottom_hap_label_y,
-                            text_anchor="middle",
-                            fill=text_color,
-                            font_family=_FONT_FAMILY,
-                        )
-                    )
-                d.append(
-                    draw.Rectangle(start_x, bottom_chrom_line_y, block_width, 1, fill=text_color)
-                )
-                d.append(
-                    draw.Text(
-                        chromosome_text,
-                        14,
-                        start_x + (block_width / 2),
-                        bottom_chrom_label_y,
-                        text_anchor="middle",
-                        fill=text_color,
-                        font_family=_FONT_FAMILY,
-                    )
-                )
-
-    # --- legend (right margin) --------------------------------------
-
-    if show_legend and sorted_legend_features:
-        # ``legend_x`` sits one ``chrom_gap`` to the right of the
-        # last chromosome's content, matching the spacing between
-        # adjacent chromosomes so the legend reads as just another
-        # "column" of the figure. ``sorted_legend_features`` was
-        # computed up front using either the database's hierarchy
-        # order (preferred) or a natural chr-then-alpha fallback.
-        legend_x = karyotype_content_right + chrom_gap
-        legend_y = initial_y
-        for i, feature in enumerate(sorted_legend_features):
-            row_y = legend_y + i * legend_row_height
-            # Bail out if the legend would overflow the SVG height
-            # (rare on tall karyotypes but possible for small ones).
-            if row_y + legend_swatch_size > image_height - 5:
-                logger.warning(
-                    "legend truncated at %d of %d entries: the rest fall outside "
-                    "the SVG height and are NOT shown. The figure understates the "
-                    "features present.",
-                    i,
-                    len(sorted_legend_features),
-                )
-                break
-            d.append(
-                draw.Rectangle(
-                    legend_x,
-                    row_y,
-                    legend_swatch_size,
-                    legend_swatch_size,
-                    fill=_color_for(legend_swatch_feature.get(feature, feature)),
-                    stroke=outline_color,
-                    stroke_width=legend_swatch_stroke,
-                )
-            )
-            d.append(
-                draw.Text(
-                    feature,
-                    legend_text_size,
-                    legend_x + legend_swatch_size + 4,
-                    row_y + legend_swatch_size - 2,
-                    text_anchor="start",
-                    fill=text_color,
-                    font_family=_FONT_FAMILY,
-                )
-            )
+    _draw_legend(
+        d,
+        geom,
+        sorted_legend_features,
+        legend_swatch_feature,
+        colors,
+        karyotype_content_right,
+        image_height,
+        show_legend=show_legend,
+    )
 
     d.save_svg(str(output_path))
 
