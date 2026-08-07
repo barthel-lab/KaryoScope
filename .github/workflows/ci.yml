@@ -73,8 +73,11 @@ jobs:
         run: pytest --cov=karyoscope --cov-report=term-missing
 
   # ----------------------------------------------------------------------
-  # Build the C++ get_featureIDs binary and run integration tests against
-  # it. Kept as a separate job from the unit test matrix so:
+  # Build the C++ get_featureIDs binary and the hks binary, then run the
+  # test suite with every external binary present — the unit pass (so the
+  # tests the matrix above skips for a missing tool actually execute) and
+  # the integration pass. Kept as a separate job from the unit test matrix
+  # so:
   #   1) A failing C++ build doesn't cascade into 8 redundant unit-test
   #      failures.
   #   2) We only need to build once per OS — Python version doesn't
@@ -90,6 +93,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+
+    env:
+      # The hks commit this job builds and tests against — upstream master at
+      # version 0.4.0, the minimum annotate accepts. Bump deliberately: change
+      # the sha, and the binary cache re-keys itself.
+      HKS_REF: 04bbc5260e37ff8874ffd13f4dfe77a52fedd331
 
     steps:
       - uses: actions/checkout@v4
@@ -122,10 +131,52 @@ jobs:
           ls -la native/get_featureIDs/build/
           ./native/get_featureIDs/build/get_featureIDs --help
 
+      # ------------------------------------------------------------------
+      # hks. Without it the six end-to-end `karyoscope build` tests
+      # (gated on `shutil.which("hks")`) silently skip on every runner, so
+      # a regression in core/build.py would pass CI. The binary is cached
+      # by (OS, HKS_REF); a cache hit skips the Rust build entirely.
+      # ------------------------------------------------------------------
+      - name: Restore cached hks binary
+        id: hks-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/hks-bin
+          key: hks-${{ runner.os }}-${{ runner.arch }}-${{ env.HKS_REF }}
+
+      - name: Check out HKS
+        if: steps.hks-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: jnalanko/HKS
+          ref: ${{ env.HKS_REF }}
+          path: hks-src
+          submodules: recursive
+
+      - name: Build hks
+        if: steps.hks-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo build --release --manifest-path hks-src/Cargo.toml
+          mkdir -p ~/hks-bin
+          cp hks-src/target/release/hks ~/hks-bin/
+
+      - name: Put hks on PATH and verify it
+        run: |
+          echo "$HOME/hks-bin" >> "$GITHUB_PATH"
+          ~/hks-bin/hks 2>&1 | grep "Running hks version" || true
+          test -x ~/hks-bin/hks
+
       - name: Install KaryoScope (for integration tests)
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      # The default pass again, this time with every external binary present
+      # (get_featureIDs and hks), so the tests the unit matrix skips for a
+      # missing tool actually execute — most importantly the six
+      # `karyoscope build` end-to-end tests.
+      - name: Run unit tests with all binaries present
+        run: pytest -v
 
       - name: Run integration tests
         run: pytest -m integration -v
