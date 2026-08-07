@@ -23,7 +23,10 @@ from karyoscope import diskspace, paths
 from karyoscope import download as _download
 from karyoscope import installed as _installed
 from karyoscope import registry as _registry
-from karyoscope.commands._options import resolve_db_root_flag
+from karyoscope.commands._options import (
+    resolve_db_root_flag,
+    resolve_resource_check_flag,
+)
 from karyoscope.exceptions import (
     DatabaseNotFoundError,
     KaryoscopeError,
@@ -361,11 +364,18 @@ def _action_install(
     help="Skip SHA-256 verification (not recommended; useful for debugging).",
 )
 @click.option(
-    "--no-space-check",
+    "--no-resource-check",
     is_flag=True,
     help="Install even if the database root looks too small to hold the archive "
     "and its extracted contents. Only useful when the registry's declared "
-    "sizes are wrong for your copy of the database.",
+    "sizes are wrong for your copy of the database. (Named for consistency with "
+    "the other commands; `download` only ever checks disk.)",
+)
+@click.option(
+    "--no-space-check",
+    is_flag=True,
+    hidden=True,
+    help="Deprecated alias for --no-resource-check.",
 )
 @click.option(
     "-y",
@@ -394,6 +404,7 @@ def cmd(
     refresh_registry: bool,
     force: bool,
     no_checksum: bool,
+    no_resource_check: bool,
     no_space_check: bool,
     yes: bool,
     quiet: bool,
@@ -418,6 +429,7 @@ def cmd(
         # Remove an installed database
         karyoscope download --remove KS_mouse_v1
     """
+    skip_checks = resolve_resource_check_flag(no_resource_check, no_space_check, command="download")
     db_root = paths.ensure_db_root(resolve_db_root_flag(db_root_arg, db_alias, command="download"))
     effective_registry_url = registry_url or _registry.DEFAULT_REGISTRY_URL
 
@@ -461,7 +473,7 @@ def cmd(
             force=force,
             verify_checksum=not no_checksum,
             show_progress=not quiet,
-            check_space=not no_space_check,
+            check_space=not skip_checks,
         )
     except KaryoscopeError as e:
         # Convert known KaryoScope errors to clean user-facing messages.

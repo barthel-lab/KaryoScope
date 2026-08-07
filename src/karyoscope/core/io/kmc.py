@@ -70,23 +70,13 @@ _MARKER_SCHEMA = 1
 #: Environment variable users can set to override the binary location.
 ENV_OVERRIDE = "KARYOSCOPE_GET_FEATUREIDS"
 
-#: Exit codes that almost always mean "killed by the OS or job
-#: scheduler" rather than a get_featureIDs-internal failure. ``-9`` is
-#: SIGKILL as Python reports it (negative); ``137`` is the same signal
-#: as the shell-style ``128 + 9`` that SLURM and Docker report when
-#: they wrap the process. Reserved for the OOM-hint augmentation in
-#: :func:`_augment_with_oom_hint` -- a SIGKILL on get_featureIDs is
-#: ~always the OOM-killer (kernel or SLURM) because the KMC index is
-#: large and the binary doesn't ever raise SIGKILL on itself.
-_OOM_LIKE_EXIT_CODES: frozenset[int] = frozenset({-9, 137})
-
-
-_OOM_HINT_TEMPLATE = (
-    "\n\n--- KaryoScope hint ---\n"
-    "Exit code {code} almost always means get_featureIDs was killed for "
-    "using too much memory -- by the kernel OOM-killer or by the job "
-    "scheduler (SLURM, PBS, etc.). The KMC index for a human-scale "
-    "database needs ~20-30 GB to load, plus per-thread working memory.\n"
+#: Advice appended when ``get_featureIDs`` is killed by an OOM-like signal.
+#: The detection itself lives in :mod:`karyoscope.core.external`, which
+#: applies to every tool; only the memory figures are backend-specific, and
+#: KMC's are an order of magnitude above HKS's.
+KMC_OOM_HINT = (
+    "The KMC index for a human-scale database needs ~20-30 GB to load, plus "
+    "per-thread working memory.\n"
     "Recommended fixes:\n"
     "  * On a SLURM cluster: request more memory (e.g. --mem=100G) and "
     "limit threads (--cpus-per-task=16).\n"
@@ -105,23 +95,22 @@ def _augment_with_oom_hint(
     stderr: str = "",
     stdout: str = "",
 ) -> ExternalToolError:
-    """Build an :class:`ExternalToolError`, appending an OOM hint for SIGKILL.
+    """Build an :class:`ExternalToolError` carrying KMC's memory advice.
 
-    SIGKILL is unrecoverable and rare; on KaryoScope's k-mer-query
-    step it's overwhelmingly "the OS or SLURM killed the process for
-    using too much memory." Two early colleagues hit this in v0.1.0
-    testing -- both had under-allocated memory and got the bare
-    ``Error: command failed with exit code -9`` message which is
-    opaque to non-cluster-experienced users. This helper attaches an
-    actionable hint when the exit code matches.
-
-    Non-OOM exit codes (e.g. malformed input, missing files) get the
-    plain :class:`ExternalToolError` with no hint -- we don't want
-    to point at memory when the real cause is something else.
+    Used on the paths that drive ``get_featureIDs`` through raw
+    :mod:`subprocess` rather than :func:`run_tool`, so they get the same
+    hint. Whether the advice is actually shown is decided in
+    :class:`ExternalToolError` from the return code -- ordinary failures
+    (malformed input, missing files) never see it, because pointing at
+    memory when the cause is something else is worse than saying nothing.
     """
-    if returncode in _OOM_LIKE_EXIT_CODES:
-        stderr = (stderr or "") + _OOM_HINT_TEMPLATE.format(code=returncode)
-    return ExternalToolError(cmd=cmd, returncode=returncode, stderr=stderr, stdout=stdout)
+    return ExternalToolError(
+        cmd=cmd,
+        returncode=returncode,
+        stderr=stderr,
+        stdout=stdout,
+        oom_hint=KMC_OOM_HINT,
+    )
 
 
 def _editable_install_candidate() -> Path | None:
@@ -411,19 +400,10 @@ def run_get_featureids(
     if input_format is not None:
         cmd += ["--input-format", input_format]
 
-    try:
-        run_tool(cmd, capture=capture)
-    except ExternalToolError as e:
-        # Re-raise with an OOM hint if the exit code looks like a
-        # SIGKILL. Pass-through for everything else.
-        if e.returncode in _OOM_LIKE_EXIT_CODES:
-            raise _augment_with_oom_hint(
-                cmd=list(e.cmd),
-                returncode=e.returncode,
-                stderr=e.stderr,
-                stdout=e.stdout,
-            ) from e
-        raise
+    # The hint rides along on every invocation; ExternalToolError shows it
+    # only when the return code says the process was killed, so ordinary
+    # failures are unaffected.
+    run_tool(cmd, capture=capture, oom_hint=KMC_OOM_HINT)
     write_combined_marker(out_path, prefix=prefix, db_path=db_path, input_path=input_path)
     return out_path
 

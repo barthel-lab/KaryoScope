@@ -61,3 +61,37 @@ def resolve_db_root_flag(
         command,
     )
     return legacy_db
+
+
+def resolve_resource_check_flag(
+    no_resource_check: bool,
+    no_space_check: bool,
+    *,
+    command: str,
+) -> bool:
+    """Reconcile ``--no-resource-check`` with the deprecated ``--no-space-check``.
+
+    The escape hatch originally skipped one check, on free disk. ``annotate``
+    now also refuses to start when there is not enough *memory* to hold the
+    index, and one flag governs both — so "space" had become the wrong word
+    for what it does. ``--no-space-check`` remains a hidden alias for one
+    release, per the CLI stability promise in the README.
+
+    Returns True if the resource checks should be skipped. Raises
+    :class:`click.UsageError` if both flags are supplied, and warns when the
+    legacy one is used.
+    """
+    if not no_space_check:
+        return no_resource_check
+    if no_resource_check:
+        raise click.UsageError(
+            f"`{command}`: pass --no-resource-check, not both it and "
+            "--no-space-check (the latter is a deprecated alias)."
+        )
+    logger.warning(
+        "`--no-space-check` is deprecated for `%s` and will be removed in a "
+        "future release; use `--no-resource-check` instead. It now covers "
+        "memory as well as disk.",
+        command,
+    )
+    return True

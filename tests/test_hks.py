@@ -26,7 +26,7 @@ def _capture_lookup_cmd(
     monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
     monkeypatch.setattr(
         "karyoscope.core.io.hks.run_tool",
-        lambda cmd, capture=False: captured.__setitem__("cmd", cmd),
+        lambda cmd, capture=False, **kw: captured.__setitem__("cmd", cmd),
     )
     run_hks_lookup(
         base_path=tmp_path / "features.hksb",
@@ -65,7 +65,7 @@ def _capture_smooth_cmd(
     monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
     monkeypatch.setattr(
         "karyoscope.core.io.hks.run_tool",
-        lambda cmd, capture=False: captured.__setitem__("cmd", cmd),
+        lambda cmd, capture=False, **kw: captured.__setitem__("cmd", cmd),
     )
     run_hks_smooth(
         hierarchy_file=tmp_path / "features.chromosome.hierarchy.txt",
@@ -173,7 +173,7 @@ def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
     monkeypatch.setattr(
         "karyoscope.core.io.hks.run_tool",
-        lambda cmd, capture=False: captured.__setitem__("cmd", [str(c) for c in cmd]),
+        lambda cmd, capture=False, **kw: captured.__setitem__("cmd", [str(c) for c in cmd]),
     )
     return captured
 
@@ -277,7 +277,7 @@ def _capture_batch_cmd(
     monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
     monkeypatch.setattr(
         "karyoscope.core.io.hks.run_tool",
-        lambda cmd, capture=False: captured.__setitem__("cmd", cmd),
+        lambda cmd, capture=False, **kw: captured.__setitem__("cmd", cmd),
     )
     io_pairs = [(tmp_path / f"in{i}.fa", tmp_path / f"out{i}.bed") for i in range(n_inputs)]
     run_hks_lookup_batch(
@@ -341,7 +341,7 @@ def test_batch_lookup_with_no_inputs_does_nothing(
     calls: list[object] = []
     monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
     monkeypatch.setattr(
-        "karyoscope.core.io.hks.run_tool", lambda cmd, capture=False: calls.append(cmd)
+        "karyoscope.core.io.hks.run_tool", lambda cmd, capture=False, **kw: calls.append(cmd)
     )
     run_hks_lookup_batch(
         base_path=tmp_path / "b.hksb",

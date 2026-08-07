@@ -75,6 +75,10 @@ class InsufficientDiskSpaceError(KaryoscopeError):
     """
 
 
+class InsufficientMemoryError(KaryoscopeError):
+    """Less memory is available than the step about to run requires."""
+
+
 class MissingDependencyError(KaryoscopeError):
     """One or more required external tools are not available.
 

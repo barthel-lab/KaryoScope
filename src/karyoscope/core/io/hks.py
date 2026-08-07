@@ -44,6 +44,27 @@ ENV_OVERRIDE = "KARYOSCOPE_HKS"
 #: the output is needed to rewrite it.
 _HKS_MISS_LABEL = "none"
 
+#: Advice appended when ``hks`` is killed by an OOM-like signal. Detection
+#: lives in :mod:`karyoscope.core.external`; only the figures are backend
+#: specific, and HKS's are far below KMC's -- telling an HKS user to request
+#: 100 GB would be as unhelpful as telling them nothing.
+#:
+#: The numbers are measured, not estimated: peak RSS is the index itself --
+#: the shared base plus one feature set's labeling at a time -- so it is
+#: ~10 GB for a human database whatever is being annotated, and barely moves
+#: with --threads.
+HKS_OOM_HINT = (
+    "hks holds the index in memory: the shared base index plus one feature "
+    "set's labeling at a time. For a human-scale database that is ~10 GB, "
+    "and it does not shrink with fewer --threads or a smaller input.\n"
+    "Recommended fixes:\n"
+    "  * On a SLURM cluster: request at least 16 GB (e.g. --mem=16G).\n"
+    "  * On a login node: move to a compute node.\n"
+    "  * Check the database's index size on disk -- `du -sh <db>/index` is a "
+    "good lower bound for what one lookup needs resident.\n"
+)
+
+
 #: Default max-gap (bases) passed to ``hks smooth``, matching karyoscope's Python default.
 _DEFAULT_SMOOTH_MAX_GAP = 1000
 
@@ -111,6 +132,42 @@ def get_hks_binary() -> str:
         f"Build HKS from source (cargo build --release in the HKS repo) "
         f"and place the binary on PATH, or set {ENV_OVERRIDE} to its location."
     )
+
+
+def estimate_hks_memory_bytes(
+    *, db_dir: Path, basename: str, feature_sets: list[str]
+) -> int | None:
+    """Bytes ``hks`` must hold resident to query ``feature_sets``.
+
+    Unlike the output-size estimate, this is not extrapolated from anything:
+    ``hks`` loads the shared base index plus **one** feature set's labeling
+    at a time, so the peak is the base plus the largest labeling among those
+    requested, and both are files whose size can simply be read.
+
+    That structure is why the figure barely moves with ``--threads`` or with
+    input size, and why a single haplotype costs the same as a diploid.
+    Measured on the human database: base 6.04 GiB + largest labeling
+    3.02 GiB = 9.06 GiB, against a 10.04 GB observed peak — the remainder is
+    query buffering, covered by the caller's margin.
+
+    Returns ``None`` if the files cannot be sized, so the caller can fail
+    open rather than block on a database it could not inspect.
+    """
+    base = db_dir / f"{basename}.hksb"
+    try:
+        total = base.stat().st_size
+    except OSError:
+        return None
+
+    largest = 0
+    for fs in feature_sets:
+        try:
+            largest = max(largest, (db_dir / f"{basename}.{fs}.hksf").stat().st_size)
+        except OSError:
+            return None
+    if largest == 0:
+        return None
+    return total + largest
 
 
 def _infer_prefix(input_path: Path, db_basename: str) -> str:
@@ -254,7 +311,7 @@ def run_hks_lookup_batch(
             cmd += ["-q", str(query_path), "-o", str(output_path)]
 
         logger.debug("running (batch, %d queries): %s", len(io_pairs), " ".join(cmd))
-        _relay_hks_log(run_tool(cmd, capture=capture), "lookup-batch")
+        _relay_hks_log(run_tool(cmd, capture=capture, oom_hint=HKS_OOM_HINT), "lookup-batch")
     finally:
         for p in tmp_fastas:
             if p.exists():
@@ -338,7 +395,7 @@ def run_hks_smooth(
         "--no-header",
     ]
     logger.debug("running: %s", " ".join(cmd))
-    _relay_hks_log(run_tool(cmd, capture=capture), "smooth")
+    _relay_hks_log(run_tool(cmd, capture=capture, oom_hint=HKS_OOM_HINT), "smooth")
 
     return output_path
 
@@ -419,7 +476,7 @@ def run_hks_build_base(
         cmd.append("--forward-only")
 
     logger.debug("running: %s", " ".join(cmd))
-    run_tool(cmd, capture=capture)
+    run_tool(cmd, capture=capture, oom_hint=HKS_OOM_HINT)
     return output_path
 
 
@@ -521,7 +578,7 @@ def run_hks_add_feature_set(
     cmd += ["-t", str(n_threads)]
 
     logger.debug("running: %s", " ".join(cmd))
-    run_tool(cmd, capture=capture)
+    run_tool(cmd, capture=capture, oom_hint=HKS_OOM_HINT)
     return output_path
 
 

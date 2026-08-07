@@ -101,7 +101,7 @@ Size tracks the genome, not the tool: the 135 Mb *Arabidopsis* database installs
 
 Measured on HG002 v1.1 against `HKS_human_CHM13_v2`. An HKS run needs no headroom beyond its outputs: `hks lookup` writes the presmoothed BED directly, so no intermediate copy of it ever exists. (Under `--no-keep-presmoothed` that file becomes a temp one, and the KMC column applies instead.) The KMC backend still writes a combined intermediate BED alongside.
 
-Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-space-check` to override the estimate.
+Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-resource-check` to override the estimate.
 
 ## Installation
 
