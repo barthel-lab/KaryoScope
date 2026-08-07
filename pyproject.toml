@@ -119,6 +119,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # allow `assert` in tests
+# Standalone scripts a reader copies out of a recipe; plain `open` reads better
+# there than importing pathlib for one call.
+"docs/recipes/files/**" = ["PTH123"]
 
 [tool.ruff.format]
 quote-style = "double"

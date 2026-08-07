@@ -13,6 +13,7 @@ karyoscope prep-bed fai          --lengths FAI --output BED [OPTIONS]
 karyoscope prep-bed censat       --input FILE --lengths FAI --output BED --hierarchy TSV [OPTIONS]
 karyoscope prep-bed asat         --input FILE --output BED --hierarchy TSV [OPTIONS]
 karyoscope prep-bed satellite    --input FILE --lengths FAI --output BED --hierarchy TSV [OPTIONS]
+karyoscope prep-bed pave         --input FILE --output BED --hierarchy TSV [OPTIONS]
 ```
 
 ## Description
@@ -30,6 +31,7 @@ There is one subcommand **per source format**, not per feature set. Unrelated fo
 | `fai` | samtools `.fai` | `chromosome`: one leaf per sequence |
 | `censat` | CenSat annotation BED | `region`: CenSat features plus `p_arm`/`q_arm` |
 | `satellite` | centromeric satellite monomers (GFF or BED) | `region`: satellite bands plus `p_arm`/`q_arm` |
+| `pave` | PaVE genome records (JSON) | `gene`: one leaf per papillomavirus ORF, plus the URR |
 
 Each subcommand writes its BED (and, where the format implies one, a hierarchy) and prints the matching build-spec stanza. **The stanza goes to stdout and everything else to stderr**, so you can append it straight to a spec:
 
@@ -89,6 +91,10 @@ Format-specific options of note:
 | `satellite` | `--satellite LABEL` | Leaf label for the bands, e.g. `CEN180` or `aSat`. |
 | `satellite` | `--merge-gap N` | Merge monomers within N bases into one band (default 10). |
 | `satellite` | `--cluster-gap N` | Gap for clustering bands into the centromere core (default 500000). |
+| `pave` | `--priority PATH` | Priority file ranking the ORFs in genome order. |
+| `pave` | `--fasta PATH` | Also write the genome sequences the records carry. |
+| `pave` | `--taxonomy PATH` | Also write the ICTV lineage as a hierarchy, for a `type` set. |
+| `pave` | `--background LABEL` | Gap-fill label named in the stanza (default `intergenic`). |
 
 Run `karyoscope prep-bed SUBCOMMAND --help` for the full list.
 
@@ -169,6 +175,20 @@ One whole-length record per sequence, labelled with its own name, in the `.fai`'
 
 Keep non-karyotype sequences out with `build`'s `exclude:`, not by filtering here, so every feature set agrees about what exists.
 
+### `pave`
+
+Reads the JSON that [PaVE](https://pave.niaid.nih.gov/)'s `/api/genome/{id}` endpoint returns — a JSON array of them, a single one, or an object wrapping them under `data`. A summary from the `/api/genome` list endpoint carries no sequence or coordinates and is rejected by name.
+
+Leaves are the ORFs — `E6`, `E7`, `E1`, `E2`, `E5` (as the genus-specific `E5_ALPHA`, `E5_BETA`, `E5_GAMMA`, `E5_DELTA` and `E5_OTHER`), `E10`, `L2`, `L1` — plus the `URR`, grouped `early` and `late`. A feature name with no leaf raises rather than being dropped, which would hand its bases to the gap-fill.
+
+Two kinds of feature are excluded. The spliced transcripts `E1^E4`, `E8^E2` and `E6*` lie wholly inside the ORFs they are spliced from — across PaVE's 224 human reference genomes, 100% of their bases — so under a ranking that prefers the primary ORF they hold no sequence. The `E1BS` and `E2BS` binding motifs are 12–20 bp, shorter than any usable k.
+
+Papillomavirus genomes are circular, and a feature spanning the origin arrives as two locations (`7157..7906` and `1..103`). Both become BED records with the same label. The k-mers that cross the junction are not present in a linear FASTA.
+
+The reading frames overlap, so the set is built in priority mode rather than flattened: 10.2% of bases carry more than one annotated feature, and 1.2% once the spliced transcripts are dropped. `--priority` writes the ranking in genome order, which resolves each observed overlap toward the earlier ORF — `E6` over `E7`, `E7` over `E1`, `E1` over `E2`, `L2` over `L1`, and `E10` over `URR` through `early` outranking it.
+
+A record also carries the genome sequence and the ICTV lineage, so `--fasta` writes the FASTA for `build`'s `sequence:` (bgzip and index it) and `--taxonomy` writes the family → genus → species → type hierarchy for a `type` feature set whose BED comes from `fai`. Taxon names have their spaces replaced with underscores, since hierarchy files are whitespace-separated. The constant `Papillomaviridae` level is dropped.
+
 ## Examples
 
 ```bash
@@ -193,6 +213,11 @@ karyoscope prep-bed satellite --input ColCEN_CEN180.gff3 --lengths ColCEN.fa.gz.
 # A per-array alpha-satellite set from the same CenSat file the region set uses
 karyoscope prep-bed asat --input chm13v2.0.cenSatv2.1.bed \
     --output asat.bed --hierarchy asat.tsv
+
+# A papillomavirus gene set, plus the FASTA and taxonomy from the same records
+karyoscope prep-bed pave --input pave_human_ref.json \
+    --output gene.bed --hierarchy gene.tsv --priority gene.priority.txt \
+    --fasta HPV.fasta --taxonomy type.hierarchy.txt
 
 # Then build from the assembled spec
 karyoscope build --spec build.yaml
