@@ -410,9 +410,7 @@ def test_cram_input_declares_a_samtools_dependency() -> None:
     """The preflight resolves tools from the input format rather than assuming."""
     from karyoscope.core.annotate import _annotate_dependencies
 
-    needed = _annotate_dependencies(
-        index_type="hks", input_path=Path("s.cram"), bgzip=False
-    )
+    needed = _annotate_dependencies(index_type="hks", input_path=Path("s.cram"), bgzip=False)
     assert "samtools" in needed
     assert "hks" in needed
 

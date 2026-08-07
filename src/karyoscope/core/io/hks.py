@@ -232,6 +232,7 @@ def run_hks_lookup(
 def materialised_queries(
     input_paths: list[Path],
     *,
+    dest_dir: Path | None = None,
     reference: Path | None = None,
     threads: int = 0,
     query_names_sidecar: dict[Path, Path] | None = None,
@@ -253,7 +254,11 @@ def materialised_queries(
     time purely to recover them (another ~25 minutes and a full re-read on the
     largest sample).
 
-    Temp FASTAs are removed on exit, including on failure.
+    Temp FASTAs are created in ``dest_dir`` (pass the run's output
+    directory: the FASTA is input-sized, and the output's filesystem is the
+    one provisioned for data that scale — the system tempdir on cluster
+    nodes is often small or RAM-backed) and removed on exit, including on
+    failure. ``dest_dir=None`` falls back to the system tempdir.
     """
     tmp_fastas: list[Path] = []
     samtools: str | None = None
@@ -282,7 +287,7 @@ def materialised_queries(
                         "  samtools fasta input.bam | gzip > input.fasta.gz"
                     ),
                 )
-            with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False, dir=dest_dir) as tmp:
                 tmp_fasta = Path(tmp.name)
             tmp_fastas.append(tmp_fasta)
 
@@ -397,8 +402,8 @@ def run_hks_lookup_batch(
     1,996,531 distinct.
 
     Note these temp FASTAs are full-size — a 65x human WGS CRAM expands to
-    ~260 GB — and land in ``$TMPDIR``. Point that at node-local scratch, not at
-    a shared filesystem.
+    ~260 GB. The annotate backend materialises them next to the output via
+    ``materialised_queries``, so budget that space on the output filesystem.
     """
     if not io_pairs:
         return

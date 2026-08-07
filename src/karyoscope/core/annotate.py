@@ -1198,6 +1198,7 @@ def _run_hks_backend(
     )
     with materialised_queries(
         input_paths,
+        dest_dir=output_dir,
         reference=reference,
         threads=threads,
         query_names_sidecar=sidecars,

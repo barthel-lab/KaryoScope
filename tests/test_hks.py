@@ -414,17 +414,13 @@ def test_cram_conversion_passes_the_reference(
     assert "-T" not in cmd
 
 
-def test_cram_without_reference_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cram_without_reference_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A CRAM cannot be decoded without its reference, so the run stops early."""
     with pytest.raises(KaryoscopeError, match="CRAM"):
         _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".cram", reference=None)
 
 
-def test_bam_conversion_needs_no_reference(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bam_conversion_needs_no_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """BAM is self-contained; no --reference is added and no error is raised."""
     cmd = _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".bam", reference=None)
     assert "--reference" not in cmd

@@ -49,9 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Both backends are covered. KMC streams `samtools fasta` straight into
   `get_featureIDs` with no temp file; HKS cannot (`hks lookup` needs a seekable
-  path) and so materialises a temp FASTA in `$TMPDIR` first. That file is
+  path) and so materialises a temp FASTA next to the output first — the system
+  tempdir on cluster nodes is often small or RAM-backed. That file is
   **full size** — a 64x human WGS CRAM measured 28.9 GB in, 254 GB out — so
-  `$TMPDIR` must point at node-local scratch, never at a shared filesystem.
+  budget that space on the output filesystem on top of the BEDs.
 
 - **`--query-names/--no-query-names`** controls which identifier the output BED
   carries, and **`--query-names` is now refused outright for read-level input**

@@ -74,9 +74,10 @@ duplicates are **kept** — they are genuine distinct reads. Minus-strand record
 reverse-complemented back to sequencing orientation.
 
 **Scratch space.** The KMC backend streams the conversion with no temp file. The HKS
-backend cannot — `hks lookup` needs a seekable path — so it materialises a temp FASTA in
-`$TMPDIR` first. **That file is full size**: a 64x human WGS CRAM measured 28.9 GB in and
-254 GB out. Point `$TMPDIR` at node-local scratch, never at a shared filesystem.
+backend cannot — `hks lookup` needs a seekable path — so it materialises a temp FASTA
+next to the output first (the system tempdir on cluster nodes is often small or
+RAM-backed). **That file is full size**: a 64x human WGS CRAM measured 28.9 GB in and
+254 GB out, so budget that space on the output filesystem on top of the BEDs.
 
 ## Paired-end reads
 
