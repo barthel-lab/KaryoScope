@@ -9,16 +9,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+import karyoscope.core.karyotype_run as kr
 from karyoscope.core.io.scaffold_map import MapRow, map_signature
 from karyoscope.core.karyotype_run import (
     _binned_bed_is_current,
     _binned_combined_scaffolded_bed_path,
     _binned_mapsig_path,
+    _binned_scaffolded_bed_path,
     _combined_centromeres_bed_path,
     _combined_scaffolded_bed_path,
     _common_base,
+    _ensure_binned_scaffolded,
     _write_binned_mapsig,
 )
+from karyoscope.exceptions import KaryotypeError
 
 
 class TestCommonBase:
@@ -153,3 +159,113 @@ def test_binned_combined_scaffolded_bed_path(tmp_path: Path) -> None:
 def test_combined_centromeres_bed_path(tmp_path: Path) -> None:
     p = _combined_centromeres_bed_path(tmp_path, "samp", "DB")
     assert p.name == "samp.DB.centromeres.combined_chromosomes.bed.gz"
+
+
+# --- _ensure_binned_scaffolded: the reuse/rebuild/fail decisions ------
+#
+# The mapsig primitives above say whether a binned BED is current; this
+# function decides what to DO about it. These tests pin those decisions
+# with the binning layer stubbed, so each branch is observable.
+
+
+class TestEnsureBinnedScaffolded:
+    @property
+    def ROWS(self) -> list[MapRow]:
+        return [_row("chr1_hap1_a", hap="hap1"), _row("chr1_hap2_b", hap="hap2")]
+
+    def _call(self, out_dir: Path, **overrides):
+        kwargs = dict(
+            out_dir=out_dir,
+            stem="s",
+            db_id="db",
+            fs="region",
+            bin_size=100_000,
+            leaf_set=set(),
+            auto=True,
+            input_name="s.fa",
+            threads=1,
+            map_rows=self.ROWS,
+        )
+        kwargs.update(overrides)
+        return _ensure_binned_scaffolded(**kwargs)
+
+    def _out_path(self, out_dir: Path) -> Path:
+        return _binned_scaffolded_bed_path(out_dir, "s", "db", "region", 100_000)
+
+    def test_reuses_a_current_binned_bed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        out = self._out_path(tmp_path)
+        out.write_bytes(b"")
+        _write_binned_mapsig(out, self.ROWS)
+        monkeypatch.setattr(
+            kr, "bin_features", lambda *a, **kw: pytest.fail("must not rebin a current BED")
+        )
+        assert self._call(tmp_path) == out
+
+    def test_stale_map_without_auto_fails_loudly(self, tmp_path: Path) -> None:
+        out = self._out_path(tmp_path)
+        out.write_bytes(b"")
+        _write_binned_mapsig(
+            out, [_row("chr1_hap1_a", hap="hap1"), _row("chr1_hap1_b", hap="hap1")]
+        )
+        with pytest.raises(KaryotypeError, match="stale binned scaffolded BED"):
+            self._call(tmp_path, auto=False)
+
+    def test_missing_without_auto_fails_loudly(self, tmp_path: Path) -> None:
+        with pytest.raises(KaryotypeError, match="missing binned scaffolded BED"):
+            self._call(tmp_path, auto=False)
+
+    def test_stale_map_rebuilds_and_rerecords_the_signature(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        out = self._out_path(tmp_path)
+        out.write_bytes(b"")
+        _write_binned_mapsig(
+            out, [_row("chr1_hap1_a", hap="hap1"), _row("chr1_hap1_b", hap="hap1")]
+        )
+        src = tmp_path / "s.db.region.smoothed.scaffolded.bed.gz"
+        src.write_bytes(b"")
+        binned_from: list[Path] = []
+
+        def fake_bin(source, dest, **kw):
+            binned_from.append(source)
+            dest.write_bytes(b"rebuilt")
+
+        monkeypatch.setattr(kr, "bin_features", fake_bin)
+        result = self._call(tmp_path)
+        assert result == out
+        assert binned_from == [src]
+        assert _binned_bed_is_current(out, self.ROWS)
+
+    def test_no_scaffolded_bed_falls_back_to_annotation_plus_map(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        annotation = tmp_path / "s.db.region.smoothed.bed.gz"
+        annotation.write_bytes(b"")
+        binned_from: list[Path] = []
+        rewrites: list[tuple[Path, Path]] = []
+
+        def fake_bin(source, dest, **kw):
+            binned_from.append(source)
+            dest.write_bytes(b"binned")
+
+        def fake_rewrite(source, dest, *, map_rows):
+            assert map_rows == self.ROWS
+            rewrites.append((source, dest))
+            dest.write_bytes(b"renamed")
+
+        monkeypatch.setattr(kr, "bin_features", fake_bin)
+        monkeypatch.setattr(kr, "rewrite_bed", fake_rewrite)
+        out = self._call(tmp_path)
+        assert binned_from == [annotation]
+        assert rewrites and rewrites[0][1] == out
+        assert _binned_bed_is_current(out, self.ROWS)
+
+    def test_no_scaffolded_bed_and_no_map_is_an_error(self, tmp_path: Path) -> None:
+        with pytest.raises(KaryotypeError, match="no scaffold map provided"):
+            self._call(tmp_path, map_rows=None)
+
+    def test_nothing_to_bin_from_is_an_error(self, tmp_path: Path) -> None:
+        with pytest.raises(KaryotypeError, match="smoothed BED missing"):
+            self._call(tmp_path)
