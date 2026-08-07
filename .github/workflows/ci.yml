@@ -109,9 +109,15 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install C++ build prerequisites (Linux)
+      - name: Install C++ build prerequisites and external tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+        # samtools: `build` runs `samtools faidx` when the genome has no .fai.
+        # tabix (package) ships bgzip + tabix; seqtk: telomere detection.
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev samtools tabix seqtk
+
+      - name: Install external tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install samtools seqtk
 
       # macOS Xcode CLT ships zlib; Apple Clang supports C++20 (std::span etc.)
       # in Xcode 15+. macos-latest currently provides Xcode 15+, so no extra
