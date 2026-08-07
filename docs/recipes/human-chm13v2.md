@@ -223,3 +223,4 @@ The one difference throughout is `chrM`. The original BEDs gave it a literal `ex
 - [`karyoscope prep-bed`](../commands/prep-bed.md)
 - [`karyoscope build`](../commands/build.md)
 - [Recipe: Arabidopsis Col-CEN](arabidopsis-colcen.md)
+- [Recipe: HPV from PaVE](hpv-pave.md)

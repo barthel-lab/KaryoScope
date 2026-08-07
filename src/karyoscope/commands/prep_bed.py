@@ -28,6 +28,7 @@ import click
 from karyoscope.core.prep import asat as asat_prep
 from karyoscope.core.prep import cytoband as cytoband_prep
 from karyoscope.core.prep import genes as genes_prep
+from karyoscope.core.prep import pave as pave_prep
 from karyoscope.core.prep import repeats as repeats_prep
 from karyoscope.core.prep import structural as structural_prep
 from karyoscope.core.prep.common import PrepError, PrepResult, SeqidRewriter, render_stanza
@@ -333,6 +334,110 @@ def gff_gene(
         colors=colors,
         name=name,
         feature_type=feature_type,
+        rename=_rewriter(rename_prefix, seqid_map),
+    )
+
+
+@cmd.command("pave")
+@click.option(
+    "--input",
+    "input_path",
+    type=click.Path(**_IN),
+    required=True,
+    help="PaVE genome records: a JSON array of /api/genome/{id} responses (plain or gzipped).",
+)
+@click.option("--output", type=click.Path(**_OUT), required=True, help="Output feature-set BED.")
+@click.option(
+    "--hierarchy",
+    type=click.Path(**_OUT),
+    required=True,
+    help="Output 'child<TAB>parent' hierarchy.",
+)
+@click.option(
+    "--priority",
+    type=click.Path(**_OUT),
+    default=None,
+    help="Also write the tree as a 3-column priority file. The reading frames overlap, "
+    "so a priority-mode build needs this.",
+)
+@click.option(
+    "--colors",
+    type=click.Path(**_OUT),
+    default=None,
+    help="Also write a colours file: early genes cool, late genes warm, URR grey, "
+    "with the E5 variants sharing one legend row.",
+)
+@click.option(
+    "--fasta",
+    type=click.Path(**_OUT),
+    default=None,
+    help="Also write the genome sequences the records carry, for build's `sequence:`. "
+    "bgzip and index the result.",
+)
+@click.option(
+    "--taxonomy",
+    type=click.Path(**_OUT),
+    default=None,
+    help="Also write the ICTV lineage as a hierarchy, for a `type` feature set whose "
+    "BED comes from `prep-bed fai`.",
+)
+@click.option("--name", default="gene", show_default=True, help="Feature-set name in the stanza.")
+@click.option(
+    "--background",
+    default="intergenic",
+    show_default=True,
+    help="Gap-fill label build should use for the bases no ORF covers.",
+)
+@_seqid_options
+@click.option("--force", is_flag=True, help="Overwrite existing output files.")
+def pave(
+    input_path: Path,
+    output: Path,
+    hierarchy: Path,
+    priority: Path | None,
+    colors: Path | None,
+    fasta: Path | None,
+    taxonomy: Path | None,
+    name: str,
+    background: str,
+    rename_prefix: str | None,
+    seqid_map: Path | None,
+    force: bool,
+) -> None:
+    """PaVE genome records -> a papillomavirus `gene` feature set.
+
+    \b
+    Leaves are the ORFs — E6, E7, E1, E2, E5, E10, L2, L1 — plus the URR,
+    grouped early/late as in the standard genome map. The three spliced
+    transcripts (E1^E4, E8^E2, E6*) are dropped because they lie wholly inside
+    the ORFs they are spliced from, and the E1BS/E2BS binding motifs because at
+    12-20 bp they are shorter than any usable k.
+
+    \b
+    A record carries the sequence and the ICTV lineage as well as the
+    coordinates, so --fasta and --taxonomy write the other two files a
+    papillomavirus build needs. Nothing else has to be downloaded.
+
+    \b
+    Example:
+        karyoscope prep-bed pave --input pave_human_ref.json \\
+            --output hpv_gene.bed --hierarchy hpv_gene.tsv \\
+            --priority hpv_gene.priority.txt --fasta HPV.fasta \\
+            --taxonomy hpv_type.hierarchy.txt
+    """
+    _run(
+        pave_prep.from_pave,
+        [output, hierarchy, priority, colors, fasta, taxonomy],
+        force,
+        input_path=input_path,
+        output=output,
+        hierarchy=hierarchy,
+        priority=priority,
+        colors=colors,
+        fasta=fasta,
+        taxonomy=taxonomy,
+        name=name,
+        background=background,
         rename=_rewriter(rename_prefix, seqid_map),
     )
 
