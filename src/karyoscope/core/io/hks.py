@@ -296,7 +296,10 @@ def _run_hks_lookup_from_bam(
         ),
     )
 
-    with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp:
+    # Next to the output, not the system tempdir: the FASTA is input-sized
+    # (whole genome or read set), and /tmp on cluster nodes is often small
+    # or RAM-backed.
+    with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False, dir=output_path.parent) as tmp:
         tmp_fasta = Path(tmp.name)
 
     try:
@@ -374,7 +377,10 @@ def run_hks_smooth(
 
     n_threads = threads if threads > 0 else 4
 
-    with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False) as tmp:
+    # Next to the output, not the system tempdir: the smoothed TSV is the
+    # size of the lookup TSV (GBs for an assembly, tens of GBs for reads),
+    # and /tmp on cluster nodes is often small or RAM-backed.
+    with tempfile.NamedTemporaryFile(suffix=".tsv", delete=False, dir=output_path.parent) as tmp:
         smooth_tsv = Path(tmp.name)
 
     try:
