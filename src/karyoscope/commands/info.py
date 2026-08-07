@@ -21,11 +21,10 @@ deferred to a later stage when there's a concrete consumer.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import tarfile
 import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import click
 
@@ -44,6 +43,7 @@ from karyoscope.exceptions import (
     KaryoscopeError,
     ManifestError,
 )
+from karyoscope.inspect import dir_size, stage_archive
 from karyoscope.manifest import (
     Manifest,
     check_install_readiness,
@@ -54,16 +54,6 @@ logger = logging.getLogger(__name__)
 
 
 # --- formatting helpers ----------------------------------------------------
-
-
-def _dir_size(path: Path) -> int:
-    """Recursively compute the total size of files under ``path``."""
-    total = 0
-    for f in path.rglob("*"):
-        if f.is_file():
-            with contextlib.suppress(OSError):
-                total += f.stat().st_size
-    return total
 
 
 # --- listing all installed databases ---------------------------------------
@@ -91,13 +81,13 @@ def _list_installed(db_root: Path) -> None:
             "installed.json (perhaps unpacked manually):"
         )
         for db in loose:
-            click.echo(f"  {db.name}  ({format_bytes(_dir_size(db))})")
+            click.echo(f"  {db.name}  ({format_bytes(dir_size(db))})")
         return
 
     click.echo(f"\nInstalled databases ({len(state.databases)}):")
     for db_id, rec in sorted(state.databases.items()):
         db_dir = db_root / rec.directory
-        size = format_bytes(_dir_size(db_dir)) if db_dir.is_dir() else "missing"
+        size = format_bytes(dir_size(db_dir)) if db_dir.is_dir() else "missing"
         click.echo(f"  {db_id}")
         click.echo(f"    Version:   {rec.version}")
         click.echo(f"    Installed: {rec.installed_at}")
@@ -139,7 +129,7 @@ def _print_manifest_summary(manifest: Manifest, db_dir: Path, size_line: str | N
         for k, v in sorted(manifest.smoothing.items()):
             click.echo(f"  Smoothing ({k}): {v}")
     if size_line is None:
-        click.echo(f"  Size on disk:           {format_bytes(_dir_size(db_dir))}")
+        click.echo(f"  Size on disk:           {format_bytes(dir_size(db_dir))}")
     else:
         click.echo(size_line)
 
@@ -244,81 +234,12 @@ def _show_database(db_root: Path, db_id: str) -> None:
 #: Suffixes we will try to read as a database archive.
 _ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar")
 
+
 #: Members small enough to materialize while streaming. The manifest and the
 #: TSV/TXT sidecars are kilobytes; the index files are the whole database, and
 #: only their presence and names matter here.
-_MAX_INLINE_BYTES = 128 * 1024 * 1024
-_INLINE_SUFFIXES = (".yaml", ".yml", ".tsv", ".txt")
-
-
 def _looks_like_archive(path: Path) -> bool:
     return path.name.lower().endswith(_ARCHIVE_SUFFIXES)
-
-
-def _safe_relpath(name: str) -> PurePosixPath | None:
-    """Return ``name`` as a relative path, or None if it escapes the root.
-
-    Tar members are attacker-controlled: absolute paths and ``..`` components
-    would let an archive write outside the staging directory.
-    """
-    pure = PurePosixPath(name)
-    if pure.is_absolute():
-        return None
-    parts = [p for p in pure.parts if p not in (".", "")]
-    if any(p == ".." for p in parts):
-        return None
-    return PurePosixPath(*parts) if parts else None
-
-
-def _stage_archive(path: Path, staging: Path) -> tuple[set[str], int, int]:
-    """Stream ``path`` once, reproducing its shape under ``staging``.
-
-    Small text members are written out in full; every other regular file
-    becomes an empty placeholder, so :func:`validate_database_layout` can
-    run its existence checks without unpacking gigabytes of index. Returns
-    the set of top-level names, the number of regular files, and their
-    total uncompressed size.
-    """
-    top_level: set[str] = set()
-    n_files = 0
-    total_bytes = 0
-
-    # Stream mode ("r|*"): one forward pass, no seeking back into the
-    # compressed stream, so a multi-GB archive is read but never written.
-    with tarfile.open(path, mode="r|*") as tar:
-        for member in tar:
-            rel = _safe_relpath(member.name)
-            if rel is None:
-                logger.warning("skipping archive member with unsafe path: %s", member.name)
-                continue
-            top_level.add(rel.parts[0])
-            if member.isdir():
-                (staging / rel).mkdir(parents=True, exist_ok=True)
-                continue
-            if not member.isfile():
-                # Symlinks and devices have no place in a database archive.
-                logger.warning("skipping non-regular archive member: %s", member.name)
-                continue
-
-            n_files += 1
-            total_bytes += member.size
-            dest = staging / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            inline = (
-                rel.name.lower().endswith(_INLINE_SUFFIXES) and member.size <= _MAX_INLINE_BYTES
-            )
-            if inline:
-                src = tar.extractfile(member)
-                if src is None:  # pragma: no cover (isfile() implies a payload)
-                    dest.touch()
-                    continue
-                with dest.open("wb") as out:
-                    while chunk := src.read(1 << 20):
-                        out.write(chunk)
-            else:
-                dest.touch()
-
-    return top_level, n_files, total_bytes
 
 
 def _show_archive(path: Path) -> None:
@@ -328,7 +249,7 @@ def _show_archive(path: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="karyoscope-info-") as tmp:
         staging = Path(tmp)
         try:
-            top_level, n_files, total_bytes = _stage_archive(path, staging)
+            top_level, n_files, total_bytes = stage_archive(path, staging)
         except tarfile.TarError as e:
             click.echo(f"  Layout valid: NO (cannot read archive: {e})")
             return
@@ -410,14 +331,14 @@ def _show_path(path: Path) -> None:
                 manifest = validate_database_layout(path)
             except (ManifestError, DatabaseLayoutError) as e:
                 click.echo(f"  Layout valid: NO ({e})")
-                click.echo(f"  Size on disk: {format_bytes(_dir_size(path))}")
+                click.echo(f"  Size on disk: {format_bytes(dir_size(path))}")
                 return
             click.echo(f"  Database id:  {manifest.id}")
             _print_manifest_summary(manifest, path)
             _print_hierarchy_summary(manifest, path)
         else:
             click.echo("  Type: directory")
-            click.echo(f"  Size: {format_bytes(_dir_size(path))}")
+            click.echo(f"  Size: {format_bytes(dir_size(path))}")
         return
 
     if path.is_file():
