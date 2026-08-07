@@ -44,7 +44,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from karyoscope.core.annotate import annotate, resolve_database
+from karyoscope.core.annotate import annotate, annotate_batch, resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.hap_inference import (
     assign_per_input_labels,
@@ -295,6 +295,68 @@ def _ensure_annotated(
         # than going silent just because it was invoked indirectly.
         progress=progress,
     )
+
+
+def _ensure_annotated_batch(
+    resolved: list[_ResolvedInput],
+    *,
+    db_root: Path,
+    db_id: str,
+    feature_sets: list[str],
+    threads: int,
+    auto: bool,
+    bgzip: bool,
+    progress: Progress = SILENT,
+) -> None:
+    """Annotate every input's missing smoothed BEDs, batching across inputs.
+
+    Batched twin of :func:`_ensure_annotated`: inputs that share an output
+    directory and the same set of missing feature sets are annotated in a single
+    :func:`annotate_batch` call, so on the HKS backend each feature set's index
+    is loaded once for the whole group (e.g. both haplotypes together) rather
+    than once per input. Behaviour is otherwise identical to running
+    :func:`_ensure_annotated` on each input in turn.
+    """
+    groups: dict[tuple[Path, frozenset[str]], list[Path]] = {}
+    for spec in resolved:
+        missing = [
+            fs
+            for fs in feature_sets
+            if not _annotation_bed_path(spec.out_dir, spec.stem, db_id, fs).is_file()
+        ]
+        if not missing:
+            continue
+        if not auto:
+            raise ScaffoldError(
+                f"missing annotation BEDs for {spec.spec.path.name} "
+                f"(feature sets: {missing}). Re-run with auto-derive enabled, or run "
+                f"`karyoscope annotate` first."
+            )
+        groups.setdefault((spec.out_dir, frozenset(missing)), []).append(spec.spec.path)
+
+    for (out_dir, missing_fs), paths in groups.items():
+        ordered_missing = [fs for fs in feature_sets if fs in missing_fs]
+        logger.info(
+            "annotating %d input(s) for missing feature set(s) %s",
+            len(paths),
+            ordered_missing,
+        )
+        annotate_batch(
+            input_paths=paths,
+            output_dir=out_dir,
+            db_root=db_root,
+            db_id=db_id,
+            feature_sets=ordered_missing,
+            threads=threads,
+            smooth=True,
+            keep_presmoothed=True,
+            keep_intermediates=False,
+            bgzip=bgzip,
+            # The cascade's annotate step is the bulk of a karyotype run's
+            # wall time, so it narrates through the parent's reporter rather
+            # than going silent just because it was invoked indirectly.
+            progress=progress,
+        )
 
 
 def _ensure_telo(spec: _ResolvedInput, *, auto: bool, telo_motif: str | None = None) -> Path:
@@ -630,24 +692,28 @@ def scaffold_run(
         mode,
     )
 
-    # --- auto-derive cascade per input -------------------------------
-    # Sequential for Stage 5d-1; the per-input units are independent
-    # so a future batched-parallel pass would be a structural change
-    # in this loop only.
+    # --- auto-derive cascade -----------------------------------------
+    # Validate every input, then annotate them all in one batched pass
+    # (one HKS index load per feature set for the whole cohort — e.g. both
+    # haplotypes together — instead of once per input), then run the
+    # per-input telomere + bin steps that depend on each input's annotation.
     for r in resolved:
         if not r.spec.path.is_file():
             raise ScaffoldError(f"input file not found: {r.spec.path}")
         _reject_read_input(r.spec.path)
-        _ensure_annotated(
-            r,
-            db_root=db_root,
-            db_id=db_id_resolved,
-            feature_sets=annotate_sets,
-            threads=threads,
-            auto=auto,
-            bgzip=bgzip,
-            progress=progress,
-        )
+
+    _ensure_annotated_batch(
+        resolved,
+        db_root=db_root,
+        db_id=db_id_resolved,
+        feature_sets=annotate_sets,
+        threads=threads,
+        auto=auto,
+        bgzip=bgzip,
+        progress=progress,
+    )
+
+    for r in resolved:
         _ensure_telo(r, auto=auto, telo_motif=telo_motif)
         _ensure_binned(
             r,

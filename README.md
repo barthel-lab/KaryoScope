@@ -65,7 +65,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 | C++20 compiler | building the bundled `get_featureIDs` helper | GCC ≥ 11 or Clang ≥ 13 (Apple Clang) |
 | `bgzip`, `tabix` (htslib) | compressing and indexing BED output | 1.22.1 |
 | seqtk | telomere detection (`scaffold`, `centromeres`, `karyotype`) | 1.5 |
-| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | **0.3.0 or newer** |
+| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | **0.4.0 or newer** |
 | KMC | building a *KMC-backend* database (legacy — `karyoscope build` produces HKS databases). Not needed to *use* a pre-built KMC database; the bundled `get_featureIDs` helper queries its index directly | 3.2.x (vendored API 3.2.4) |
 | libcairo | rendering `--format pdf` / `--format png` | any recent release |
 | samtools | BAM input to `annotate`, and `karyoscope build` when the genome has no `.fai` index yet | 1.22.1 |
@@ -148,7 +148,7 @@ cargo install --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/h
 KaryoScope finds `hks` on `PATH` automatically (or set `$KARYOSCOPE_HKS` to its
 path). A future release will bundle `hks` via conda so this step goes away.
 
-**`hks` 0.3.0 or newer is required.** KaryoScope asks `hks` to write its output
+**`hks` 0.4.0 or newer is required.** KaryoScope asks `hks` to write its output
 in the exact shape it needs — headerless, with `novel` for k-mers absent from
 the index — which removes a full read and a full write of a multi-gigabyte file
 per feature set. The options that do this (`--miss-label`, `--no-header`,

@@ -51,8 +51,7 @@ from karyoscope.core.io.hierarchy import (
     validate_hierarchy,
 )
 from karyoscope.core.io.hks import (
-    convert_bam_to_fasta,
-    run_hks_lookup,
+    run_hks_lookup_batch,
     run_hks_smooth,
 )
 from karyoscope.core.io.kmc import (
@@ -1023,160 +1022,159 @@ def _run_hks_backend(
     *,
     manifest,
     db_dir: Path,
-    input_path: Path,
-    prefix: str,
+    input_paths: list[Path],
+    prefixes: dict[Path, str],
     output_dir: Path,
     requested: list[str],
     smooth: bool,
     keep_presmoothed: bool,
-    presmoothed_paths: dict[str, Path],
-    smoothed_paths: dict[str, Path],
+    presmoothed_by_input: dict[Path, dict[str, Path]],
+    smoothed_by_input: dict[Path, dict[str, Path]],
     threads: int,
     k: int,
     progress: Progress = SILENT,
 ) -> None:
     """Run the HKS lookup and optional smoothing for every requested feature set.
 
-    Unlike the KMC backend (one combined query, then translate integer feature
-    ids), HKS queries one ``.hksf`` per feature set and reads label names
-    directly. Each feature set is processed independently:
+    Handles one input or many through the same code. There is deliberately no
+    separate single-input path: the two used to be separate functions and
+    drifted apart silently, because a change to the pipeline expressed in one
+    of them merges cleanly against the other.
 
-    1. ``hks lookup`` against ``<basename>.<fs>.hksf`` -> the presmoothed BED.
-    2. If ``smooth``: ``hks smooth`` (using ``<basename>.<fs>.hierarchy.txt``)
-       reads that same file -> the smoothed BED.
+    The feature set is the OUTER loop, and for each set every input is queried
+    in a single ``hks lookup`` invocation. The (~6 GB base + ~3 GB feature-set)
+    index is therefore loaded once per feature set for the whole cohort rather
+    than once per (input, feature set) pair. With one input that costs nothing;
+    with several it removes a load each.
 
-    There is no conversion step between them. ``hks`` is told the output shape
-    KaryoScope wants -- headerless, ``novel`` for misses -- so the lookup output
-    *is* the presmoothed BED, and smooth reads it in place. When the caller does
-    not want the presmoothed BED kept, the lookup still has to write somewhere
-    for smooth to read, so it goes to a per-feature-set temp file deleted after
-    each set.
+    ``--report-query-names`` is a single per-invocation ``hks`` flag, so inputs
+    are grouped by :func:`_is_reads_input` (reads emit query ranks, assemblies
+    emit names) and each group gets its own call — at most two per feature set.
+
+    There is no conversion step. ``hks`` is told the output shape KaryoScope
+    wants -- headerless, ``novel`` for misses -- so each lookup output *is* that
+    input's presmoothed BED, and ``hks smooth`` reads it in place. When the
+    caller does not want the presmoothed BED kept, the lookup still has to write
+    somewhere for smooth to read, so it goes to a temp file deleted afterwards.
 
     ``k`` is the query k-mer length (``manifest.kmer.size`` unless overridden
     for a variable-k index).
     """
     base_path = db_dir / (manifest.index.basename + ".hksb")
 
-    # Reads emit integer query ranks instead of names: HKS otherwise loads
-    # every read name into memory (~10 GB at hundreds of millions of reads),
-    # and read names carry no downstream meaning (unlike assembly contig names,
-    # which map to karyotype chromosomes).
-    is_reads = _is_reads_input(input_path)
-
-    # A BAM is converted to FASTA once, up front: run_hks_lookup would
-    # otherwise re-run samtools fasta for every feature set.
-    query_path = input_path
-    tmp_fasta: Path | None = None
-    if input_path.suffix.lower() == ".bam":
-        logger.info(
-            "converting BAM %s to FASTA once for %d feature set(s)",
-            input_path.name,
-            len(requested),
-        )
-        tmp_fasta = convert_bam_to_fasta(input_path, output_dir, capture=True)
-        query_path = tmp_fasta
-
     t_hks_start = time.perf_counter()
     tracker = progress.track(requested)
-    try:
-        for fs in requested:
-            t_fs = time.perf_counter()
-            fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
-            hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
-            # The lookup output is already the presmoothed BED, so when it is being
-            # kept it is written straight to its final home rather than copied
-            # there. Otherwise smooth still needs it on disk to read, and it is a
-            # temp file we drop afterwards.
-            lookup_out = (
-                presmoothed_paths[fs]
+    for fs in requested:
+        t_fs = time.perf_counter()
+        fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
+        hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
+        # The lookup output is already the presmoothed BED, so when it is being
+        # kept it is written straight to its final home rather than copied
+        # there. Otherwise smooth still needs it on disk to read, and it is a
+        # temp file we drop afterwards.
+        lookup_by_input = {
+            p: (
+                presmoothed_by_input[p][fs]
                 if keep_presmoothed
-                else output_dir / f"{prefix}.{fs}.lookup_raw.tmp.bed"
+                else output_dir / f"{prefixes[p]}.{fs}.lookup_raw.tmp.bed"
             )
+            for p in input_paths
+        }
 
+        # One batched lookup per report-query-names group (reads vs assemblies).
+        t_lookup = time.perf_counter()
+        for is_reads_group in (False, True):
+            group = [p for p in input_paths if _is_reads_input(p) is is_reads_group]
+            if not group:
+                continue
             logger.info(
-                "running hks lookup for feature set %r on %s (threads=%d)",
+                "running hks lookup for feature set %r over %d input(s) (reads=%s, threads=%d)",
                 fs,
-                input_path.name,
+                len(group),
+                is_reads_group,
                 threads,
             )
-            t_lookup = time.perf_counter()
-            run_hks_lookup(
+            run_hks_lookup_batch(
                 base_path=base_path,
                 feature_set_file=fs_file,
                 k=k,
-                input_path=query_path,
-                output_path=lookup_out,
+                io_pairs=[(p, lookup_by_input[p]) for p in group],
                 threads=threads,
-                report_query_names=not is_reads,
+                report_query_names=not is_reads_group,
                 capture=True,
             )
-            dt_lookup = time.perf_counter() - t_lookup
-            if not lookup_out.is_file():
-                raise KaryoscopeError(f"hks lookup did not produce expected output at {lookup_out}")
+        dt_lookup = time.perf_counter() - t_lookup
 
-            # Timed and sized per phase rather than per feature set. The two do
-            # very different work -- the lookup is the parallel k-mer query, the
-            # smooth a largely serial pass over what it wrote -- so a single
-            # per-feature-set number cannot say which of them a change moved.
-            lookup_bytes = lookup_out.stat().st_size
-            # Deliberately no throughput here. A lookup's time is dominated by
-            # loading the index and querying the input, not by writing its
-            # output, so output-bytes-per-second would be a rate of nothing --
-            # it read 0.02 GB/s on a real run purely because the index load is
-            # large and the BED is small. `hks -vv` reports the phases that do
-            # have meaningful rates.
-            logger.info(
-                "hks lookup for %r wrote %s in %.1fs",
-                fs,
-                _human_bytes(lookup_bytes),
-                dt_lookup,
-            )
+        for p in input_paths:
+            if not lookup_by_input[p].is_file():
+                raise KaryoscopeError(
+                    f"hks lookup did not produce expected output at {lookup_by_input[p]}"
+                )
+        lookup_bytes = sum(lookup_by_input[p].stat().st_size for p in input_paths)
+        # Timed and sized per phase rather than per feature set. The two do
+        # very different work -- the lookup is the parallel k-mer query, the
+        # smooth a largely serial pass over what it wrote -- so a single
+        # per-feature-set number cannot say which of them a change moved.
+        # No throughput on the lookup: its time is dominated by loading the
+        # index and querying the input, not by writing the BED, so
+        # output-bytes-per-second would be a rate of nothing.
+        logger.info(
+            "hks lookup for %r wrote %s over %d input(s) in %.1fs",
+            fs,
+            _human_bytes(lookup_bytes),
+            len(input_paths),
+            dt_lookup,
+        )
 
-            try:
-                if smooth:
-                    t_smo = time.perf_counter()
+        try:
+            if smooth:
+                t_smooth = time.perf_counter()
+                smoothed_bytes = 0
+                for p in input_paths:
                     logger.info("running hks smooth for feature set %r", fs)
                     run_hks_smooth(
                         hierarchy_file=hierarchy_file,
-                        input_path=lookup_out,
-                        output_path=smoothed_paths[fs],
+                        input_path=lookup_by_input[p],
+                        output_path=smoothed_by_input[p][fs],
                         threads=threads,
                         capture=True,
                     )
-                    dt_smo = time.perf_counter() - t_smo
-                    smoothed_bytes = smoothed_paths[fs].stat().st_size
-                    logger.info(
-                        "hks smooth for %r wrote %s in %.1fs (read %s at %s)",
-                        fs,
-                        _human_bytes(smoothed_bytes),
-                        dt_smo,
-                        _human_bytes(lookup_bytes),
-                        _rate(lookup_bytes, dt_smo),
-                    )
-            finally:
-                if not keep_presmoothed:
+                    smoothed_bytes += smoothed_by_input[p][fs].stat().st_size
+                dt_smooth = time.perf_counter() - t_smooth
+                logger.info(
+                    "hks smooth for %r wrote %s in %.1fs (read %s at %s)",
+                    fs,
+                    _human_bytes(smoothed_bytes),
+                    dt_smooth,
+                    _human_bytes(lookup_bytes),
+                    _rate(lookup_bytes, dt_smooth),
+                )
+        finally:
+            if not keep_presmoothed:
+                for p in input_paths:
                     try:
-                        lookup_out.unlink()
+                        lookup_by_input[p].unlink()
                     except OSError as exc:
                         logger.warning(
-                            "could not remove temp lookup output %s: %s", lookup_out, exc
+                            "could not remove temp lookup output %s: %s",
+                            lookup_by_input[p],
+                            exc,
                         )
-            peak = _peak_child_rss_bytes()
-            if peak is not None:
-                logger.info("peak hks memory so far: %s", _human_bytes(peak))
-            # Reported here rather than per sub-step: one line per feature set
-            # is the granularity a user waiting on the run actually needs, and
-            # HKS processes them strictly in sequence so the counter is honest.
-            tracker.step(fs, time.perf_counter() - t_fs)
-    finally:
-        if tmp_fasta is not None:
-            tmp_fasta.unlink(missing_ok=True)
+
+        peak = _peak_child_rss_bytes()
+        if peak is not None:
+            logger.info("peak hks memory so far: %s", _human_bytes(peak))
+        # Reported here rather than per sub-step: one line per feature set
+        # is the granularity a user waiting on the run actually needs, and
+        # HKS processes them strictly in sequence so the counter is honest.
+        tracker.step(fs, time.perf_counter() - t_fs)
 
     peak = _peak_child_rss_bytes()
     logger.info(
-        "hks backend complete in %.1fs (%d feature set(s)%s)",
+        "hks backend complete in %.1fs (%d feature set(s) x %d input(s)%s)",
         time.perf_counter() - t_hks_start,
         len(requested),
+        len(input_paths),
         f", peak hks memory {_human_bytes(peak)}" if peak is not None else "",
     )
 
@@ -1420,17 +1418,19 @@ def annotate(
     combined_kept: Path | None = None
 
     if manifest.index.type == "hks":
+        # One input is a cohort of one: the same backend, so there is no
+        # second code path to keep in step with this one.
         _run_hks_backend(
             manifest=manifest,
             db_dir=db_dir,
-            input_path=input_path,
-            prefix=prefix,
+            input_paths=[input_path],
+            prefixes={input_path: prefix},
             output_dir=output_dir,
             requested=requested,
             smooth=smooth,
             keep_presmoothed=keep_presmoothed,
-            presmoothed_paths=presmoothed_paths,
-            smoothed_paths=smoothed_paths,
+            presmoothed_by_input={input_path: presmoothed_paths},
+            smoothed_by_input={input_path: smoothed_paths},
             threads=threads,
             k=query_k,
             progress=progress,
@@ -1586,3 +1586,255 @@ def annotate(
         smoothed_paths=smoothed_paths,
         combined_intermediate=combined_kept,
     )
+
+
+# --- multi-input batch (HKS backend) ----------------------------------
+
+
+def annotate_batch(
+    *,
+    input_paths: list[Path],
+    output_dir: Path,
+    db_root: Path,
+    db_id: str | None = None,
+    feature_sets: list[str] | None = None,
+    threads: int = 0,
+    smooth: bool = True,
+    keep_presmoothed: bool = True,
+    keep_intermediates: bool = False,
+    bgzip: bool = True,
+    preserve_input_order: bool = True,
+    force: bool = False,
+    k: int | None = None,
+    check_space: bool = True,
+    progress: Progress = SILENT,
+) -> dict[Path, AnnotateResult]:
+    """Annotate several inputs, loading the index once per feature set (HKS).
+
+    For the **HKS** backend, all inputs are queried against each feature set in a
+    single ``hks lookup`` (one index load per feature set for the whole cohort,
+    versus one per input), then each input's TSVs are converted/smoothed/bgzipped
+    independently. All outputs go into the shared ``output_dir``; filenames are
+    prefixed by the input basename (as in single-input mode) so they never
+    collide.
+
+    For the **KMC** backend there is no batch query primitive, so inputs are
+    annotated one at a time via :func:`annotate` (no regression, no speed-up).
+
+    Returns ``{input_path: AnnotateResult}``. ``preserve_input_order`` is accepted
+    for signature parity with :func:`annotate` but has no effect on the HKS
+    backend (its per-sequence output order is fixed by the query file).
+    """
+    if not input_paths:
+        return {}
+
+    # A single input has nothing to batch — delegate to the exact, battle-tested
+    # single-input path (covers both HKS and KMC backends). This makes
+    # annotate_batch a safe universal entry point for callers that may pass one
+    # or many inputs (CLI, karyotype, scaffold).
+    if len(input_paths) == 1:
+        p = input_paths[0]
+        return {
+            p: annotate(
+                input_path=p,
+                output_dir=output_dir,
+                db_root=db_root,
+                db_id=db_id,
+                feature_sets=feature_sets,
+                threads=threads,
+                smooth=smooth,
+                keep_presmoothed=keep_presmoothed,
+                keep_intermediates=keep_intermediates,
+                bgzip=bgzip,
+                preserve_input_order=preserve_input_order,
+                force=force,
+                k=k,
+                check_space=check_space,
+                progress=progress,
+            )
+        }
+
+    if not smooth and not keep_presmoothed:
+        raise KaryoscopeError(
+            "no output would be produced: cannot combine --no-smooth with "
+            "--no-keep-presmoothed. Choose at least one output type."
+        )
+    for p in input_paths:
+        if not p.is_file():
+            raise KaryoscopeError(f"input file not found: {p}")
+
+    db_id_resolved, db_dir = resolve_database(db_root, db_id)
+    manifest = validate_database_layout(db_dir)
+
+    # KMC backend: no batch query primitive — annotate inputs one at a time.
+    if manifest.index.type != "hks":
+        return {
+            p: annotate(
+                input_path=p,
+                output_dir=output_dir,
+                db_root=db_root,
+                db_id=db_id,
+                feature_sets=feature_sets,
+                threads=threads,
+                smooth=smooth,
+                keep_presmoothed=keep_presmoothed,
+                keep_intermediates=keep_intermediates,
+                bgzip=bgzip,
+                preserve_input_order=preserve_input_order,
+                force=force,
+                k=k,
+                check_space=check_space,
+                progress=progress,
+            )
+            for p in input_paths
+        }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    query_k = _resolve_query_k(manifest, k, db_id_resolved)
+
+    # Feature-set selection (identical rules to annotate()).
+    available = list(manifest.feature_sets)
+    if feature_sets is None:
+        requested = available
+    else:
+        unknown = [fs for fs in feature_sets if fs not in available]
+        if unknown:
+            raise KaryoscopeError(
+                f"feature set(s) {unknown!r} not declared in {db_id_resolved}'s "
+                f"manifest. Available: {available!r}"
+            )
+        requested = list(feature_sets)
+
+    # Validate the hierarchy up front when smoothing (HKS smooths via `hks smooth`
+    # against the per-feature-set hierarchy.txt, but we still fail fast on a broken
+    # hierarchy.tsv, matching the single-input path).
+    if smooth:
+        hierarchy = parse_hierarchy(db_dir / manifest.hierarchy)
+        issues = validate_hierarchy(hierarchy, feature_columns=None)
+        if issues:
+            raise KaryoscopeError(
+                "hierarchy.tsv failed validation; refusing to produce "
+                "smoothed output:\n  - " + "\n  - ".join(issues)
+            )
+        for fs in requested:
+            if fs not in hierarchy.feature_sets():
+                raise KaryoscopeError(
+                    f"feature set {fs!r} has no rows in hierarchy.tsv; "
+                    "smoothing this set is not possible. Re-run with "
+                    "--no-smooth or restrict --feature-set."
+                )
+
+    logger.info(
+        "annotating %d inputs against %s, sets=%s",
+        len(input_paths),
+        db_id_resolved,
+        requested,
+    )
+
+    # Preflight, as in the single-input path — but once for the whole cohort.
+    # The inputs share one output directory, so the disk-space estimate has to
+    # be the sum: checking each input separately would pass N times over on a
+    # filesystem that only has room for one.
+    for p in input_paths:
+        preflight.require(
+            _annotate_dependencies(index_type=manifest.index.type, input_path=p, bgzip=bgzip),
+            context=f"annotate against {db_id_resolved}",
+        )
+    _cpus.warn_if_oversubscribed(threads, what=f"annotate against {db_id_resolved}")
+    total_bases = sum(estimate_input_bases(p) for p in input_paths)
+    needed_bytes = estimate_output_bytes(
+        input_bases=total_bases,
+        n_feature_sets=len(requested),
+        keep_presmoothed=keep_presmoothed,
+        smooth=smooth,
+    )
+    logger.info(
+        "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp "
+        "of input across %d file(s)",
+        _human_bytes(needed_bytes),
+        len(requested),
+        total_bases / 1e9,
+        len(input_paths),
+    )
+    diskspace.require_free_space(
+        output_dir,
+        needed_bytes,
+        what=(f"annotating {len(input_paths)} input(s) ({len(requested)} feature set(s))"),
+        estimated=True,
+        hint=(
+            "Note that --bgzip shrinks the final output but not the peak: every "
+            "BED is written in full before the compression pass starts.\n"
+            "Options:\n"
+            "  - write to a larger filesystem with --outdir\n"
+            "  - annotate fewer inputs or feature sets at a time\n"
+            "  - drop one of the two outputs with --no-keep-presmoothed or --no-smooth\n"
+            "  - pass --no-space-check if this estimate looks wrong for your input"
+        ),
+        skip=not check_space,
+    )
+
+    n_threads = _cpus.resolve_threads(threads)
+    progress.start(
+        f"Annotating {len(input_paths)} inputs against {db_id_resolved}",
+        f"{len(requested)} feature set(s), {n_threads} thread(s), "
+        f"~{_human_bytes(needed_bytes)} estimated output",
+        "one index load per feature set for the whole batch",
+    )
+
+    t_start = time.perf_counter()
+
+    # Per-input prefixes and output-path dicts (same naming as single-input).
+    prefixes: dict[Path, str] = {}
+    presmoothed_by_input: dict[Path, dict[str, Path]] = {}
+    smoothed_by_input: dict[Path, dict[str, Path]] = {}
+    for p in input_paths:
+        prefix = f"{_derive_input_basename(p)}.{db_id_resolved}"
+        if k is not None:
+            prefix = f"{prefix}.k{query_k}"
+        prefixes[p] = prefix
+        presmoothed_by_input[p] = (
+            {fs: output_dir / f"{prefix}.{fs}.presmoothed.bed" for fs in requested}
+            if keep_presmoothed
+            else {}
+        )
+        smoothed_by_input[p] = (
+            {fs: output_dir / f"{prefix}.{fs}.smoothed.bed" for fs in requested} if smooth else {}
+        )
+
+    _run_hks_backend(
+        manifest=manifest,
+        db_dir=db_dir,
+        input_paths=input_paths,
+        prefixes=prefixes,
+        output_dir=output_dir,
+        requested=requested,
+        smooth=smooth,
+        keep_presmoothed=keep_presmoothed,
+        presmoothed_by_input=presmoothed_by_input,
+        smoothed_by_input=smoothed_by_input,
+        threads=threads,
+        k=query_k,
+        progress=progress,
+    )
+
+    # bgzip per input (mutating each input's path dicts in place), then build results.
+    results: dict[Path, AnnotateResult] = {}
+    for p in input_paths:
+        pre = presmoothed_by_input[p]
+        smo = smoothed_by_input[p]
+        if bgzip:
+            for fs in requested:
+                if fs in pre:
+                    pre[fs] = bgzip_file(pre[fs], threads=threads)
+                if fs in smo:
+                    smo[fs] = bgzip_file(smo[fs], threads=threads)
+        results[p] = AnnotateResult(
+            presmoothed_paths=pre, smoothed_paths=smo, combined_intermediate=None
+        )
+
+    logger.info(
+        "annotate batch complete in %.1fs (%d input(s))",
+        time.perf_counter() - t_start,
+        len(input_paths),
+    )
+    return results

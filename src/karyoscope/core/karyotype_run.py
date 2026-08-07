@@ -38,7 +38,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from karyoscope.core.annotate import annotate, resolve_database
+from karyoscope.core.annotate import annotate_batch, resolve_database
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.centromeres import (
     DEFAULT_COARSE_BIN_SIZE,
@@ -909,7 +909,12 @@ def karyotype_run(
         )
         # Plot pass: ensure each requested feature set's annotation BED
         # exists against the PLOT database. Skipped when already present;
-        # honours --no-auto.
+        # honours --no-auto. Inputs are grouped by (output dir, missing
+        # feature sets) so each group is annotated in a single batched call
+        # — on the HKS backend that loads each feature set's index once for
+        # the whole group (e.g. both haplotypes together) instead of once
+        # per input.
+        plot_groups: dict[tuple[Path, frozenset[str]], list[Path]] = {}
         for spec in inputs:
             stem = _input_stem(spec.path)
             out_dir = output_dir if output_dir is not None else spec.path.parent
@@ -930,12 +935,16 @@ def karyotype_run(
                     f"`karyoscope annotate` first."
                 )
             out_dir.mkdir(parents=True, exist_ok=True)
-            annotate(
-                input_path=spec.path,
+            plot_groups.setdefault((out_dir, frozenset(missing)), []).append(spec.path)
+
+        for (out_dir, missing_fs), paths in plot_groups.items():
+            annotate_batch(
+                input_paths=paths,
                 output_dir=out_dir,
                 db_root=db_root,
                 db_id=db_id_resolved,
-                feature_sets=missing,
+                # Preserve the manifest/requested order for the batched call.
+                feature_sets=[fs for fs in requested if fs in missing_fs],
                 threads=threads,
                 smooth=(annotation_variant == "smoothed"),
                 bgzip=bgzip,

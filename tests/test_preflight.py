@@ -161,8 +161,8 @@ _BANNER = "[2026-07-28T15:21:23Z INFO  hks] Running hks version {}\n"
 
 def test_hks_version_is_read_from_the_startup_banner(monkeypatch: pytest.MonkeyPatch) -> None:
     """hks has no --version; it logs the version on its way to printing usage."""
-    _fake_hks(monkeypatch, _BANNER.format("0.3.1"))
-    assert preflight.installed_version("hks") == "0.3.1"
+    _fake_hks(monkeypatch, _BANNER.format("0.4.1"))
+    assert preflight.installed_version("hks") == "0.4.1"
 
 
 def test_an_hks_older_than_the_minimum_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,14 +175,14 @@ def test_an_hks_older_than_the_minimum_is_reported(monkeypatch: pytest.MonkeyPat
         preflight.require(["hks"], context="annotate against DB_x")
     message = str(excinfo.value)
     assert "0.2.0 is installed" in message
-    assert "0.3.0 or newer" in message
+    assert "0.4.0 or newer" in message
     assert "annotate against DB_x" in message
     # The whole point is that it says what to do about it.
     assert "cargo install" in message
 
 
 def test_an_hks_at_or_above_the_minimum_passes(monkeypatch: pytest.MonkeyPatch) -> None:
-    for version in ("0.3.0", "0.3.1", "0.10.0", "1.0.0"):
+    for version in ("0.4.0", "0.4.1", "0.10.0", "1.0.0"):
         _fake_hks(monkeypatch, _BANNER.format(version))
         assert preflight.outdated(["hks"]) == [], version
 
@@ -235,10 +235,10 @@ def test_the_version_probe_forces_the_banner_on(monkeypatch: pytest.MonkeyPatch)
 
     def record(*a: object, **kw: object) -> subprocess.CompletedProcess[str]:
         seen.update(kw)
-        return subprocess.CompletedProcess([], 2, stdout="", stderr=_BANNER.format("0.3.0"))
+        return subprocess.CompletedProcess([], 2, stdout="", stderr=_BANNER.format("0.4.0"))
 
     monkeypatch.setattr(preflight.subprocess, "run", record)
-    assert preflight.installed_version("hks") == "0.3.0"
+    assert preflight.installed_version("hks") == "0.4.0"
     assert seen["env"]["RUST_LOG"] == "info"  # type: ignore[index]
 
 
