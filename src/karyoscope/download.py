@@ -27,6 +27,7 @@ from karyoscope.exceptions import (
     IncompatibleVersionError,
     KaryoscopeError,
 )
+from karyoscope.inspect import tar_member_issue
 from karyoscope.installed import InstalledRecord, load, now_iso, record_install
 from karyoscope.manifest import check_install_readiness, validate_database_layout
 from karyoscope.registry import DatabaseEntry
@@ -151,19 +152,14 @@ def _safe_extract_tar(archive: Path, dest_dir: Path, expected_top_level: str) ->
             raise DatabaseLayoutError(f"{archive} is empty")
 
         for m in members:
-            # Disallow anything other than regular files and directories.
-            if not (m.isreg() or m.isdir()):
-                raise DatabaseLayoutError(
-                    f"refusing to extract {m.name!r}: special files (links, "
-                    "devices, etc.) are not allowed in KaryoScope database archives"
-                )
+            # Shared classification with `info`'s archive staging; the
+            # difference is disposition — install refuses, inspect skips.
+            issue = tar_member_issue(m)
+            if issue is not None:
+                raise DatabaseLayoutError(f"refusing to extract {m.name!r}: {issue}")
 
-            # Normalize and check for traversal.
+            # Normalize for the top-level check.
             name = m.name.lstrip("/")
-            if ".." in Path(name).parts:
-                raise DatabaseLayoutError(
-                    f"refusing to extract {m.name!r}: contains '..' path component"
-                )
 
             # Require single top-level directory.
             parts = Path(name).parts
