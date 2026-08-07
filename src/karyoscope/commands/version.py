@@ -18,6 +18,7 @@ import click
 
 from karyoscope import preflight
 from karyoscope._version import __version__
+from karyoscope.core.external import run_tool
 from karyoscope.paths import default_db_root, installed_databases
 
 #: External tools KaryoScope shells out to. Each entry is
@@ -73,13 +74,7 @@ def _external_tool_version(executable: str, version_flag: str) -> tuple[str | No
 
     cmd = [path, version_flag] if version_flag else [path]
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
+        proc = run_tool(cmd, check=False, capture=True, timeout=5)
     except (subprocess.TimeoutExpired, OSError):
         return path, "(could not determine version)"
 

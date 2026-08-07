@@ -238,7 +238,7 @@ def edta(
 
     \b
     No colours are written: there is no established palette for the EDTA
-    vocabulary, so build's automatic assignment beats an invented one.
+    vocabulary, so colours are left to build's automatic assignment.
     """
     _run(
         repeats_prep.from_edta,

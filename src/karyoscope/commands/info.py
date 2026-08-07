@@ -489,10 +489,5 @@ def cmd(target: str | None, db_root_arg: Path | None, db_alias: Path | None) -> 
             return
 
         _show_database(db_root, target)
-    except (
-        DatabaseNotFoundError,
-        DatabaseLayoutError,
-        ManifestError,
-        KaryoscopeError,
-    ) as e:
+    except KaryoscopeError as e:
         raise click.ClickException(str(e)) from e

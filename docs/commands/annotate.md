@@ -52,11 +52,11 @@ For each feature set, `annotate` writes up to two BEDs:
 - Presmoothed (raw): `<input>.<dbid>.<feature_set>.presmoothed.bed[.gz]`
 - Smoothed (hierarchy-smoothed): `<input>.<dbid>.<feature_set>.smoothed.bed[.gz]`
 
-Each BED's 4th column is the human-readable feature name. k-mers absent from the index render as `novel`. The `.gz` suffix is present unless `--no-bgzip` is passed; `--no-bgzip` keeps BEDs as plain text for easy inspection.
+Each BED's 4th column is the human-readable feature name. k-mers absent from the index render as `novel`. The `.gz` suffix is present unless `--no-bgzip` is passed; `--no-bgzip` keeps BEDs as plain text.
 
 Smoothing promotes short noisy intervals (especially short `novel` runs flanked by specific features) to the lowest common ancestor of their flankers in the feature set's hierarchy.
 
-For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, the peak is set by the index rather than the input — the shared base index plus one feature set's labeling at a time — so it is ~10 GB whether you annotate a single haplotype or a combined diploid assembly such as HG002 v1.1 (request ≥ 16 GB). The **KMC backend** peaks at ~30–35 GB (request ≥ 50 GB). HG002 runs in ~20–30 min at `-t 16`.
+For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, the peak is set by the index rather than the input — the shared base index plus one feature set's labeling at a time — so it is ~10 GB whether you annotate a single haplotype or a combined diploid assembly such as HG002 v1.1 (request ≥ 16 GB). The **KMC backend** peaks at ~30–35 GB (request ≥ 50 GB); on it, HG002 runs in ~20–30 min at `-t 16`. For HKS-backend runtimes, see the README's [throughput figures](../../README.md#why-alignment-free).
 
 ## Progress output
 

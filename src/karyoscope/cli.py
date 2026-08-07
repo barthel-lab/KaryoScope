@@ -1,6 +1,6 @@
 """Top-level command-line interface for KaryoScope.
 
-This module wires the eight v0.1 subcommands into a single ``karyoscope``
+This module wires the subcommands into a single ``karyoscope``
 entry point. Each subcommand lives in its own module under
 ``karyoscope.commands`` so that they can grow independently.
 
@@ -195,7 +195,8 @@ def main(ctx: click.Context, verbose: int, quiet: bool) -> None:
     ctx.ensure_object(dict)["quiet"] = quiet
 
 
-# Register subcommands. The order here determines the order in `--help`.
+# Register subcommands. `--help` lists them alphabetically
+# (``list_commands`` sorts); the order here is not significant.
 
 
 if __name__ == "__main__":

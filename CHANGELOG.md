@@ -89,7 +89,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sequence stays with the feature. Applies to `repeatmasker` and `edta`. The
   converters whose output already tiles declare no gap-fill and are unchanged.
 
+- **Genome-scale temp files are created next to their output, not in the
+  system tempdir.** The scaffold rewriters' spill directories (up to the whole
+  assembly with unscaffolded contigs kept), the BAM→FASTA conversion, and the
+  `hks smooth` intermediate TSV all previously landed in `/tmp` — on cluster
+  nodes often a small or RAM-backed filesystem. They now sit beside the output,
+  as annotate's smoothing pass already did.
+
+- **A BAM input to `annotate` (HKS backend) is converted to FASTA once**,
+  shared by every feature set's lookup, instead of once per feature set.
+
+### Fixed
+
+- **The `samtools | get_featureIDs` BAM pipeline can no longer deadlock on a
+  warning-heavy BAM.** samtools stderr was read only after `get_featureIDs`
+  finished; more than a pipe buffer's worth of warnings (malformed records
+  warn once each) blocked samtools mid-write and stalled the pipeline. stderr
+  now drains to a temp file.
+
 ### Documentation
+
+- **An accuracy pass across the command pages, README and CONTRIBUTING.**
+  `bin`'s `--threads 0` is documented as the CPUs the process may actually use
+  (SLURM allocation / affinity), not `os.cpu_count()`; `scaffold`'s output
+  filenames carry their `<input_stem>.<dbid>.` prefix; `version`'s tool list
+  includes `get_featureIDs` and HKS; `build`'s options table lists
+  `--flatten-order`; `annotate`'s HG002 runtime figure is attributed to the
+  KMC backend; the recipes file table lists all six supporting files; and
+  CONTRIBUTING's development setup uses `environment.yml`, which carries the
+  tools the ad-hoc conda command it replaced was missing (samtools and the
+  C++/Rust toolchains).
 
 - **`build`: background placement and the hierarchy root.** The gap-fill leaf
   sits at the root, so a k-mer it shares with a real feature resolves to

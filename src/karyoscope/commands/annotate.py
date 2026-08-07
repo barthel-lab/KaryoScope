@@ -38,14 +38,8 @@ import click
 from karyoscope import paths
 from karyoscope import progress as _progress
 from karyoscope.core.annotate import annotate
-from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.exceptions import (
-    DatabaseLayoutError,
-    DatabaseNotFoundError,
-    InsufficientDiskSpaceError,
     KaryoscopeError,
-    ManifestError,
-    MissingDependencyError,
 )
 
 logger = logging.getLogger(__name__)
@@ -231,16 +225,7 @@ def cmd(
             check_space=not no_space_check,
             progress=_progress.from_context(),
         )
-    except (
-        DatabaseNotFoundError,
-        DatabaseLayoutError,
-        ManifestError,
-        ToolNotFoundError,
-        ExternalToolError,
-        InsufficientDiskSpaceError,
-        MissingDependencyError,
-        KaryoscopeError,
-    ) as e:
+    except KaryoscopeError as e:
         raise click.ClickException(str(e)) from e
 
     click.echo("Wrote:")

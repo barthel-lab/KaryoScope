@@ -14,16 +14,15 @@ This document covers the practical details. For community norms, please also rea
 
 ## Getting set up for development
 
-KaryoScope requires Python ≥3.10 and several external command-line tools (`KMC`, `bgzip`, `tabix`, `seqtk`). We recommend using a dedicated [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/)) environment for everything, which lets you manage Python and the bioinformatics tools together.
+KaryoScope requires Python ≥3.10 and several external command-line tools (`KMC`, `bgzip`, `tabix`, `seqtk`, `samtools`, plus the C++ and Rust toolchains that build the `get_featureIDs` and `hks` binaries). The repository's [`environment.yml`](environment.yml) pins all of them; use it with [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/)) so Python and the bioinformatics tools are managed together.
 
 ```bash
 git clone git@github.com:barthel-lab/KaryoScope.git
 cd KaryoScope
 
-# Create a dedicated environment with Python and the required external tools
-conda create -n karyoscope-dev -c conda-forge -c bioconda \
-    python=3.12 pip kmc htslib seqtk
-conda activate karyoscope-dev
+# Create the environment with Python and all required external tools
+conda env create -f environment.yml
+conda activate karyoscope
 
 # Install KaryoScope in editable mode with dev dependencies
 pip install -e ".[dev]"
@@ -35,6 +34,10 @@ pre-commit install
 # Build the bundled C++ helper (required for the annotate command and
 # its integration tests). Skip this if you're only doing Python work.
 make -C native/get_featureIDs
+
+# For `karyoscope build` and HKS-backend work, also build the `hks`
+# binary from a checkout of https://github.com/jnalanko/HKS:
+#   cargo install --path ../HKS --root "$CONDA_PREFIX"
 
 # Verify the install
 karyoscope --version

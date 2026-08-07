@@ -45,6 +45,8 @@ This is why every input here is pinned by checksum rather than by name.
 | `chm13v2_chromosome.hierarchy.txt` | which human chromosomes are metacentric / submetacentric / acrocentric / sex |
 | `colcen_chromosome.hierarchy.txt` | which Col-CEN sequences are nuclear |
 | `chm13v2_repeat.priority.txt` | the published order in which repeat classes win an overlap |
+| `chm13v2_repeat.order.txt` | which repeat class each base goes to when annotations overlap (the `flatten_order:` for the repeat set) |
+| `chm13v2_gene.priority.txt` | how `exon`, `intron` and `intergenic` rank when a k-mer is claimed by more than one |
 | `chm13v2_refseq_to_chr.tsv` | RefSeq accession → chromosome name |
 
 Every other hierarchy and priority file in these recipes is written by `prep-bed` as it converts, so there is nothing to supply.

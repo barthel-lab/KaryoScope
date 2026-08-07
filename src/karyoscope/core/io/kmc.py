@@ -32,6 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from karyoscope._version import __version__
@@ -476,27 +477,34 @@ def _run_get_featureids_piped_from_bam(
     ]
     logger.debug("piping: %s | %s", " ".join(samtools_cmd), " ".join(getfid_cmd))
 
-    samtools_proc = subprocess.Popen(
-        samtools_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        getfid_proc = subprocess.run(
-            getfid_cmd,
-            stdin=samtools_proc.stdout,
-            capture_output=True,
+    # samtools stderr goes to a temp file, not a pipe: nothing drains a
+    # pipe until get_featureIDs finishes, so a warning-heavy BAM (one
+    # line per malformed record) could fill the ~64 KB pipe buffer,
+    # block samtools mid-write, stall its stdout, and deadlock the
+    # whole pipeline. A file has no such limit.
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as errf:
+        samtools_proc = subprocess.Popen(
+            samtools_cmd,
+            stdout=subprocess.PIPE,
+            stderr=errf,
             text=True,
-            check=False,
         )
-    finally:
-        # Closing the read end before wait() lets samtools see SIGPIPE
-        # cleanly if get_featureIDs exited early.
-        if samtools_proc.stdout is not None:
-            samtools_proc.stdout.close()
-    samtools_returncode = samtools_proc.wait()
-    samtools_stderr = samtools_proc.stderr.read() if samtools_proc.stderr is not None else ""
+        try:
+            getfid_proc = subprocess.run(
+                getfid_cmd,
+                stdin=samtools_proc.stdout,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            # Closing the read end before wait() lets samtools see SIGPIPE
+            # cleanly if get_featureIDs exited early.
+            if samtools_proc.stdout is not None:
+                samtools_proc.stdout.close()
+        samtools_returncode = samtools_proc.wait()
+        errf.seek(0)
+        samtools_stderr = errf.read()
 
     # Order matters: downstream failure (get_featureIDs) is the more
     # actionable error to surface first. Both paths route through

@@ -328,6 +328,7 @@ def test_convert_handles_a_line_longer_than_a_block(tmp_path: Path) -> None:
     assert bed.read_text() == _reference_convert(tsv_text)
 
 
+@pytest.mark.slow
 def test_convert_is_byte_identical_on_pseudorandom_records(tmp_path: Path) -> None:
     """Fuzz the label mix and line lengths against the oracle."""
     import random
@@ -346,3 +347,50 @@ def test_convert_is_byte_identical_on_pseudorandom_records(tmp_path: Path) -> No
         bed = tmp_path / f"out_{block}.bed"
         convert_hks_tsv_to_bed(tsv, bed, block_bytes=block)
         assert bed.read_text() == expected, f"mismatch at block_bytes={block}"
+
+
+# --- convert_bam_to_fasta (stubbed samtools) -------------------------
+
+
+def test_convert_bam_to_fasta_runs_samtools_into_dest_dir(tmp_path, monkeypatch) -> None:
+    """The conversion runs `samtools fasta <bam>` with stdout in dest_dir."""
+    from types import SimpleNamespace
+
+    from karyoscope.core.io import hks as hks_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd, stdout=None, stderr=None, check=False):
+        seen["cmd"] = cmd
+        stdout.write(b">r1\nACGT\n")
+        return SimpleNamespace(returncode=0, stderr=None)
+
+    monkeypatch.setattr(hks_mod, "require_tool", lambda name, **kw: "samtools-stub")
+    monkeypatch.setattr(hks_mod.subprocess, "run", fake_run)
+
+    bam = tmp_path / "reads.bam"
+    fasta = hks_mod.convert_bam_to_fasta(bam, tmp_path)
+    try:
+        assert seen["cmd"] == ["samtools-stub", "fasta", str(bam)]
+        assert fasta.parent == tmp_path
+        assert fasta.read_text() == ">r1\nACGT\n"
+    finally:
+        fasta.unlink(missing_ok=True)
+
+
+def test_convert_bam_to_fasta_failure_raises_and_cleans_up(tmp_path, monkeypatch) -> None:
+    """A non-zero samtools exit raises ExternalToolError and removes the temp FASTA."""
+    from types import SimpleNamespace
+
+    from karyoscope.core.external import ExternalToolError
+    from karyoscope.core.io import hks as hks_mod
+
+    def fake_run(cmd, stdout=None, stderr=None, check=False):
+        return SimpleNamespace(returncode=1, stderr=b"boom")
+
+    monkeypatch.setattr(hks_mod, "require_tool", lambda name, **kw: "samtools-stub")
+    monkeypatch.setattr(hks_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(ExternalToolError, match="boom"):
+        hks_mod.convert_bam_to_fasta(tmp_path / "reads.bam", tmp_path, capture=True)
+    assert list(tmp_path.glob("*.fasta")) == []

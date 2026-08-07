@@ -43,14 +43,15 @@ from typing import TextIO
 from karyoscope import cpus as _cpus
 from karyoscope import diskspace, preflight
 from karyoscope import installed as _installed
-from karyoscope.core.external import require_tool, run_tool
-from karyoscope.core.io.features import Features, parse_features, render_feature
+from karyoscope.core.io.bgzip import bgzip_file
+from karyoscope.core.io.features import NOVEL_NAME, Features, parse_features, render_feature
 from karyoscope.core.io.hierarchy import (
     Hierarchy,
     parse_hierarchy,
     validate_hierarchy,
 )
 from karyoscope.core.io.hks import (
+    convert_bam_to_fasta,
     convert_hks_tsv_to_bed,
     run_hks_lookup,
     run_hks_smooth,
@@ -447,6 +448,14 @@ def _split_combined_bed(
     pending: dict[str, tuple[str, int, int, str] | None] = {fs: None for fs in feature_sets}
     handles: dict[str, TextIO] = {fs: output_paths[fs].open("w") for fs in feature_sets}
 
+    # Flat per-set {id: name} tables, seeded with the id-0 "novel"
+    # sentinel: this loop runs once per record per feature set over a
+    # combined BED with hundreds of millions of records, so the per-hit
+    # cost must be one dict lookup, not render_feature's validation and
+    # nested lookups. render_feature stays as the miss path, so an
+    # unknown id raises the same FeaturesError as before.
+    lookups = [(fs, {0: NOVEL_NAME, **features.names_for_set(fs)}) for fs in feature_sets]
+
     def flush(fs: str) -> None:
         rec = pending[fs]
         if rec is None:
@@ -458,8 +467,10 @@ def _split_combined_bed(
     try:
         with combined_bed.open() as f:
             for seq_name, start, end, fid in _iter_bed_records(f):
-                for fs in feature_sets:
-                    name = render_feature(fid, fs, features)
+                for fs, id_to_name in lookups:
+                    name = id_to_name.get(fid)
+                    if name is None:
+                        name = render_feature(fid, fs, features)
                     rec = pending[fs]
                     if (
                         rec is not None
@@ -959,47 +970,6 @@ def _human_bytes(n: int) -> str:
     return f"{n / 1024**2:.1f} MB"
 
 
-def _bgzip_file(path: Path, threads: int = 1) -> Path:
-    """Compress ``path`` in-place with ``bgzip``, returning the new path.
-
-    ``bgzip`` removes the source file by default (matches gzip's behaviour).
-    Returns ``Path(str(path) + ".gz")``. Logs per-file start + completion
-    at INFO so a long bgzip pass (12 files for a 6-feature-set human
-    database) doesn't look like the pipeline has hung.
-
-    ``threads`` is forwarded as ``bgzip -@``; the htslib bgzip compresses
-    a single file in parallel when given more than one thread. We
-    process files sequentially within the bgzip pass, so passing the
-    user's full ``--threads`` here is the right call (no contention
-    with concurrent file compressions). ``threads=1`` (the default)
-    omits ``-@`` entirely for cleanest subprocess invocation.
-    """
-    bgzip = require_tool(
-        "bgzip",
-        install_hint="Install htslib (`conda install -c bioconda htslib`), "
-        "or rerun with --no-bgzip to skip compression.",
-    )
-    orig_size = path.stat().st_size
-    logger.info("bgzipping %s (%s, threads=%d)", path.name, _human_bytes(orig_size), threads)
-    t0 = time.perf_counter()
-    cmd = [bgzip, "-f"]
-    if threads > 1:
-        cmd.extend(["-@", str(threads)])
-    cmd.append(str(path))
-    run_tool(cmd)
-    out_path = Path(str(path) + ".gz")
-    out_size = out_path.stat().st_size if out_path.is_file() else 0
-    dt = time.perf_counter() - t0
-    logger.info(
-        "bgzipped %s (%s -> %s) in %.1fs",
-        out_path.name,
-        _human_bytes(orig_size),
-        _human_bytes(out_size),
-        dt,
-    )
-    return out_path
-
-
 # --- HKS backend ------------------------------------------------------
 
 
@@ -1042,57 +1012,74 @@ def _run_hks_backend(
     # which map to karyotype chromosomes).
     is_reads = _is_reads_input(input_path)
 
+    # A BAM is converted to FASTA once, up front: run_hks_lookup would
+    # otherwise re-run samtools fasta for every feature set.
+    query_path = input_path
+    tmp_fasta: Path | None = None
+    if input_path.suffix.lower() == ".bam":
+        logger.info(
+            "converting BAM %s to FASTA once for %d feature set(s)",
+            input_path.name,
+            len(requested),
+        )
+        tmp_fasta = convert_bam_to_fasta(input_path, output_dir, capture=True)
+        query_path = tmp_fasta
+
     t_hks_start = time.perf_counter()
     tracker = progress.track(requested)
-    for fs in requested:
-        t_fs = time.perf_counter()
-        fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
-        hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
-        raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
+    try:
+        for fs in requested:
+            t_fs = time.perf_counter()
+            fs_file = db_dir / f"{manifest.index.basename}.{fs}.hksf"
+            hierarchy_file = db_dir / f"{manifest.index.basename}.{fs}.hierarchy.txt"
+            raw_tsv = output_dir / f"{prefix}.{fs}.lookup_raw.tmp.tsv"
 
-        logger.info(
-            "running hks lookup for feature set %r on %s (threads=%d)",
-            fs,
-            input_path.name,
-            threads,
-        )
-        run_hks_lookup(
-            base_path=base_path,
-            feature_set_file=fs_file,
-            k=k,
-            input_path=input_path,
-            output_path=raw_tsv,
-            threads=threads,
-            report_query_names=not is_reads,
-            capture=True,
-        )
-        if not raw_tsv.is_file():
-            raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
+            logger.info(
+                "running hks lookup for feature set %r on %s (threads=%d)",
+                fs,
+                input_path.name,
+                threads,
+            )
+            run_hks_lookup(
+                base_path=base_path,
+                feature_set_file=fs_file,
+                k=k,
+                input_path=query_path,
+                output_path=raw_tsv,
+                threads=threads,
+                report_query_names=not is_reads,
+                capture=True,
+            )
+            if not raw_tsv.is_file():
+                raise KaryoscopeError(f"hks lookup did not produce expected output at {raw_tsv}")
 
-        try:
-            if keep_presmoothed:
-                convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
-
-            if smooth:
-                t_smo = time.perf_counter()
-                logger.info("running hks smooth for feature set %r", fs)
-                run_hks_smooth(
-                    hierarchy_file=hierarchy_file,
-                    input_path=raw_tsv,
-                    output_path=smoothed_paths[fs],
-                    threads=threads,
-                    capture=True,
-                )
-                logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
-        finally:
             try:
-                raw_tsv.unlink()
-            except OSError as exc:
-                logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
-        # Reported here rather than per sub-step: one line per feature set
-        # is the granularity a user waiting on the run actually needs, and
-        # HKS processes them strictly in sequence so the counter is honest.
-        tracker.step(fs, time.perf_counter() - t_fs)
+                if keep_presmoothed:
+                    convert_hks_tsv_to_bed(raw_tsv, presmoothed_paths[fs])
+
+                if smooth:
+                    t_smo = time.perf_counter()
+                    logger.info("running hks smooth for feature set %r", fs)
+                    run_hks_smooth(
+                        hierarchy_file=hierarchy_file,
+                        input_path=raw_tsv,
+                        output_path=smoothed_paths[fs],
+                        threads=threads,
+                        capture=True,
+                    )
+                    logger.info("smoothed feature set %r in %.1fs", fs, time.perf_counter() - t_smo)
+            finally:
+                try:
+                    raw_tsv.unlink()
+                except OSError as exc:
+                    logger.warning("could not remove temp lookup TSV %s: %s", raw_tsv, exc)
+            # Reported here rather than per sub-step: one line per feature set
+            # is the granularity a user waiting on the run actually needs, and
+            # HKS processes them strictly in sequence so the counter is honest.
+            tracker.step(fs, time.perf_counter() - t_fs)
+    finally:
+        if tmp_fasta is not None:
+            tmp_fasta.unlink(missing_ok=True)
 
     logger.info(
         "hks backend complete in %.1fs (%d feature set(s))",
@@ -1484,9 +1471,9 @@ def annotate(
         t_bgzip_start = time.perf_counter()
         for fs in requested:
             if fs in presmoothed_paths:
-                presmoothed_paths[fs] = _bgzip_file(presmoothed_paths[fs], threads=threads)
+                presmoothed_paths[fs] = bgzip_file(presmoothed_paths[fs], threads=threads)
             if fs in smoothed_paths:
-                smoothed_paths[fs] = _bgzip_file(smoothed_paths[fs], threads=threads)
+                smoothed_paths[fs] = bgzip_file(smoothed_paths[fs], threads=threads)
         logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
         # Worth its own line: compressing 12 BEDs of a human diploid run
         # takes minutes, and it happens after the last feature-set line, so

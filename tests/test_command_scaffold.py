@@ -19,7 +19,7 @@ import pytest
 from click.testing import CliRunner
 
 from karyoscope.cli import main
-from karyoscope.commands.scaffold import _parse_named_path
+from karyoscope.commands._options import parse_named_path
 from karyoscope.core.io.scaffold_map import read_map
 
 # --- CLI parsing (no external tools) --------------------------------
@@ -27,12 +27,12 @@ from karyoscope.core.io.scaffold_map import read_map
 
 class TestParseNamedPath:
     def test_name_and_path(self) -> None:
-        name, path = _parse_named_path("hap1=foo.fa")
+        name, path = parse_named_path("hap1=foo.fa")
         assert name == "hap1"
         assert path == Path("foo.fa")
 
     def test_bare_path(self) -> None:
-        name, path = _parse_named_path("foo.fa")
+        name, path = parse_named_path("foo.fa")
         assert name is None
         assert path == Path("foo.fa")
 
@@ -40,7 +40,7 @@ class TestParseNamedPath:
         import click as _click
 
         with pytest.raises(_click.BadParameter):
-            _parse_named_path("=foo.fa")
+            parse_named_path("=foo.fa")
 
 
 class TestCliSurface:

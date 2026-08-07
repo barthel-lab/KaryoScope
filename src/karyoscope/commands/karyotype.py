@@ -29,19 +29,12 @@ import click
 
 from karyoscope import paths, preflight
 from karyoscope import progress as _progress
-from karyoscope.commands.scaffold import _parse_named_path, _split_comma
-from karyoscope.core.external import ExternalToolError, ToolNotFoundError
+from karyoscope.commands._options import parse_named_path, split_comma
 from karyoscope.core.karyotype_run import karyotype_run
 from karyoscope.core.scaffold import DEFAULT_HUMAN_ACROCENTRICS
 from karyoscope.core.scaffold_run import InputSpec
 from karyoscope.exceptions import (
-    CentromereError,
-    DatabaseLayoutError,
-    DatabaseNotFoundError,
     KaryoscopeError,
-    KaryotypeError,
-    ManifestError,
-    ScaffoldError,
 )
 
 logger = logging.getLogger(__name__)
@@ -400,10 +393,10 @@ def cmd(
                               --sex male --feature-set region
     """
     # --- parse named-pair options -----------------------------------
-    parsed_inputs: list[tuple[str | None, Path]] = [_parse_named_path(raw) for raw in inputs_raw]
+    parsed_inputs: list[tuple[str | None, Path]] = [parse_named_path(raw) for raw in inputs_raw]
     parsed_telos: dict[str, Path] = {}
     for raw in telo_raw:
-        name, path = _parse_named_path(raw)
+        name, path = parse_named_path(raw)
         if name is None:
             raise click.UsageError(f"--telo requires NAME=PATH form (got {raw!r})")
         if name in parsed_telos:
@@ -428,7 +421,7 @@ def cmd(
     if acrocentrics_raw:
         flattened: list[str] = []
         for entry in acrocentrics_raw:
-            flattened.extend(_split_comma(entry))
+            flattened.extend(split_comma(entry))
         if not flattened:
             raise click.UsageError("--acrocentric was given but produced no chromosome names")
         acrocentrics = set(flattened)
@@ -516,17 +509,7 @@ def cmd(
             colors_path=colors_path,
             seed_human_chromosomes=not no_human_chroms,
         )
-    except (
-        KaryotypeError,
-        CentromereError,
-        ScaffoldError,
-        DatabaseNotFoundError,
-        DatabaseLayoutError,
-        ManifestError,
-        ToolNotFoundError,
-        ExternalToolError,
-        KaryoscopeError,
-    ) as e:
+    except KaryoscopeError as e:
         raise click.ClickException(str(e)) from e
 
     click.echo("Wrote:")

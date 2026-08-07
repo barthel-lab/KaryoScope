@@ -118,12 +118,9 @@ def test_index_lca_none_for_disjoint_nodes(region_index: HierarchyIndex) -> None
 
 
 def test_index_caches_results(region_index: HierarchyIndex) -> None:
-    """get_ancestors / get_lca memoise — second call hits the cache."""
-    region_index.get_ancestors("rA")
-    region_index.get_lca("rA", "rB")
-    # Caches are populated
-    assert "rA" in region_index._ancestor_cache
-    assert any("rA" in k for k in region_index._lca_cache)
+    """get_ancestors memoises: repeated calls return the same object."""
+    assert region_index.get_ancestors("rA") is region_index.get_ancestors("rA")
+    assert region_index.get_lca("rA", "rB") == region_index.get_lca("rA", "rB")
 
 
 def test_index_rejects_multiple_roots() -> None:

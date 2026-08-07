@@ -22,7 +22,7 @@ Only two inputs are required — a genome and at least one annotation BED:
 | Input | Required | What it is |
 | --- | --- | --- |
 | **Genome FASTA** (`--sequence`) | **Yes** | The assembly your annotations are in coordinates of; plain or bgzipped. If a `.fai` is missing, `build` creates one with `samtools faidx`. |
-| **Feature-set BED** (`--feature-set NAME=BED`) | **Yes**, at least one | A BED whose **4th column is the feature label** — a leaf of this feature set's hierarchy. With no hierarchy file, each distinct label simply becomes its own leaf. Repeat the flag for more sets. Overlaps are allowed and gaps are filled automatically. |
+| **Feature-set BED** (`--feature-set NAME=BED`) | **Yes**, at least one | A BED whose **4th column is the feature label** — a leaf of this feature set's hierarchy. With no hierarchy file, each distinct label becomes its own leaf. Repeat the flag for more sets. Overlaps are allowed and gaps are filled automatically. |
 | Hierarchy (`--hierarchy NAME=PATH`) | No | `child<tab>parent` edge list. Without one, every leaf becomes a child of the root `categorized` (a flat star). See [Hierarchy](#hierarchy). |
 | Priorities (`--priority NAME=PATH`) | No | Resolves which label wins a k-mer claimed by several. In its 3-column `child priority parent` form it **also supplies the hierarchy**, so one file covers both. See [Priorities](#priorities). |
 | Colours (`--colors NAME=PATH`) | No | `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, with an optional 4th `legend_group` column. Without one, a distinct palette is generated per leaf. See [Colours](#colours). |
@@ -260,6 +260,7 @@ else.
 | `--priority NAME=PATH` | Priority file for a feature set ([Priorities](#priorities)); enables priority mode. Repeatable. |
 | `--colors NAME=PATH` | Colours file for a feature set: `feature<tab>color`, or the full `feature_set<tab>feature<tab>color`, optionally with a 4th `legend_group` column ([Colours](#colours)). Repeatable. |
 | `--flatten` | Pre-flatten overlapping BED regions to one label per base ([Priorities](#priorities)). |
+| `--flatten-order NAME=PATH` | Flatten order file for a feature set; implies `--flatten` for that set ([Priorities](#priorities)). Repeatable. |
 | `--variable-k` | Build a variable-k index, queryable at any k ≤ s ([Fixed-k and variable-k](#fixed-k-and-variable-k)). Not combinable with `--priority`. |
 | `--spec FILE` | Build-spec YAML (alternative to `--id`/`--sequence`/`--feature-set`). |
 | `--db-version TEXT` | Database version, semver (default `1.0.0`). |

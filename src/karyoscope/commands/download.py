@@ -25,15 +25,8 @@ from karyoscope import installed as _installed
 from karyoscope import registry as _registry
 from karyoscope.commands._options import resolve_db_root_flag
 from karyoscope.exceptions import (
-    ChecksumError,
-    DatabaseLayoutError,
     DatabaseNotFoundError,
-    FetchError,
-    IncompatibleVersionError,
-    InsufficientDiskSpaceError,
     KaryoscopeError,
-    ManifestError,
-    RegistryError,
 )
 
 # --- Formatting helpers -----------------------------------------------------
@@ -470,16 +463,6 @@ def cmd(
             show_progress=not quiet,
             check_space=not no_space_check,
         )
-    except (
-        RegistryError,
-        ManifestError,
-        DatabaseNotFoundError,
-        DatabaseLayoutError,
-        ChecksumError,
-        FetchError,
-        IncompatibleVersionError,
-        InsufficientDiskSpaceError,
-        KaryoscopeError,
-    ) as e:
+    except KaryoscopeError as e:
         # Convert known KaryoScope errors to clean user-facing messages.
         raise click.ClickException(str(e)) from e

@@ -657,6 +657,18 @@ def _open_bed_out(path: Path, *, gzip_out: bool) -> IO[str]:
 # buffered to reverse it, an un-flipped one streams straight through.
 
 
+def _spill_root(output_path: Path) -> str | None:
+    """Where spill temp dirs go: next to the output, not the system tempdir.
+
+    The system tempdir is often small or RAM-backed on cluster nodes,
+    while a spill is the size of the input; the output's filesystem is
+    the one provisioned for data that size. ``None`` (the tempfile
+    default) only when the output has no existing parent to sit next to.
+    """
+    parent = Path(output_path).parent
+    return str(parent) if parent.is_dir() else None
+
+
 class _SpilledContigs:
     """Per-contig temp files for the contigs a scaffold map places.
 
@@ -692,7 +704,9 @@ class _SpilledContigs:
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
 
-def _spill_needed_contigs(input_path: Path, needed: set[str]) -> _SpilledContigs:
+def _spill_needed_contigs(
+    input_path: Path, needed: set[str], *, tmp_root: str | None = None
+) -> _SpilledContigs:
     """Stream ``input_path`` once, spilling each needed contig to a temp file.
 
     Contigs absent from ``needed`` are validated and skipped (never
@@ -700,8 +714,10 @@ def _spill_needed_contigs(input_path: Path, needed: set[str]) -> _SpilledContigs
     line number, matching the previous whole-file loader's behaviour.
     Each spilled line is ``start\\tend\\trest`` so the reader can round-
     trip the record without re-splitting the original name column.
+    ``tmp_root`` is where the spill directory is created (see
+    :func:`_spill_root`).
     """
-    tmpdir = Path(tempfile.mkdtemp(prefix="ks_scaffold_"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="ks_scaffold_", dir=tmp_root))
     handles: dict[str, IO[str]] = {}
     paths: dict[str, Path] = {}
     try:
@@ -820,7 +836,7 @@ def _rewrite_bed_spill(
 ) -> None:
     """Gzip / stdin path: spill placed contigs to temp files, read in map order."""
     with (
-        _spill_needed_contigs(input_path, needed) as spilled,
+        _spill_needed_contigs(input_path, needed, tmp_root=_spill_root(output_path)) as spilled,
         _open_bed_out(output_path, gzip_out=gzip_out) as out,
     ):
         for row in map_rows:
@@ -1148,7 +1164,9 @@ class _SpilledSeqs:
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
 
-def _spill_fasta_seqs(input_path: Path, needed: set[str] | None) -> _SpilledSeqs:
+def _spill_fasta_seqs(
+    input_path: Path, needed: set[str] | None, *, tmp_root: str | None = None
+) -> _SpilledSeqs:
     """Stream ``input_path`` once, spilling wanted contigs to temp files.
 
     ``needed=None`` spills every contig (used when unscaffolded contigs
@@ -1156,9 +1174,10 @@ def _spill_fasta_seqs(input_path: Path, needed: set[str] | None) -> _SpilledSeqs
     :func:`karyoscope.core.io.fasta.read_fasta_lengths` exactly: the name
     is the first whitespace token of the header, blank lines are
     skipped, CR/LF are stripped, and a repeated header keeps its last
-    occurrence (the temp file is truncated and rewritten).
+    occurrence (the temp file is truncated and rewritten). ``tmp_root``
+    is where the spill directory is created (see :func:`_spill_root`).
     """
-    tmpdir = Path(tempfile.mkdtemp(prefix="ks_scaffold_fa_"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="ks_scaffold_fa_", dir=tmp_root))
     paths: dict[str, Path] = {}
     cur_fh: IO[str] | None = None
     try:
@@ -1241,7 +1260,7 @@ def rewrite_fasta(
     needed = None if keep_unscaffolded else {row.original_name for row in map_rows}
     placed: set[str] = set()
     with (
-        _spill_fasta_seqs(input_path, needed) as spilled,
+        _spill_fasta_seqs(input_path, needed, tmp_root=_spill_root(output_path)) as spilled,
         _open_bed_out(output_path, gzip_out=gzip_out) as out,
     ):
         for row in map_rows:
@@ -1650,7 +1669,7 @@ def write_combined_fasta(
     placed: set[str] = set()
     leftovers: list[tuple[str, int]] = []
     with (
-        _spill_fasta_seqs(input_path, needed) as spilled,
+        _spill_fasta_seqs(input_path, needed, tmp_root=_spill_root(output_path)) as spilled,
         _open_bed_out(output_path, gzip_out=gzip_out) as out,
     ):
         for obj in objects:
@@ -1749,7 +1768,7 @@ def rewrite_bed_combined(
 
     needed = {comp.row.original_name for obj in objects for comp in obj.components}
     with (
-        _spill_needed_contigs(input_path, needed) as spilled,
+        _spill_needed_contigs(input_path, needed, tmp_root=_spill_root(output_path)) as spilled,
         _open_bed_out(output_path, gzip_out=gzip_out) as out,
     ):
         for obj in objects:
