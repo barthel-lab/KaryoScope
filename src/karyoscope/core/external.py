@@ -108,8 +108,15 @@ def run_tool(
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an external command and return its :class:`CompletedProcess`.
+
+    Memory note: with ``check=True`` (the default) stdout/stderr are
+    fully buffered in memory even when ``capture`` is False, so the
+    error message can include stderr. Do not route a tool's
+    unbounded-size data output through stdout here — have the tool
+    write to a file (every current heavy tool does).
 
     Behavior:
 
@@ -141,6 +148,9 @@ def run_tool(
         should merge with :data:`os.environ` first.
     input_text
         Optional string to pipe to the subprocess's stdin.
+    timeout
+        Seconds before the subprocess is killed. On expiry,
+        :class:`subprocess.TimeoutExpired` propagates to the caller.
     """
     cmd_list = [str(c) for c in cmd]
     logger.debug("running: %s", " ".join(cmd_list))
@@ -158,6 +168,7 @@ def run_tool(
         env=dict(env) if env is not None else None,
         input=input_text,
         text=True,
+        timeout=timeout,
     )
 
     if check and result.returncode != 0:
