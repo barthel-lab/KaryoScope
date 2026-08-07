@@ -32,6 +32,7 @@ from karyoscope.core.external import (
     run_tool,
 )
 from karyoscope.core.io.features import NOVEL_NAME
+from karyoscope.exceptions import KaryoscopeError
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,13 @@ _INPUT_EXTENSIONS: tuple[str, ...] = (
     ".fastq",
     ".fq",
     ".bam",
+    ".cram",
 )
+
+#: Alignment formats that ``hks`` cannot read and that are therefore
+#: materialised to a temp FASTA via ``samtools fasta`` first. CRAM
+#: additionally needs the reference its bases were encoded against.
+_ALIGNMENT_EXTENSIONS: tuple[str, ...] = (".bam", ".cram")
 
 
 def _relay_hks_log(result, what: str) -> None:
@@ -189,6 +196,7 @@ def run_hks_lookup(
     output_path: Path,
     threads: int = 0,
     report_query_names: bool = True,
+    reference: Path | None = None,
     capture: bool = False,
 ) -> Path:
     """Invoke ``hks lookup`` for one feature set against one input.
@@ -210,6 +218,7 @@ def run_hks_lookup(
         io_pairs=[(input_path, output_path)],
         threads=threads,
         report_query_names=report_query_names,
+        reference=reference,
         capture=capture,
     )
     return output_path
@@ -223,6 +232,7 @@ def run_hks_lookup_batch(
     io_pairs: list[tuple[Path, Path]],
     threads: int = 0,
     report_query_names: bool = True,
+    reference: Path | None = None,
     capture: bool = False,
 ) -> None:
     """Invoke ``hks lookup`` ONCE for a feature set, querying many inputs.
@@ -235,9 +245,46 @@ def run_hks_lookup_batch(
     ``report_query_names`` is a single ``hks`` flag applied to the whole batch, so
     every input here must want the same setting (the caller groups inputs by type;
     see :func:`karyoscope.core.io.hks._is_reads_input`-based grouping in the
-    annotate batch backend). BAM inputs are materialised to temp FASTA (via
-    ``samtools fasta``) up front, mirroring the single-input path; the temp files
-    are removed afterwards.
+    annotate batch backend). BAM and CRAM inputs are materialised to temp FASTA
+    (via ``samtools fasta``) up front, mirroring the single-input path; the temp
+    files are removed afterwards.
+
+    ``reference`` is the FASTA the alignment was encoded against, passed to
+    ``samtools fasta --reference``. CRAM stores bases as a diff against it, so
+    decoding one without it fails (or silently yields wrong sequence when
+    samtools resolves a *different* reference from the header's M5 tags via
+    ``$REF_PATH``). It is therefore required for CRAM and ignored for BAM, which
+    is self-contained.
+
+    The goal is the *original unaligned read set*: every read's full sequence
+    exactly once, as the pre-alignment FASTQ would have held it. ``-F 0x900``
+    (stated explicitly rather than left to samtools' default) selects primary
+    records only, which delivers exactly that:
+
+    * Each read has exactly one primary record, and it carries the full-length
+      SEQ — primaries are never hard-clipped.
+    * Supplementary records are hard-clipped *slices* of reads whose full
+      sequence the primary already supplied, so including them would feed those
+      bases through twice.
+    * Unmapped reads (``0x4``) and duplicates (``0x400``) are NOT excluded by
+      this mask. They are genuine distinct reads and are kept — dropping them
+      would under-count.
+
+    ``samtools fasta`` reverse-complements minus-strand records, so what is
+    written is the read as sequenced, not as aligned.
+
+    ``-N`` forces the ``/1`` and ``/2`` mate suffix onto every read name.
+    Aligners routinely strip it from QNAME (both mates of a pair then share a
+    byte-identical name in the file), and samtools' default only restores it
+    where the READ1/READ2 flag bits happen to be set. Without the suffix the
+    two mates are indistinguishable in the output, which silently destroys any
+    downstream fragment-level analysis. Measured on a DRAGEN WGS CRAM: ``-n``
+    collapsed 1,996,531 records onto 1,002,139 distinct names; ``-N`` kept all
+    1,996,531 distinct.
+
+    Note these temp FASTAs are full-size — a 65x human WGS CRAM expands to
+    ~260 GB — and land in ``$TMPDIR``. Point that at node-local scratch, not at
+    a shared filesystem.
     """
     if not io_pairs:
         return
@@ -252,23 +299,44 @@ def run_hks_lookup_batch(
         query_paths: list[Path] = []
         for input_path, output_path in io_pairs:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            if input_path.suffix.lower() == ".bam":
+            suffix = input_path.suffix.lower()
+            if suffix in _ALIGNMENT_EXTENSIONS:
+                fmt = suffix.lstrip(".").upper()
+                if suffix == ".cram" and reference is None:
+                    raise KaryoscopeError(
+                        f"{input_path.name} is a CRAM, which stores bases as a diff "
+                        f"against the reference it was aligned to, so it cannot be "
+                        f"decoded without that reference. Pass --reference "
+                        f"<genome.fasta> (the same one used for alignment)."
+                    )
                 if samtools is None:
                     samtools = require_tool(
                         "samtools",
                         install_hint=(
-                            "Install samtools to use BAM inputs:\n"
+                            "Install samtools to use BAM/CRAM inputs:\n"
                             "  conda install -c bioconda samtools\n"
-                            "Or convert the BAM to FASTA first:\n"
+                            "Or convert the alignment to FASTA first:\n"
                             "  samtools fasta input.bam | gzip > input.fasta.gz"
                         ),
                     )
                 with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp:
                     tmp_fasta = Path(tmp.name)
                 tmp_fastas.append(tmp_fasta)
-                logger.debug("converting BAM to FASTA: %s -> %s", input_path, tmp_fasta)
+                samtools_cmd = [samtools, "fasta", "-F", "0x900", "-N"]
+                if reference is not None:
+                    # NOT -T: in `samtools fasta` that is the copy-tags-to-header
+                    # taglist, and passing a path there silently produces a
+                    # tag-decorated FASTA with no reference supplied at all.
+                    samtools_cmd += ["--reference", str(reference)]
+                # Give the decode its own threads: on a 30x human CRAM this
+                # stage is minutes of wall clock, and it is pure setup before
+                # the index load can even begin.
+                if threads > 0:
+                    samtools_cmd += ["-@", str(threads)]
+                samtools_cmd.append(str(input_path))
+                logger.debug("converting %s to FASTA: %s -> %s", fmt, input_path, tmp_fasta)
                 result = subprocess.run(
-                    [samtools, "fasta", str(input_path)],
+                    samtools_cmd,
                     stdout=tmp_fasta.open("wb"),
                     stderr=subprocess.PIPE if capture else None,
                     check=False,
@@ -276,10 +344,16 @@ def run_hks_lookup_batch(
                 if result.returncode != 0:
                     stderr = result.stderr.decode() if result.stderr else ""
                     raise ExternalToolError(
-                        cmd=[samtools, "fasta", str(input_path)],
+                        cmd=samtools_cmd,
                         returncode=result.returncode,
                         stderr=stderr,
                     )
+                logger.info(
+                    "decoded %s to %.1f GB of FASTA at %s",
+                    input_path.name,
+                    tmp_fasta.stat().st_size / 1_000_000_000,
+                    tmp_fasta,
+                )
                 query_paths.append(tmp_fasta)
             else:
                 query_paths.append(input_path)

@@ -42,6 +42,7 @@ from karyoscope.core.external import (
     require_tool,
     run_tool,
 )
+from karyoscope.exceptions import KaryoscopeError
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,12 @@ _INPUT_EXTENSIONS: tuple[str, ...] = (
     ".fastq",
     ".fq",
     ".bam",
+    ".cram",
 )
+
+#: Alignment formats the C++ binary cannot read, streamed in through
+#: ``samtools fasta`` instead. CRAM additionally needs ``-T <reference>``.
+_ALIGNMENT_EXTENSIONS: tuple[str, ...] = (".bam", ".cram")
 
 
 def _infer_prefix(input_path: Path, db_path: Path) -> str:
@@ -311,6 +317,7 @@ def run_get_featureids(
     threads: int = 0,
     prefix: str | None = None,
     input_format: str | None = None,
+    reference: Path | None = None,
     capture: bool = False,
 ) -> Path:
     """Invoke ``get_featureIDs`` with the given options.
@@ -371,14 +378,15 @@ def run_get_featureids(
     # written only after the binary exits 0, below.
     clear_combined_marker(out_path)
 
-    if input_path.suffix.lower() == ".bam":
-        out_path = _run_get_featureids_piped_from_bam(
+    if input_path.suffix.lower() in _ALIGNMENT_EXTENSIONS:
+        out_path = _run_get_featureids_piped_from_alignment(
             binary=binary,
             db_path=db_path,
-            bam_path=input_path,
+            alignment_path=input_path,
             output_dir=output_dir,
             threads=threads,
             prefix=prefix,
+            reference=reference,
             capture=capture,
         )
         write_combined_marker(out_path, prefix=prefix, db_path=db_path, input_path=input_path)
@@ -408,38 +416,73 @@ def run_get_featureids(
     return out_path
 
 
-def _run_get_featureids_piped_from_bam(
+def _run_get_featureids_piped_from_alignment(
     *,
     binary: str,
     db_path: Path,
-    bam_path: Path,
+    alignment_path: Path,
     output_dir: Path,
     threads: int,
     prefix: str,
+    reference: Path | None,
     capture: bool,
 ) -> Path:
-    """Stream ``samtools fasta <bam>`` into ``get_featureIDs --input -``.
+    """Stream ``samtools fasta <aln>`` into ``get_featureIDs --input -``.
 
-    BAM inputs aren't read by the C++ binary directly; we convert
+    BAM/CRAM inputs aren't read by the C++ binary directly; we convert
     on the fly via ``samtools fasta`` (not ``fastq`` -- KaryoScope
     only needs the sequence, not the quality string, and FASTA is
     smaller and slightly faster to write). The pipe is streaming,
-    so no temp file is created and memory stays bounded.
+    so no temp file is created and memory stays bounded. (The HKS
+    backend cannot do this -- ``hks lookup`` needs a seekable path --
+    which is why it materialises a temp FASTA instead.)
+
+    ``reference`` is passed to ``samtools fasta --reference``. It is required
+    for CRAM, whose bases are stored as a diff against the reference used for
+    alignment, and ignored for BAM.
+
+    The goal is the *original unaligned read set*: every read's full sequence
+    exactly once, as the pre-alignment FASTQ would have held it. ``-F 0x900``
+    (stated explicitly rather than left to samtools' default) selects primary
+    records only, which delivers exactly that: each read has exactly one
+    primary record carrying full-length SEQ, while supplementary records are
+    hard-clipped slices of reads the primary already supplied in full.
+    Unmapped reads (``0x4``) and duplicates (``0x400``) are NOT excluded by
+    this mask -- they are genuine distinct reads and are kept.
+
+    ``-N`` forces the ``/1``/``/2`` mate suffix onto every read name. Aligners
+    routinely strip it from QNAME, leaving both mates of a pair sharing a
+    byte-identical name; without the suffix they are indistinguishable in the
+    output.
 
     Error handling: if ``get_featureIDs`` exits non-zero we report
     that (it's the more informative failure for the user). If it
     succeeds but ``samtools`` exited non-zero we report the samtools
-    error (rare; usually a malformed BAM).
+    error (rare; usually a malformed BAM or a mismatched reference).
     """
+    if alignment_path.suffix.lower() == ".cram" and reference is None:
+        raise KaryoscopeError(
+            f"{alignment_path.name} is a CRAM, which stores bases as a diff against "
+            f"the reference it was aligned to, so it cannot be decoded without that "
+            f"reference. Pass --reference <genome.fasta> (the same one used for "
+            f"alignment)."
+        )
+
     samtools = require_tool(
         "samtools",
-        install_hint="Install samtools to use BAM inputs:\n"
+        install_hint="Install samtools to use BAM/CRAM inputs:\n"
         "  conda install -c bioconda samtools\n"
-        "Or convert the BAM to FASTA first with:\n"
+        "Or convert the alignment to FASTA first with:\n"
         "  samtools fasta input.bam | gzip > input.fasta.gz",
     )
 
-    samtools_cmd = [samtools, "fasta", str(bam_path)]
+    samtools_cmd = [samtools, "fasta", "-F", "0x900", "-N"]
+    if reference is not None:
+        # NOT -T: in `samtools fasta` that is the copy-tags-to-header taglist,
+        # and passing a path there silently produces a tag-decorated FASTA with
+        # no reference supplied at all.
+        samtools_cmd += ["--reference", str(reference)]
+    samtools_cmd.append(str(alignment_path))
     getfid_cmd = [
         binary,
         "--db",

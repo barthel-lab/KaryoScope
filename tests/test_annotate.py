@@ -384,3 +384,155 @@ def test_peak_child_rss_is_reported_in_bytes() -> None:
     # pytest has already reaped children, so this is a plausible RSS in
     # bytes and an implausible one in kilobytes.
     assert peak < 1024**4
+
+
+# --- CRAM input ------------------------------------------------------------
+
+
+def test_cram_is_recognised_as_a_read_level_input() -> None:
+    """CRAM holds reads, so it takes the read dispatch path, not the assembly one."""
+    from karyoscope.core.annotate import _is_reads_input
+
+    assert _is_reads_input(Path("sample.cram")) is True
+    assert _is_reads_input(Path("sample.bam")) is True
+    assert _is_reads_input(Path("assembly.fa.gz")) is False
+
+
+def test_cram_extension_is_stripped_from_the_output_basename() -> None:
+    """Outputs are named after the input stem, so .cram must be a known suffix."""
+    from karyoscope.core.annotate import _derive_input_basename
+
+    assert _derive_input_basename(Path("ALTseq_00001A_tumor.cram")) == "ALTseq_00001A_tumor"
+
+
+def test_cram_input_declares_a_samtools_dependency() -> None:
+    """The preflight resolves tools from the input format rather than assuming."""
+    from karyoscope.core.annotate import _annotate_dependencies
+
+    needed = _annotate_dependencies(
+        index_type="hks", input_path=Path("s.cram"), bgzip=False
+    )
+    assert "samtools" in needed
+    assert "hks" in needed
+
+
+def test_cram_bases_estimate_exceeds_bam_per_byte() -> None:
+    """CRAM packs far harder than BAM, so a byte of it means far more sequence.
+
+    Sharing BAM's ~1 base/byte would under-estimate a CRAM run's output by
+    most of an order of magnitude -- and this figure feeds the disk check
+    whose job is to refuse a run that would fill the filesystem.
+    """
+    from karyoscope.core.annotate import _BASES_PER_BAM_BYTE, _BASES_PER_CRAM_BYTE
+
+    assert _BASES_PER_CRAM_BYTE > _BASES_PER_BAM_BYTE * 5
+
+
+def test_estimate_input_bases_uses_the_cram_factor(tmp_path: Path) -> None:
+    """A .cram file's size is scaled by the CRAM factor, not the FASTA fraction."""
+    from karyoscope.core.annotate import _BASES_PER_CRAM_BYTE, estimate_input_bases
+
+    cram = tmp_path / "s.cram"
+    cram.write_bytes(b"x" * 1000)
+    assert estimate_input_bases(cram) == int(1000 * _BASES_PER_CRAM_BYTE)
+
+
+def test_query_names_is_refused_for_read_level_input() -> None:
+    """Reads cannot carry names: hks buffers all of them and the run is OOM-killed.
+
+    Measured on a 64x human WGS CRAM -- 1.315 G names at ~68 bytes is ~90 GB on
+    top of the index. The refusal is deliberate rather than a warning, because
+    the failure lands ~20 minutes in, after the decode has been paid for, with
+    nothing written and nothing to resume from.
+    """
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    for name in ("s.cram", "s.bam", "s.fastq.gz", "s.fq"):
+        with pytest.raises(KaryoscopeError, match="not supported for read-level input"):
+            _reject_query_names_for_reads([Path(name)], True)
+
+
+def test_query_names_is_allowed_for_assemblies() -> None:
+    """An assembly has a few thousand contig names; buffering those is free."""
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    _reject_query_names_for_reads([Path("asm.fa.gz")], True)
+    _reject_query_names_for_reads([Path("asm.fasta")], True)
+
+
+def test_reads_may_still_opt_out_of_names_explicitly() -> None:
+    """--no-query-names and the default are both fine for reads; only True is refused."""
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    _reject_query_names_for_reads([Path("s.cram")], False)
+    _reject_query_names_for_reads([Path("s.cram")], None)
+
+
+def test_query_names_refusal_names_the_offending_inputs() -> None:
+    """A cohort run should say WHICH inputs are the problem, not just that one is."""
+    from karyoscope.core.annotate import _reject_query_names_for_reads
+
+    with pytest.raises(KaryoscopeError) as excinfo:
+        _reject_query_names_for_reads([Path("asm.fa"), Path("tumor.cram")], True)
+    assert "tumor.cram" in str(excinfo.value)
+    assert "asm.fa" not in str(excinfo.value)
+
+
+def _hks_cmd_for(tmp_path: Path, monkeypatch, *, input_name: str, query_names):
+    """Run the HKS backend with hks stubbed, returning the cmd it would invoke."""
+    from karyoscope.core import annotate as ann_mod
+
+    captured: dict = {}
+
+    def _fake_batch(**kwargs):
+        captured["report_query_names"] = kwargs["report_query_names"]
+        # the backend checks the lookup output exists before smoothing
+        for _inp, out in kwargs["io_pairs"]:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("")
+
+    monkeypatch.setattr(ann_mod, "run_hks_lookup_batch", _fake_batch)
+    monkeypatch.setattr(ann_mod, "run_hks_smooth", lambda **kw: None)
+
+    class _Manifest:
+        class index:
+            basename = "features"
+
+    inp = tmp_path / input_name
+    inp.write_text("")
+    ann_mod._run_hks_backend(
+        manifest=_Manifest(),
+        db_dir=tmp_path,
+        input_paths=[inp],
+        prefixes={inp: "p"},
+        output_dir=tmp_path / "out",
+        requested=["cytoband"],
+        smooth=False,
+        keep_presmoothed=True,
+        presmoothed_by_input={inp: {"cytoband": tmp_path / "out" / "p.cytoband.bed"}},
+        smoothed_by_input={inp: {}},
+        threads=1,
+        k=31,
+        query_names=query_names,
+    )
+    return captured["report_query_names"]
+
+
+def test_reads_default_to_ranks_with_no_flag_at_all(tmp_path: Path, monkeypatch) -> None:
+    """Passing neither flag must not silently hand hks the OOM-inducing option.
+
+    This is the path almost every user takes, so the safe behaviour has to be
+    the DEFAULT rather than something opted into.
+    """
+    for name in ("s.cram", "s.bam", "s.fastq"):
+        assert _hks_cmd_for(tmp_path, monkeypatch, input_name=name, query_names=None) is False
+
+
+def test_assemblies_still_default_to_names(tmp_path: Path, monkeypatch) -> None:
+    """Contig names are the useful identifier for an assembly and cost nothing."""
+    assert _hks_cmd_for(tmp_path, monkeypatch, input_name="asm.fa", query_names=None) is True
+
+
+def test_explicit_no_query_names_forces_ranks_on_an_assembly(tmp_path: Path, monkeypatch) -> None:
+    """The override works downward too, for databases with long feature names."""
+    assert _hks_cmd_for(tmp_path, monkeypatch, input_name="asm.fa", query_names=False) is False

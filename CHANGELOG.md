@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`annotate` reads CRAM.** `--input` accepts `.cram`, and a new `--reference`
+  option supplies the FASTA the alignment was encoded against. CRAM stores
+  bases as a diff against its reference, so `--reference` is **required** for
+  CRAM input and the CLI refuses the run up front without it. That check is
+  deliberately loud, because the quiet failure is worse than the noisy one:
+  left to itself, htslib resolves each contig's M5 checksum through
+  `$REF_PATH`/`$REF_CACHE` and can decode against a *different* build of the
+  same genome, producing plausible sequence that is simply wrong.
+
+  Note `--reference` is the **alignment** reference and is unrelated to `--db`.
+  `annotate` is alignment-free, so annotating GRCh38-aligned reads against a
+  CHM13 database is a normal thing to do, not a mismatch.
+
+  Both backends are covered. KMC streams `samtools fasta` straight into
+  `get_featureIDs` with no temp file; HKS cannot (`hks lookup` needs a seekable
+  path) and so materialises a temp FASTA in `$TMPDIR` first. That file is
+  **full size** — a 64x human WGS CRAM measured 28.9 GB in, 254 GB out — so
+  `$TMPDIR` must point at node-local scratch, never at a shared filesystem.
+
+- **`--query-names/--no-query-names`** controls which identifier the output BED
+  carries, and **`--query-names` is now refused outright for read-level input**
+  (FASTQ/BAM/CRAM). It is not a tuning knob there — it is a way to lose a run.
+
+  `hks --report-query-names` is not streaming: `load_seq_names` reads the whole
+  query file and builds a `Vec<String>` of every sequence name before the first
+  k-mer is looked up. Fine for an assembly's few thousand contigs; fatal for
+  reads. Measured on a 64x human WGS CRAM — 1.315 G names at ~68 bytes each is
+  ~90 GB on top of the ~12.3 GB index. The run was OOM-killed ~20 minutes in,
+  having already spent 15 of them decoding the CRAM, with nothing written and
+  nothing to resume from.
+
+  Raising the memory limit is not a fix: it would take a ~160 GB allocation per
+  sample to buy nothing but longer identifiers. So this is an error rather than
+  a warning, and it fires in a second instead of after the decode.
+
+  No information is lost. Rank N is the Nth record of the query file, and for
+  an alignment input that file is a deterministic function of the source, so
+  the mapping regenerates on demand:
+  `samtools fasta -F 0x900 -N --reference <ref> <input> | grep '^>'`.
+
+  Assemblies are unaffected: they still default to names, and
+  `--no-query-names` switches them to ranks to save space.
+
 - **`annotate` now checks available memory before it starts**, not just disk.
   For the HKS backend the requirement is knowable exactly rather than
   estimated: `hks` holds the shared base index plus one feature set's labeling
@@ -175,6 +218,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   combined figure.
 
 ### Fixed
+
+- **BAM/CRAM conversion no longer depends on samtools' default flag filter.**
+  The `samtools fasta` invocation now states `-F 0x900 -N` explicitly.
+  - `-F 0x900` (secondary + supplementary excluded) was already the samtools
+    default, but relying on a tool's default for a correctness-critical choice
+    is how it changes underneath you. It is the right mask for this job:
+    every read has exactly one primary record carrying full-length SEQ, whereas
+    supplementary records are hard-clipped *slices* of reads the primary
+    already supplied in full. Verified on a DRAGEN WGS CRAM — of 2,995,805
+    primary records, zero were hard-clipped, zero lacked SEQ, and zero were
+    under full read length. Unmapped reads (`0x4`) and duplicates (`0x400`) are
+    *not* excluded: they are genuine distinct reads and dropping them would
+    under-count.
+  - `-N` forces the `/1`/`/2` mate suffix. This one is a real bug fix, not
+    just an explicitness change: aligners routinely strip the suffix from
+    QNAME, leaving both mates of a pair sharing a byte-identical name, and
+    samtools only restores it where the READ1/READ2 flag bits happen to be set.
+    Measured on the same data: with `-n`, 1,996,531 records collapsed onto
+    1,002,139 distinct names — every mate pair silently indistinguishable. With
+    `-N`, all 1,996,531 stayed distinct.
 
 - **The `samtools | get_featureIDs` BAM pipeline can no longer deadlock on a
   warning-heavy BAM.** samtools stderr was read only after `get_featureIDs`

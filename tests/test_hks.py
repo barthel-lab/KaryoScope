@@ -16,6 +16,7 @@ from karyoscope.core.io.hks import (
     run_hks_lookup,
     run_hks_smooth,
 )
+from karyoscope.exceptions import KaryoscopeError
 
 
 def _capture_lookup_cmd(
@@ -350,3 +351,95 @@ def test_batch_lookup_with_no_inputs_does_nothing(
         io_pairs=[],
     )
     assert calls == []
+
+
+# --- CRAM / BAM conversion -------------------------------------------------
+
+
+def _capture_samtools_cmd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    suffix: str,
+    reference: Path | None,
+) -> list[str]:
+    """Run a lookup over a BAM/CRAM input, returning the samtools cmd it built.
+
+    ``hks`` itself is stubbed out; the assertion target is the conversion step
+    that runs before it.
+    """
+    captured: dict[str, list[str]] = {}
+
+    class _Result:
+        returncode = 0
+        stderr = b""
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        # The caller sizes and then hands the temp FASTA to hks, so it must exist.
+        stdout = kwargs.get("stdout")
+        if stdout is not None:
+            stdout.close()
+        return _Result()
+
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr("karyoscope.core.io.hks.require_tool", lambda *a, **kw: "samtools")
+    monkeypatch.setattr("karyoscope.core.io.hks.subprocess.run", _fake_run)
+    monkeypatch.setattr("karyoscope.core.io.hks.run_tool", lambda cmd, **kw: None)
+
+    aln = tmp_path / f"input{suffix}"
+    aln.write_bytes(b"")
+    run_hks_lookup(
+        base_path=tmp_path / "features.hksb",
+        feature_set_file=tmp_path / "features.cytoband.hksf",
+        k=31,
+        input_path=aln,
+        output_path=tmp_path / "out.bed",
+        reference=reference,
+    )
+    return captured["cmd"]
+
+
+def test_cram_conversion_passes_the_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CRAM decode supplies --reference, not -T (which is samtools' taglist)."""
+    ref = tmp_path / "genome.fasta"
+    ref.write_text(">chr1\nACGT\n")
+    cmd = _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".cram", reference=ref)
+    assert "--reference" in cmd
+    assert cmd[cmd.index("--reference") + 1] == str(ref)
+    # -T here would silently mean "copy these tags to the header" and leave the
+    # decode with no reference at all.
+    assert "-T" not in cmd
+
+
+def test_cram_without_reference_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CRAM cannot be decoded without its reference, so the run stops early."""
+    with pytest.raises(KaryoscopeError, match="CRAM"):
+        _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".cram", reference=None)
+
+
+def test_bam_conversion_needs_no_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BAM is self-contained; no --reference is added and no error is raised."""
+    cmd = _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".bam", reference=None)
+    assert "--reference" not in cmd
+
+
+def test_conversion_states_flag_filter_and_mate_suffix_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """-F 0x900 -N are pinned rather than left to samtools' defaults.
+
+    ``-F 0x900`` keeps exactly one full-length record per read (primaries),
+    while ``-N`` forces the /1,/2 suffix that distinguishes mates whose QNAME
+    the aligner stripped. Without -N both mates share one name and the pairing
+    is unrecoverable downstream.
+    """
+    cmd = _capture_samtools_cmd(tmp_path, monkeypatch, suffix=".bam", reference=None)
+    assert cmd[cmd.index("-F") + 1] == "0x900"
+    assert "-N" in cmd

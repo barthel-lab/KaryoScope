@@ -82,9 +82,10 @@ logger = logging.getLogger(__name__)
 #: Input extensions we recognise when deriving the output basename.
 #: Order matters — longer extensions first so they win over shorter
 #: ones. Includes FASTQ (read by ``get_featureIDs`` directly) and
-#: BAM (piped through ``samtools fastq``); see
-#: :func:`karyoscope.core.io.kmc.run_get_featureids` for the BAM
-#: streaming path.
+#: BAM/CRAM (converted through ``samtools fasta``); see
+#: :func:`karyoscope.core.io.kmc.run_get_featureids` for the streaming
+#: path and :func:`karyoscope.core.io.hks.run_hks_lookup_batch` for the
+#: temp-file one.
 _INPUT_EXTENSIONS: tuple[str, ...] = (
     ".fasta.gz",
     ".fa.gz",
@@ -97,6 +98,7 @@ _INPUT_EXTENSIONS: tuple[str, ...] = (
     ".fastq",
     ".fq",
     ".bam",
+    ".cram",
 )
 
 
@@ -189,6 +191,7 @@ _READS_INPUT_EXTENSIONS: tuple[str, ...] = (
     ".fastq",
     ".fq",
     ".bam",
+    ".cram",
 )
 
 
@@ -204,6 +207,49 @@ def _is_reads_input(input_path: Path) -> bool:
     """
     name_lower = input_path.name.lower()
     return any(name_lower.endswith(ext) for ext in _READS_INPUT_EXTENSIONS)
+
+
+def _reject_query_names_for_reads(input_paths: list[Path], query_names: bool | None) -> None:
+    """Refuse ``--query-names`` on read-level input. It cannot survive the scale.
+
+    ``hks``'s ``--report-query-names`` is not streaming: ``load_seq_names``
+    reads the whole query file up front and builds a ``Vec<String>`` of every
+    sequence name before a single k-mer is looked up. That is fine for an
+    assembly (a few thousand contigs) and catastrophic for reads.
+
+    Measured on a 64x human WGS CRAM: 1.315 G reads x ~68 bytes per name is
+    ~90 GB of names, on top of the ~12.3 GB index. The run died to the OOM
+    killer after ~20 minutes -- having already spent 15 of them decoding the
+    CRAM -- with nothing written and nothing to resume from.
+
+    Raising the memory limit is not a fix: it would take a ~160 GB allocation
+    per sample to buy nothing but longer identifiers in the output. So this is
+    a hard error rather than a warning. The information is not lost either way
+    -- rank N is the Nth record of the query file, which for an alignment input
+    is a deterministic function of the source (see the CRAM section of
+    docs/commands/annotate.md).
+    """
+    if not query_names:
+        return
+    reads = [p for p in input_paths if _is_reads_input(p)]
+    if not reads:
+        return
+    listed = ", ".join(p.name for p in reads[:3])
+    if len(reads) > 3:
+        listed += f", ... (+{len(reads) - 3} more)"
+    raise KaryoscopeError(
+        f"--query-names is not supported for read-level input ({listed}).\n"
+        f"\n"
+        f"hks collects every sequence name into memory before querying, which "
+        f"is fine for an assembly's contigs but not for reads: a 64x human WGS "
+        f"input holds ~1.3 G names at ~90 GB, and the run is OOM-killed after "
+        f"the decode has already been paid for.\n"
+        f"\n"
+        f"Read-level output is identified by ordinal rank instead, and no "
+        f"information is lost -- rank N is the Nth record of the query file. "
+        f"For a BAM/CRAM input that mapping is reproducible at any time with:\n"
+        f"  samtools fasta -F 0x900 -N --reference <ref> <input> | grep '^>'"
+    )
 
 
 # --- output-size estimation ------------------------------------------
@@ -260,6 +306,19 @@ _SEQUENCE_FRACTION_FASTA = 0.98
 _SEQUENCE_FRACTION_FASTQ = 0.49
 _BASES_PER_BAM_BYTE = 1.0
 
+#: CRAM packs far harder than BAM: it stores bases as a reference diff and
+#: (for DRAGEN output, which bins quality scores) spends very little on the
+#: quality string. Measured on a 64x DRAGEN WGS CRAM: 28.9 GB of file yielded
+#: 198.6 Gbp, i.e. 6.87 bases per byte, versus BAM's ~1.
+#:
+#: This one is genuinely variable — a CRAM that kept full-resolution qualities
+#: sits far lower — and it feeds a disk-space check whose whole job is to
+#: refuse a run that would fill the filesystem. So it is rounded DOWN only
+#: slightly and deliberately not padded: under-estimating input bases
+#: under-estimates the output footprint, which is the failure mode that ends
+#: with a full disk rather than a clean up-front refusal.
+_BASES_PER_CRAM_BYTE = 6.9
+
 
 def _bases_from_fai(input_path: Path) -> int | None:
     """Total sequence length from a samtools ``.fai`` index, if one exists.
@@ -306,6 +365,8 @@ def estimate_input_bases(input_path: Path) -> int:
     name = input_path.name.lower()
     if name.endswith(".bam"):
         return int(file_size * _BASES_PER_BAM_BYTE)
+    if name.endswith(".cram"):
+        return int(file_size * _BASES_PER_CRAM_BYTE)
 
     uncompressed = file_size * GZIP_EXPANSION_FACTOR if name.endswith(".gz") else file_size
     is_fastq = any(name.endswith(ext) for ext in (".fastq", ".fq", ".fastq.gz", ".fq.gz"))
@@ -402,7 +463,7 @@ def _annotate_dependencies(*, index_type: str, input_path: Path, bgzip: bool) ->
     for an HKS run or ``samtools`` for a FASTA one.
     """
     needed = ["hks"] if index_type == "hks" else ["get_featureIDs"]
-    if input_path.suffix.lower() == ".bam":
+    if input_path.suffix.lower() in (".bam", ".cram"):
         needed.append("samtools")
     if bgzip:
         needed.append("bgzip")
@@ -1077,6 +1138,8 @@ def _run_hks_backend(
     smoothed_by_input: dict[Path, dict[str, Path]],
     threads: int,
     k: int,
+    reference: Path | None = None,
+    query_names: bool | None = None,
     progress: Progress = SILENT,
 ) -> None:
     """Run the HKS lookup and optional smoothing for every requested feature set.
@@ -1095,6 +1158,13 @@ def _run_hks_backend(
     ``--report-query-names`` is a single per-invocation ``hks`` flag, so inputs
     are grouped by :func:`_is_reads_input` (reads emit query ranks, assemblies
     emit names) and each group gets its own call — at most two per feature set.
+
+    ``query_names`` overrides that default per-input-type choice: ``True`` emits
+    names for every input, ``False`` ranks for every input, ``None`` keeps the
+    reads-get-ranks default. Forcing names on read data matters whenever the
+    output has to be joined back to anything — paired-end mates, for instance,
+    are identified only by the ``/1`` and ``/2`` suffix on a shared read name,
+    and a rank is undecodable once the query file it indexes is gone.
 
     There is no conversion step. ``hks`` is told the output shape KaryoScope
     wants -- headerless, ``novel`` for misses -- so each lookup output *is* that
@@ -1132,6 +1202,7 @@ def _run_hks_backend(
             group = [p for p in input_paths if _is_reads_input(p) is is_reads_group]
             if not group:
                 continue
+            report_names = (not is_reads_group) if query_names is None else query_names
             logger.info(
                 "running hks lookup for feature set %r over %d input(s) (reads=%s, threads=%d)",
                 fs,
@@ -1145,7 +1216,8 @@ def _run_hks_backend(
                 k=k,
                 io_pairs=[(p, lookup_by_input[p]) for p in group],
                 threads=threads,
-                report_query_names=not is_reads_group,
+                report_query_names=report_names,
+                reference=reference,
                 capture=True,
             )
         dt_lookup = time.perf_counter() - t_lookup
@@ -1243,6 +1315,8 @@ def annotate(
     force: bool = False,
     k: int | None = None,
     check_space: bool = True,
+    reference: Path | None = None,
+    query_names: bool | None = None,
     progress: Progress = SILENT,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
@@ -1250,7 +1324,11 @@ def annotate(
     Parameters
     ----------
     input_path
-        FASTA (plain or gzipped) to annotate.
+        FASTA (plain or gzipped), FASTQ, BAM or CRAM to annotate.
+    reference
+        Reference FASTA the input was aligned against, handed to
+        ``samtools fasta --reference``. Required for CRAM (whose bases are
+        stored as a diff against it) and ignored for every other format.
     output_dir
         Directory to write output BEDs to. Created if absent.
     db_root
@@ -1316,6 +1394,7 @@ def annotate(
             "no output would be produced: cannot combine --no-smooth with "
             "--no-keep-presmoothed. Choose at least one output type."
         )
+    _reject_query_names_for_reads([input_path], query_names)
     if not input_path.is_file():
         raise KaryoscopeError(f"input file not found: {input_path}")
 
@@ -1489,6 +1568,8 @@ def annotate(
             smoothed_by_input={input_path: smoothed_paths},
             threads=threads,
             k=query_k,
+            reference=reference,
+            query_names=query_names,
             progress=progress,
         )
     else:  # "kmc" -- the only other supported type (guaranteed by parse_manifest)
@@ -1527,6 +1608,7 @@ def annotate(
                 output_dir=output_dir,
                 threads=threads,
                 prefix=prefix,
+                reference=reference,
                 capture=True,
             )
             if not combined_bed.is_file():
@@ -1663,6 +1745,8 @@ def annotate_batch(
     force: bool = False,
     k: int | None = None,
     check_space: bool = True,
+    reference: Path | None = None,
+    query_names: bool | None = None,
     progress: Progress = SILENT,
 ) -> dict[Path, AnnotateResult]:
     """Annotate several inputs, loading the index once per feature set (HKS).
@@ -1683,6 +1767,8 @@ def annotate_batch(
     """
     if not input_paths:
         return {}
+
+    _reject_query_names_for_reads(input_paths, query_names)
 
     # A single input has nothing to batch — delegate to the exact, battle-tested
     # single-input path (covers both HKS and KMC backends). This makes
@@ -1706,6 +1792,8 @@ def annotate_batch(
                 force=force,
                 k=k,
                 check_space=check_space,
+                reference=reference,
+                query_names=query_names,
                 progress=progress,
             )
         }
@@ -1740,6 +1828,8 @@ def annotate_batch(
                 force=force,
                 k=k,
                 check_space=check_space,
+                reference=reference,
+                query_names=query_names,
                 progress=progress,
             )
             for p in input_paths
@@ -1881,6 +1971,8 @@ def annotate_batch(
         smoothed_by_input=smoothed_by_input,
         threads=threads,
         k=query_k,
+        reference=reference,
+        query_names=query_names,
         progress=progress,
     )
 
