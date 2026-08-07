@@ -28,7 +28,7 @@ The script sorts records by locus id and serialises with fixed formatting, so tw
 
 **PaVE adds genomes.** This checksum pins the database as of 2026-08-07. A mismatch alongside a count other than 224 means the reference set has changed rather than that the download failed; re-pin both.
 
-The list is filtered to `is_ref` human genomes. PaVE also publishes 230 non-reference human genomes — the `nr` putative novel types — which are annotated just as completely but whose species is `Unclassified <Genus>` for all but two, so they enter the taxonomy as one flat bucket per genus. Pass `includeNonRef=true` in the script to include them.
+The list is filtered to `is_ref` human genomes. PaVE also publishes 230 non-reference human genomes — the `nr` putative novel types — which are annotated just as completely but whose species is `Unclassified <Genus>` for all but two, so they enter the taxonomy as one flat bucket per genus. To include them, edit the script in two places: set `includeNonRef=true` in the listing URL and drop the `g["is_ref"]` term from the filter on the next line.
 
 ## 2. `gene`, plus the FASTA and the taxonomy
 

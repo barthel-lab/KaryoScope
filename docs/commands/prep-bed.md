@@ -61,9 +61,9 @@ Annotation seqids often differ from the assembly's. Two options, on every subcom
 
 `--hierarchy` is written wherever the source format implies one. `--colors` and `--priority` are optional and produced only when you name an output path.
 
-Colours are emitted only where an established KaryoScope palette exists — `repeatmasker`, `gff-gene` and `cytoband`. For those, the palette reproduces the shipped reference databases. For `edta` there is no such convention, so no colours are written and `build` assigns them.
+Colours are emitted only where an established KaryoScope palette exists — `repeatmasker`, `gff-gene`, `cytoband`, `asat` and `pave`. For `repeatmasker`, `gff-gene` and `cytoband`, the palette reproduces the shipped reference databases; `asat` colours by suprachromosomal family, and `pave` colours early genes cool, late genes warm and the URR grey. For `edta` there is no such convention, so no colours are written and `build` assigns them.
 
-Where a set has many leaves in few colours, the colours file also fills in `legend_group` (the optional 4th column) so the legend collapses. `cytoband` groups by Giemsa stain, turning several hundred bands into nine legend rows; `repeatmasker` groups the five RNA leaves, which share one colour. See [`build`'s legend section](build.md#grouping-the-legend).
+Where a set has many leaves in few colours, the colours file also fills in `legend_group` (the optional 4th column) so the legend collapses. `cytoband` groups by Giemsa stain, turning several hundred bands into nine legend rows; `asat` groups arrays by suprachromosomal family, also nine rows; `repeatmasker` groups the five RNA leaves, which share one colour; `pave` groups the E5 variants into one row. See [`build`'s legend section](build.md#grouping-the-legend).
 
 ## Options
 
@@ -88,6 +88,8 @@ Format-specific options of note:
 | `cytoband` | `--primary-pattern REGEX` | Which seqids carry banding (default `^chr([0-9]+\|X\|Y)$`). |
 | `censat` | `--priority PATH` | Priority file ranking centromeric over rDNA over arm. |
 | `asat` | `--class CLASS` | α-satellite class to include: `active_hor`, `hor`, `dhor`, `mon`. Repeatable; default all four. |
+| `asat` | `--priority PATH` | Priority file ranking `alpha_hor` over `dhor` over `mon`, with the background named explicitly. |
+| `asat` | `--background LABEL` | Gap-fill label named in the stanza and the priority file (default `background`). |
 | `satellite` | `--satellite LABEL` | Leaf label for the bands, e.g. `CEN180` or `aSat`. |
 | `satellite` | `--merge-gap N` | Merge monomers within N bases into one band (default 10). |
 | `satellite` | `--cluster-gap N` | Gap for clustering bands into the centromere core (default 500000). |
