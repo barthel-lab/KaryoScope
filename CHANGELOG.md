@@ -245,6 +245,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CI now builds `hks` and runs the tests that need it.** The six end-to-end
+  `karyoscope build` tests are gated on `hks` being on `PATH`, and no CI job
+  provided one, so they silently skipped on every runner — a regression in the
+  build pipeline would have passed CI. The integration job now builds `hks`
+  from a pinned upstream commit (cached by OS and commit, so a warm run adds
+  seconds) and runs the default test pass with every external binary present,
+  in addition to the integration pass.
+
 - **BAM/CRAM conversion no longer depends on samtools' default flag filter.**
   The `samtools fasta` invocation now states `-F 0x900 -N` explicitly.
   - `-F 0x900` (secondary + supplementary excluded) was already the samtools
