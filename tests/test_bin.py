@@ -327,6 +327,7 @@ class TestCLI:
 # --- threaded path produces byte-identical output -------------------
 
 
+@pytest.mark.slow
 class TestBinFeaturesThreaded:
     """``bin_features(threads=N)`` should byte-for-byte match
     ``bin_features(threads=1)`` regardless of N.

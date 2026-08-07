@@ -13,7 +13,13 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from karyoscope.core.annotate import _detect_worker_death, _quiet_worker_pipe_errors
+from karyoscope.core.annotate import (
+    _derive_input_basename,
+    _detect_worker_death,
+    _quiet_worker_pipe_errors,
+    _split_combined_bed,
+)
+from karyoscope.core.io.features import parse_features
 from karyoscope.core.io.kmc import (
     clear_combined_marker,
     combined_bed_is_complete,
@@ -250,3 +256,199 @@ def test_resolve_query_k_variable_rejects_above_max() -> None:
 def test_resolve_query_k_rejects_below_one() -> None:
     with pytest.raises(KaryoscopeError, match=">= 1"):
         _resolve_query_k(_manifest(31, "variable", 31), 0, "db")
+
+
+def _read_bed(path: Path) -> list[tuple[str, int, int, str]]:
+    """Read a plain BED and return parsed records."""
+    out: list[tuple[str, int, int, str]] = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        seq, start, end, name = line.split("\t")
+        out.append((seq, int(start), int(end), name))
+    return out
+
+
+# --- _derive_input_basename (pure function, no binary needed) ---------
+
+
+def test_derive_basename_strips_known_extensions() -> None:
+    assert _derive_input_basename(Path("foo.fa.gz")) == "foo"
+    assert _derive_input_basename(Path("path/to/bar.fasta")) == "bar"
+    assert _derive_input_basename(Path("baz.fna.gz")) == "baz"
+    assert _derive_input_basename(Path("BAR.FA.GZ")) == "BAR"  # case-insensitive
+    assert _derive_input_basename(Path("name_only")) == "name_only"
+    # Falls back to .stem for unknown extensions
+    assert _derive_input_basename(Path("foo.unknown")) == "foo"
+
+
+# --- _split_combined_bed (unit test with hand-crafted data) -----------
+
+
+def test_split_combined_bed_translates_and_merges(tmp_path: Path, unpacked_dummy_db: Path) -> None:
+    """The splitter should translate ids and merge adjacent same-name runs."""
+    # Hand-crafted combined BED using REAL feature ids from the dummy db
+    # (features.tsv has rows 1->chr1/rA, 2->chr1/rB, 3->chr2/rC).
+    combined = tmp_path / "combined.bed"
+    combined.write_text(
+        # Adjacent rows mapping to different region ids but same chromosome
+        # should merge in the chromosome BED but not in the region BED.
+        "seqA\t0\t10\t1\n"  # chr1, rA
+        "seqA\t10\t20\t2\n"  # chr1, rB
+        "seqA\t20\t30\t3\n"  # chr2, rC
+        # A 'novel' run (feature_id 0):
+        "seqA\t30\t40\t0\n"  # novel
+        # New sequence: starts a new run regardless of label
+        "seqB\t0\t15\t1\n"  # chr1, rA
+    )
+    features = parse_features(unpacked_dummy_db / "features.tsv")
+
+    out_paths = {
+        "chromosome": tmp_path / "chrom.bed",
+        "region": tmp_path / "region.bed",
+    }
+    _split_combined_bed(combined, ["chromosome", "region"], features, out_paths)
+
+    chrom = _read_bed(out_paths["chromosome"])
+    region = _read_bed(out_paths["region"])
+
+    # Chromosome BED: rows 0-20 both map to chr1 and merge; 20-30 is chr2;
+    # 30-40 is novel; seqB starts a fresh run at chr1.
+    assert chrom == [
+        ("seqA", 0, 20, "chr1"),
+        ("seqA", 20, 30, "chr2"),
+        ("seqA", 30, 40, "novel"),
+        ("seqB", 0, 15, "chr1"),
+    ]
+
+    # Region BED: each row stays distinct (different region per row).
+    assert region == [
+        ("seqA", 0, 10, "rA"),
+        ("seqA", 10, 20, "rB"),
+        ("seqA", 20, 30, "rC"),
+        ("seqA", 30, 40, "novel"),
+        ("seqB", 0, 15, "rA"),
+    ]
+
+
+def test_split_combined_bed_raises_on_unknown_feature_id(
+    tmp_path: Path, unpacked_dummy_db: Path
+) -> None:
+    """A featureID present in the BED but absent from features.tsv is an error.
+
+    This usually signals a mismatch between the KMC index and
+    features.tsv (different builds, or a stale features file). We
+    refuse to silently emit a placeholder string because 'Unknown' can
+    be a legitimate feature name in real databases (e.g., the repeats
+    set).
+    """
+    from karyoscope.core.io.features import FeaturesError
+
+    combined = tmp_path / "combined.bed"
+    # featureID 999 has no row in the dummy db's features.tsv (which
+    # only has rows for ids 1, 2, 3).
+    combined.write_text("seqA\t0\t10\t999\n")
+    features = parse_features(unpacked_dummy_db / "features.tsv")
+
+    out_paths = {"chromosome": tmp_path / "chrom.bed"}
+    with pytest.raises(FeaturesError, match="feature id 999 is not in features"):
+        _split_combined_bed(combined, ["chromosome"], features, out_paths)
+
+
+# --- _run_hks_backend BAM handling (stubbed backend calls) -----------
+
+
+def test_run_hks_backend_converts_bam_once_for_all_feature_sets(tmp_path, monkeypatch) -> None:
+    """A BAM input is converted to FASTA once, shared by every lookup, then removed."""
+    from karyoscope.core import annotate as ann
+
+    convert_calls: list[Path] = []
+    lookup_inputs: list[tuple[Path, bool]] = []
+
+    def fake_convert(bam_path: Path, dest_dir: Path, *, capture: bool = False) -> Path:
+        fasta = Path(dest_dir) / "converted.tmp.fasta"
+        fasta.write_text(">r1\nACGT\n")
+        convert_calls.append(fasta)
+        return fasta
+
+    def fake_lookup(
+        *,
+        base_path,
+        feature_set_file,
+        k,
+        input_path,
+        output_path,
+        threads,
+        report_query_names,
+        capture,
+    ):
+        lookup_inputs.append((input_path, report_query_names))
+        output_path.write_text("hdr\n1\t0\t4\tchr1\n")
+        return output_path
+
+    monkeypatch.setattr(ann, "convert_bam_to_fasta", fake_convert)
+    monkeypatch.setattr(ann, "run_hks_lookup", fake_lookup)
+    monkeypatch.setattr(ann, "convert_hks_tsv_to_bed", lambda tsv, bed: bed.write_text("x"))
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    requested = ["chromosome", "region", "gene"]
+    ann._run_hks_backend(
+        manifest=SimpleNamespace(index=SimpleNamespace(basename="db")),
+        db_dir=tmp_path,
+        input_path=tmp_path / "reads.bam",
+        prefix="reads.db",
+        output_dir=out_dir,
+        requested=requested,
+        smooth=False,
+        keep_presmoothed=True,
+        presmoothed_paths={fs: out_dir / f"{fs}.bed" for fs in requested},
+        smoothed_paths={},
+        threads=1,
+        k=31,
+    )
+
+    assert len(convert_calls) == 1
+    fasta = convert_calls[0]
+    # Every feature set queried the one converted FASTA, as a reads input
+    # (integer query ranks, not names).
+    assert [inp for inp, _ in lookup_inputs] == [fasta] * len(requested)
+    assert all(rq is False for _, rq in lookup_inputs)
+    # The temp FASTA is removed once the loop finishes.
+    assert not fasta.exists()
+
+
+def test_run_hks_backend_removes_bam_fasta_on_lookup_failure(tmp_path, monkeypatch) -> None:
+    """The converted FASTA does not outlive a failing lookup."""
+    from karyoscope.core import annotate as ann
+    from karyoscope.exceptions import KaryoscopeError
+
+    def fake_convert(bam_path: Path, dest_dir: Path, *, capture: bool = False) -> Path:
+        fasta = Path(dest_dir) / "converted.tmp.fasta"
+        fasta.write_text(">r1\nACGT\n")
+        return fasta
+
+    def failing_lookup(**kwargs):
+        raise KaryoscopeError("lookup exploded")
+
+    monkeypatch.setattr(ann, "convert_bam_to_fasta", fake_convert)
+    monkeypatch.setattr(ann, "run_hks_lookup", failing_lookup)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    with pytest.raises(KaryoscopeError, match="lookup exploded"):
+        ann._run_hks_backend(
+            manifest=SimpleNamespace(index=SimpleNamespace(basename="db")),
+            db_dir=tmp_path,
+            input_path=tmp_path / "reads.bam",
+            prefix="reads.db",
+            output_dir=out_dir,
+            requested=["chromosome"],
+            smooth=False,
+            keep_presmoothed=True,
+            presmoothed_paths={"chromosome": out_dir / "chromosome.bed"},
+            smoothed_paths={},
+            threads=1,
+            k=31,
+        )
+    assert not (out_dir / "converted.tmp.fasta").exists()

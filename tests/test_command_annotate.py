@@ -13,8 +13,6 @@ import pytest
 from click.testing import CliRunner
 
 from karyoscope.cli import main
-from karyoscope.core.annotate import _derive_input_basename, _split_combined_bed
-from karyoscope.core.io.features import parse_features
 from karyoscope.core.io.kmc import combined_bed_is_complete, write_combined_marker
 
 pytestmark = pytest.mark.integration
@@ -67,92 +65,6 @@ def _read_bed(path: Path) -> list[tuple[str, int, int, str]]:
         seq, start, end, name = line.split("\t")
         out.append((seq, int(start), int(end), name))
     return out
-
-
-# --- _derive_input_basename (pure function, no binary needed) ---------
-
-
-def test_derive_basename_strips_known_extensions() -> None:
-    assert _derive_input_basename(Path("foo.fa.gz")) == "foo"
-    assert _derive_input_basename(Path("path/to/bar.fasta")) == "bar"
-    assert _derive_input_basename(Path("baz.fna.gz")) == "baz"
-    assert _derive_input_basename(Path("BAR.FA.GZ")) == "BAR"  # case-insensitive
-    assert _derive_input_basename(Path("name_only")) == "name_only"
-    # Falls back to .stem for unknown extensions
-    assert _derive_input_basename(Path("foo.unknown")) == "foo"
-
-
-# --- _split_combined_bed (unit test with hand-crafted data) -----------
-
-
-def test_split_combined_bed_translates_and_merges(tmp_path: Path, unpacked_dummy_db: Path) -> None:
-    """The splitter should translate ids and merge adjacent same-name runs."""
-    # Hand-crafted combined BED using REAL feature ids from the dummy db
-    # (features.tsv has rows 1->chr1/rA, 2->chr1/rB, 3->chr2/rC).
-    combined = tmp_path / "combined.bed"
-    combined.write_text(
-        # Adjacent rows mapping to different region ids but same chromosome
-        # should merge in the chromosome BED but not in the region BED.
-        "seqA\t0\t10\t1\n"  # chr1, rA
-        "seqA\t10\t20\t2\n"  # chr1, rB
-        "seqA\t20\t30\t3\n"  # chr2, rC
-        # A 'novel' run (feature_id 0):
-        "seqA\t30\t40\t0\n"  # novel
-        # New sequence: starts a new run regardless of label
-        "seqB\t0\t15\t1\n"  # chr1, rA
-    )
-    features = parse_features(unpacked_dummy_db / "features.tsv")
-
-    out_paths = {
-        "chromosome": tmp_path / "chrom.bed",
-        "region": tmp_path / "region.bed",
-    }
-    _split_combined_bed(combined, ["chromosome", "region"], features, out_paths)
-
-    chrom = _read_bed(out_paths["chromosome"])
-    region = _read_bed(out_paths["region"])
-
-    # Chromosome BED: rows 0-20 both map to chr1 and merge; 20-30 is chr2;
-    # 30-40 is novel; seqB starts a fresh run at chr1.
-    assert chrom == [
-        ("seqA", 0, 20, "chr1"),
-        ("seqA", 20, 30, "chr2"),
-        ("seqA", 30, 40, "novel"),
-        ("seqB", 0, 15, "chr1"),
-    ]
-
-    # Region BED: each row stays distinct (different region per row).
-    assert region == [
-        ("seqA", 0, 10, "rA"),
-        ("seqA", 10, 20, "rB"),
-        ("seqA", 20, 30, "rC"),
-        ("seqA", 30, 40, "novel"),
-        ("seqB", 0, 15, "rA"),
-    ]
-
-
-def test_split_combined_bed_raises_on_unknown_feature_id(
-    tmp_path: Path, unpacked_dummy_db: Path
-) -> None:
-    """A featureID present in the BED but absent from features.tsv is an error.
-
-    This usually signals a mismatch between the KMC index and
-    features.tsv (different builds, or a stale features file). We
-    refuse to silently emit a placeholder string because 'Unknown' can
-    be a legitimate feature name in real databases (e.g., the repeats
-    set).
-    """
-    from karyoscope.core.io.features import FeaturesError
-
-    combined = tmp_path / "combined.bed"
-    # featureID 999 has no row in the dummy db's features.tsv (which
-    # only has rows for ids 1, 2, 3).
-    combined.write_text("seqA\t0\t10\t999\n")
-    features = parse_features(unpacked_dummy_db / "features.tsv")
-
-    out_paths = {"chromosome": tmp_path / "chrom.bed"}
-    with pytest.raises(FeaturesError, match="feature id 999 is not in features"):
-        _split_combined_bed(combined, ["chromosome"], features, out_paths)
 
 
 # --- end-to-end CLI ---------------------------------------------------

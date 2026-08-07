@@ -6,23 +6,14 @@ import pytest
 from click.testing import CliRunner
 
 from karyoscope import __version__
-from karyoscope.cli import main
+from karyoscope.cli import _LAZY_COMMANDS, main
 
 
 def test_top_level_help_lists_all_commands(cli_runner: CliRunner) -> None:
     """`karyoscope --help` should mention every registered subcommand."""
     result = cli_runner.invoke(main, ["--help"])
     assert result.exit_code == 0
-    for cmd_name in (
-        "download",
-        "annotate",
-        "scaffold",
-        "bin",
-        "centromeres",
-        "karyotype",
-        "info",
-        "version",
-    ):
+    for cmd_name in _LAZY_COMMANDS:
         assert cmd_name in result.output, f"`{cmd_name}` missing from --help output"
 
 
@@ -33,19 +24,7 @@ def test_version_flag(cli_runner: CliRunner) -> None:
     assert __version__ in result.output
 
 
-@pytest.mark.parametrize(
-    "subcommand",
-    [
-        "download",
-        "annotate",
-        "scaffold",
-        "bin",
-        "centromeres",
-        "karyotype",
-        "info",
-        "version",
-    ],
-)
+@pytest.mark.parametrize("subcommand", sorted(_LAZY_COMMANDS))
 def test_subcommand_help_succeeds(cli_runner: CliRunner, subcommand: str) -> None:
     """Each subcommand should respond to --help without error."""
     result = cli_runner.invoke(main, [subcommand, "--help"])
