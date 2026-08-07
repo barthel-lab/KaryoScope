@@ -19,7 +19,7 @@ from pathlib import Path
 import click
 
 from karyoscope import paths
-from karyoscope.commands.scaffold import _parse_named_path
+from karyoscope.commands._options import parse_named_path
 from karyoscope.core.build import BuildResult, build_database
 from karyoscope.core.buildspec import BuildSpec
 from karyoscope.core.external import ExternalToolError, ToolNotFoundError
@@ -37,7 +37,7 @@ def _named_path_map(values: tuple[str, ...], flag: str) -> dict[str, Path]:
     """Parse repeated ``NAME=PATH`` options into ``{name: Path}``."""
     out: dict[str, Path] = {}
     for raw in values:
-        name, path = _parse_named_path(raw)
+        name, path = parse_named_path(raw)
         if name is None:
             raise click.UsageError(f"{flag} requires NAME=PATH form (got {raw!r})")
         if name in out:

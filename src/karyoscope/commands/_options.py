@@ -10,6 +10,25 @@ import click
 logger = logging.getLogger(__name__)
 
 
+def parse_named_path(value: str) -> tuple[str | None, Path]:
+    """Parse ``NAME=PATH`` or bare ``PATH``.
+
+    Returns ``(None, Path(value))`` when no ``=`` is present.
+    """
+    if "=" in value:
+        name, _, path = value.partition("=")
+        name = name.strip()
+        if not name:
+            raise click.BadParameter(f"empty name in {value!r}; use NAME=PATH or just PATH")
+        return name, Path(path)
+    return None, Path(value)
+
+
+def split_comma(value: str) -> list[str]:
+    """Split a comma-separated string into stripped non-empty tokens."""
+    return [tok.strip() for tok in value.split(",") if tok.strip()]
+
+
 def resolve_db_root_flag(
     db_root: Path | None,
     legacy_db: Path | None,

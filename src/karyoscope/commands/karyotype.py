@@ -29,7 +29,7 @@ import click
 
 from karyoscope import paths, preflight
 from karyoscope import progress as _progress
-from karyoscope.commands.scaffold import _parse_named_path, _split_comma
+from karyoscope.commands._options import parse_named_path, split_comma
 from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.karyotype_run import karyotype_run
 from karyoscope.core.scaffold import DEFAULT_HUMAN_ACROCENTRICS
@@ -400,10 +400,10 @@ def cmd(
                               --sex male --feature-set region
     """
     # --- parse named-pair options -----------------------------------
-    parsed_inputs: list[tuple[str | None, Path]] = [_parse_named_path(raw) for raw in inputs_raw]
+    parsed_inputs: list[tuple[str | None, Path]] = [parse_named_path(raw) for raw in inputs_raw]
     parsed_telos: dict[str, Path] = {}
     for raw in telo_raw:
-        name, path = _parse_named_path(raw)
+        name, path = parse_named_path(raw)
         if name is None:
             raise click.UsageError(f"--telo requires NAME=PATH form (got {raw!r})")
         if name in parsed_telos:
@@ -428,7 +428,7 @@ def cmd(
     if acrocentrics_raw:
         flattened: list[str] = []
         for entry in acrocentrics_raw:
-            flattened.extend(_split_comma(entry))
+            flattened.extend(split_comma(entry))
         if not flattened:
             raise click.UsageError("--acrocentric was given but produced no chromosome names")
         acrocentrics = set(flattened)

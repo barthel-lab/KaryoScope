@@ -21,7 +21,7 @@ from pathlib import Path
 import click
 
 from karyoscope import paths
-from karyoscope.commands.scaffold import _parse_named_path, _split_comma
+from karyoscope.commands._options import parse_named_path, split_comma
 from karyoscope.core.centromeres import (
     DEFAULT_COARSE_BIN_SIZE,
     DEFAULT_FINE_BIN_SIZE,
@@ -192,10 +192,10 @@ def cmd(
         karyoscope centromeres -i CHM13.fa.gz --fine-bin-size 0
     """
     # --- parse named-pair options -----------------------------------
-    parsed_inputs: list[tuple[str | None, Path]] = [_parse_named_path(raw) for raw in inputs_raw]
+    parsed_inputs: list[tuple[str | None, Path]] = [parse_named_path(raw) for raw in inputs_raw]
     parsed_telos: dict[str, Path] = {}
     for raw in telo_raw:
-        name, path = _parse_named_path(raw)
+        name, path = parse_named_path(raw)
         if name is None:
             raise click.UsageError(f"--telo requires NAME=PATH form (got {raw!r})")
         if name in parsed_telos:
@@ -220,7 +220,7 @@ def cmd(
     if acrocentrics_raw:
         flattened: list[str] = []
         for entry in acrocentrics_raw:
-            flattened.extend(_split_comma(entry))
+            flattened.extend(split_comma(entry))
         if not flattened:
             raise click.UsageError("--acrocentric was given but produced no chromosome names")
         acrocentrics = set(flattened)

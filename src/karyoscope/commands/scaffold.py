@@ -34,6 +34,7 @@ import click
 
 from karyoscope import paths
 from karyoscope import progress as _progress
+from karyoscope.commands._options import parse_named_path, split_comma
 from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.scaffold import DEFAULT_HUMAN_ACROCENTRICS
 from karyoscope.core.scaffold_run import InputSpec, scaffold_run
@@ -46,25 +47,6 @@ from karyoscope.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_named_path(value: str) -> tuple[str | None, Path]:
-    """Parse ``NAME=PATH`` or bare ``PATH``.
-
-    Returns ``(None, Path(value))`` when no ``=`` is present.
-    """
-    if "=" in value:
-        name, _, path = value.partition("=")
-        name = name.strip()
-        if not name:
-            raise click.BadParameter(f"empty name in {value!r}; use NAME=PATH or just PATH")
-        return name, Path(path)
-    return None, Path(value)
-
-
-def _split_comma(value: str) -> list[str]:
-    """Split a comma-separated string into stripped non-empty tokens."""
-    return [tok.strip() for tok in value.split(",") if tok.strip()]
 
 
 @click.command(
@@ -266,11 +248,11 @@ def cmd(
     # --- parse named-pair options -----------------------------------
     parsed_inputs: list[tuple[str | None, Path]] = []
     for raw in inputs_raw:
-        parsed_inputs.append(_parse_named_path(raw))
+        parsed_inputs.append(parse_named_path(raw))
 
     parsed_telos: dict[str, Path] = {}
     for raw in telo_raw:
-        name, path = _parse_named_path(raw)
+        name, path = parse_named_path(raw)
         if name is None:
             raise click.UsageError(
                 f"--telo requires NAME=PATH form (got {raw!r}); the name should match an --input"
@@ -301,7 +283,7 @@ def cmd(
     if acrocentrics_raw:
         flattened: list[str] = []
         for entry in acrocentrics_raw:
-            flattened.extend(_split_comma(entry))
+            flattened.extend(split_comma(entry))
         if not flattened:
             raise click.UsageError("--acrocentric was given but produced no chromosome names")
         acrocentrics = set(flattened)
