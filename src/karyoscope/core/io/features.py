@@ -88,6 +88,26 @@ class Features:
             return None
         return row.get(feature_set)
 
+    def names_for_set(self, feature_set: str) -> dict[int, str]:
+        """Project the table onto one feature set as a flat ``{id: name}`` dict.
+
+        For per-record hot loops: after this one-time projection, a
+        record costs a single dict lookup instead of
+        :meth:`feature_in_set`'s membership validation plus two nested
+        lookups. ``0`` is not in the result (it is implicitly
+        ``"novel"``, as everywhere).
+
+        Raises
+        ------
+        FeaturesError
+            If ``feature_set`` is not one of the file's columns.
+        """
+        if feature_set not in self.feature_sets:
+            raise FeaturesError(
+                f"unknown feature set {feature_set!r}; valid sets are {self.feature_sets!r}"
+            )
+        return {fid: row[feature_set] for fid, row in self.table.items()}
+
 
 def render_feature(
     feature_id: int,

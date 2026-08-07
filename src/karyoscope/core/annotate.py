@@ -44,7 +44,7 @@ from karyoscope import cpus as _cpus
 from karyoscope import diskspace, preflight
 from karyoscope import installed as _installed
 from karyoscope.core.external import require_tool, run_tool
-from karyoscope.core.io.features import Features, parse_features, render_feature
+from karyoscope.core.io.features import NOVEL_NAME, Features, parse_features, render_feature
 from karyoscope.core.io.hierarchy import (
     Hierarchy,
     parse_hierarchy,
@@ -448,6 +448,14 @@ def _split_combined_bed(
     pending: dict[str, tuple[str, int, int, str] | None] = {fs: None for fs in feature_sets}
     handles: dict[str, TextIO] = {fs: output_paths[fs].open("w") for fs in feature_sets}
 
+    # Flat per-set {id: name} tables, seeded with the id-0 "novel"
+    # sentinel: this loop runs once per record per feature set over a
+    # combined BED with hundreds of millions of records, so the per-hit
+    # cost must be one dict lookup, not render_feature's validation and
+    # nested lookups. render_feature stays as the miss path, so an
+    # unknown id raises the same FeaturesError as before.
+    lookups = [(fs, {0: NOVEL_NAME, **features.names_for_set(fs)}) for fs in feature_sets]
+
     def flush(fs: str) -> None:
         rec = pending[fs]
         if rec is None:
@@ -459,8 +467,10 @@ def _split_combined_bed(
     try:
         with combined_bed.open() as f:
             for seq_name, start, end, fid in _iter_bed_records(f):
-                for fs in feature_sets:
-                    name = render_feature(fid, fs, features)
+                for fs, id_to_name in lookups:
+                    name = id_to_name.get(fid)
+                    if name is None:
+                        name = render_feature(fid, fs, features)
                     rec = pending[fs]
                     if (
                         rec is not None

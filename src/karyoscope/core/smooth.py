@@ -121,6 +121,7 @@ class HierarchyIndex:
     parent_of: dict[str, str]
     root: str
     _ancestor_cache: dict[str, list[str]] = field(default_factory=dict)
+    _ancestor_set_cache: dict[str, frozenset[str]] = field(default_factory=dict)
     _lca_cache: dict[tuple[str, str], str | None] = field(default_factory=dict)
 
     @classmethod
@@ -169,8 +170,15 @@ class HierarchyIndex:
         """Return True if ``potential_ancestor`` is on the path from ``node`` to root.
 
         A node is considered its own ancestor (matches the archive).
+        Checked against a memoised frozenset of the ancestor path: this
+        runs in the innermost smoothing scans, once per interval
+        comparison across the whole genome.
         """
-        return potential_ancestor in self.get_ancestors(node)
+        cached = self._ancestor_set_cache.get(node)
+        if cached is None:
+            cached = frozenset(self.get_ancestors(node))
+            self._ancestor_set_cache[node] = cached
+        return potential_ancestor in cached
 
     def get_lca(self, node1: str, node2: str) -> str | None:
         """Return the lowest common ancestor of ``node1`` and ``node2``.
