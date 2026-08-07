@@ -312,13 +312,22 @@ def materialised_queries(
                 )
             else:
                 # tee(1) rather than Python: the FASTA branch is hundreds of GB
-                # and must not be marshalled through this process.
+                # and must not be marshalled through this process. The pipeline
+                # is LINEAR — tee writes the FASTA as its file argument and the
+                # sidecar is the pipeline's terminus — rather than tee into a
+                # >(...) process substitution, because bash neither propagates
+                # a substitution's failure into pipefail nor waits for it to
+                # finish: a full disk under the sidecar would have reported
+                # success, and gzip could still be flushing when the run moved
+                # on. Every stage of a linear pipeline is covered by pipefail
+                # and complete when bash returns. awk rather than grep so an
+                # input with zero records is empty output, not exit code 1.
                 sidecar.parent.mkdir(parents=True, exist_ok=True)
                 pipeline = (
                     f"{shlex.join(cmd)} "
-                    f"| tee >(grep '^>' | cut -c2- | cut -d' ' -f1 "
-                    f"| gzip > {shlex.quote(str(sidecar))}) "
-                    f"> {shlex.quote(str(tmp_fasta))}"
+                    f"| tee {shlex.quote(str(tmp_fasta))} "
+                    "| awk '/^>/ { print substr($1, 2) }' "
+                    f"| gzip > {shlex.quote(str(sidecar))}"
                 )
                 logger.debug("teeing query names to %s", sidecar)
                 result = subprocess.run(
