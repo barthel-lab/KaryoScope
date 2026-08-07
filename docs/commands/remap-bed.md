@@ -35,7 +35,7 @@ A BED contig that is *absent* from the map is not an error: the map only lists c
 
 Two-database flow — layout from `KS_human_CHM13_v2`, plot a cytoband feature set:
 
-```
+```bash
 karyoscope scaffold -i hap1=hap1.fa.gz --db KS_human_CHM13_v2 --mode bed
 karyoscope annotate -i hap1.fa.gz --db KS_human_CHM13_cytoband
 karyoscope remap-bed \

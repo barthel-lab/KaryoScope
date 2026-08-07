@@ -10,7 +10,7 @@ karyoscope version
 
 ## Description
 
-Prints the KaryoScope version, the Python interpreter and platform, the default database root and how many databases are installed, the versions of the Python dependencies, and whether the external tools (KMC, bgzip, tabix, seqtk) are found on PATH. If you only need the version string, `karyoscope --version` / `-V` prints just that. Please include this output in bug reports.
+Prints the KaryoScope version, the Python interpreter and platform, the default database root and how many databases are installed, the versions of the Python dependencies, and whether the external tools (KMC, `get_featureIDs`, HKS, bgzip, tabix, seqtk) are found on PATH. If you only need the version string, `karyoscope --version` / `-V` prints just that. Please include this output in bug reports.
 
 ## Example output
 
@@ -32,6 +32,8 @@ Python dependencies:
 
 External tools:
   KMC: not found on PATH
+  get_featureIDs: K-mer feature analysis tool (at /path/to/get_featureIDs)
+  HKS: Running hks version 0.4.0 (at /path/to/hks)
   bgzip: bgzip (htslib) 1.22.1 (at /path/to/bgzip)
   tabix: tabix (htslib) 1.22.1 (at /path/to/tabix)
   seqtk: ... (at /path/to/seqtk)

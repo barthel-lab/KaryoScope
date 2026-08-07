@@ -26,7 +26,7 @@
 
 ## Overview
 
-KaryoScope is an alignment-free annotation tool that assigns each *k*-mer in a query assembly or sequencing read to a feature drawn from one or more user-defined hierarchical feature sets, producing a base-pair resolution annotation in a single pass. Because a feature set is simply any tiling of a reference with labelled regions, KaryoScope is extensible to arbitrary annotation sources, from satellite catalogs and repeat libraries to cytobands, FISH-probe coordinates, and structural-variant breakpoints.
+KaryoScope is an alignment-free annotation tool that assigns each *k*-mer in a query assembly or sequencing read to a feature drawn from one or more user-defined hierarchical feature sets, producing a base-pair resolution annotation in a single pass. Because a feature set is any tiling of a reference with labelled regions, KaryoScope is extensible to arbitrary annotation sources, from satellite catalogs and repeat libraries to cytobands, FISH-probe coordinates, and structural-variant breakpoints.
 
 A pre-built database for the human genome is distributed alongside the tool, derived from T2T-CHM13v2.0 with six feature sets covering chromosome of origin, satellite composition, interspersed repeats, subtelomeric structure, gene boundaries, and acrocentric-specific features. From these annotations, KaryoScope produces karyotype visualizations and cytogenetic reports without ever performing read alignment. Additional databases can be built for any reference genome or community-curated annotation source. [`karyoscope prep-bed`](docs/commands/prep-bed.md) converts the annotation into labelled feature-set BEDs and [`karyoscope build`](docs/commands/build.md) indexes them; [`docs/recipes/`](docs/recipes/) works both steps through for the human and *Arabidopsis* databases. Databases built this way can be published to, and installed from, the [KaryoScope registry](https://github.com/barthel-lab/KaryoScope-registry).
 
@@ -65,10 +65,10 @@ A pre-built database for the human genome is distributed alongside the tool, der
 | C++20 compiler | building the bundled `get_featureIDs` helper | GCC ≥ 11 or Clang ≥ 13 (Apple Clang) |
 | `bgzip`, `tabix` (htslib) | compressing and indexing BED output | 1.22.1 |
 | seqtk | telomere detection (`scaffold`, `centromeres`, `karyotype`) | 1.5 |
-| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | 0.2.0 |
+| [`hks`](https://github.com/jnalanko/HKS) | building databases with `karyoscope build`, and annotating against HKS-backend databases (e.g. `HKS_human_CHM13_v2`) | 0.4.0 |
 | KMC | building a *KMC-backend* database (legacy — `karyoscope build` produces HKS databases). Not needed to *use* a pre-built KMC database; the bundled `get_featureIDs` helper queries its index directly | 3.2.x (vendored API 3.2.4) |
 | libcairo | rendering `--format pdf` / `--format png` | any recent release |
-| samtools | only for BAM input to `annotate` | 1.22.1 |
+| samtools | BAM input to `annotate`, and `karyoscope build` when the genome has no `.fai` index yet | 1.22.1 |
 
 **Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Resource needs scale with the input:
 
@@ -105,7 +105,7 @@ Measured on HG002 v1.1 against `HKS_human_CHM13_v2`. Restricting `--feature-set`
 
 > Installation via Bioconda is planned. For now, install from source.
 
-KaryoScope requires Python ≥3.10 and several external tools (`bgzip`, `tabix`, `seqtk`, `cairo` for PDF/PNG karyotype output, and `librsvg`/`rsvg-convert` for the SVG→PNG export used by `karyoplot` and `karyoscope-iscn zoom --png`). It also needs a *k*-mer backend query helper — see [k-mer index backends](#k-mer-index-backends) below. The simplest setup is a dedicated conda environment:
+KaryoScope requires Python ≥3.10 and several external tools (`bgzip`, `tabix`, `seqtk`, and `cairo` for PDF/PNG karyotype output). It also needs a *k*-mer backend query helper — see [k-mer index backends](#k-mer-index-backends) below. The simplest setup is a dedicated conda environment:
 
 ```bash
 git clone https://github.com/barthel-lab/KaryoScope.git

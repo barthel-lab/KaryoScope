@@ -22,7 +22,7 @@ karyoscope bin -i INPUT -o OUTPUT -b BIN_SIZE [OPTIONS]
 | `--db TEXT` | Database id whose `hierarchy.tsv` defines the leaf-feature set. Default: the unique installed database if exactly one is installed and `--feature-set` is given. |
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
 | `--feature-set TEXT` | Feature set to use for leaf prioritisation. Required when `--db` is given (or implied). |
-| `-t, --threads INTEGER` | Per-sequence-chunk parallelism. `0` = auto (`os.cpu_count()`). `1` = single-threaded. Stdin/stdout I/O is always single-threaded regardless of this flag. **[default: 1]** |
+| `-t, --threads INTEGER` | Per-sequence-chunk parallelism. `0` = auto (the CPUs this process may actually use: a SLURM allocation or CPU affinity, not the machine's core count). `1` = single-threaded. Stdin/stdout I/O is always single-threaded regardless of this flag. **[default: 1]** |
 | `-h, --help` | Show this message and exit. |
 
 Passing `--db` without `--feature-set` is an error: the leaf set is per-feature-set, so one without the other is ambiguous. A bare invocation with no `--db`/`--feature-set` skips leaf prioritisation entirely.

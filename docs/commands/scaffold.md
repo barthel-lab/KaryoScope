@@ -52,8 +52,8 @@ karyoscope scaffold -i hap1.fa -i hap2.fa --combine-chromosomes -o results/
 
 ## Output
 
-- `scaffold_map.tsv` — the authoritative 8-column map (`new_name`, `original_name`, `input_file`, `hap`, `chromosome`, `flipped`, `length`, `stats`).
-- `scaffold_stats.tsv` — legacy 2-column stats, kept for back-compat.
+- `<input_stem>.<dbid>.scaffold_map.tsv` — the authoritative 8-column map (`new_name`, `original_name`, `input_file`, `hap`, `chromosome`, `flipped`, `length`, `stats`).
+- `<input_stem>.<dbid>.scaffold_stats.tsv` — legacy 2-column stats, kept for back-compat.
 - `--mode bed` / `both`: per-feature-set `<input_stem>.<dbid>.<feature_set>.smoothed.scaffolded.bed[.gz]`.
 - `--mode fasta` (default) / `both`: `<input_stem>.<dbid>.scaffolded.fa[.gz]`.
 - Encoded contig name format: `<chrom>_<hap>_<contig>[_rc]`, where the `_rc` suffix marks a reverse-complemented contig.
