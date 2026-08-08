@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`annotate` accepts several inputs in one run.** `--input` is repeatable;
+  outputs are prefixed by each input's basename, so multiple inputs never
+  collide. On the HKS backend the whole cohort is queried on one index load
+  per feature set instead of one per input — what the `hks` 0.4.0 requirement
+  buys (repeatable `--query`/`--output`). The auto-derive cascade in
+  `scaffold` and `karyotype` batches the same way, so a diploid pair of
+  haplotypes is annotated together. A single input behaves as before.
+
 - **`--query-names-sidecar`** writes `<outdir>/<input>.query_names.txt.gz` for
   BAM/CRAM input: the record names in the order hks assigns ranks, one per line.
   It is **teed off the decode annotate performs anyway**, so it is nearly free.
@@ -219,11 +227,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Verified byte-identical against the previous two-step pipeline on a real
   index, for both the presmoothed and the smoothed BED.
-- **`annotate` requires `hks` >= 0.3.0**, checked before the run starts. `hks`
-  has no `--version` flag, so KaryoScope reads the version it logs on startup.
-  The check fails open — an unreadable version is not treated as too old — but
-  a readable, too-old one stops the run with an upgrade message instead of
-  letting it die partway through on `unexpected argument '--miss-label'`.
+- **`annotate` requires `hks` >= 0.4.0**, checked before the run starts (0.3.0
+  added the direct BED output above; 0.4.0 made `--query`/`--output` repeatable,
+  which multi-input batching relies on). `hks` has no `--version` flag, so
+  KaryoScope reads the version it logs on startup. The check fails open — an
+  unreadable version is not treated as too old — but a readable, too-old one
+  stops the run with an upgrade message instead of letting it die partway
+  through on `unexpected argument '--miss-label'`.
 - **`annotate` reports per-phase timing, bytes and peak memory.** Each `hks`
   lookup and smooth logs its own wall time, output size and throughput, and
   peak memory is reported from `ru_maxrss` across the `hks` processes — where
@@ -249,6 +259,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HG002 v1.1 diploid, where the whole combined scaffold drops from ~3.0 to
   ~2.3 minutes. Outputs are byte-identical; plain (non-combined) mode is
   unchanged.
+
+- **`--no-space-check` is now `--no-resource-check`** on `annotate` and
+  `download`. The flag governs the memory check as well as the disk one, so
+  "space" had become the wrong word. `--no-space-check` still works as a
+  hidden alias and warns; it will be removed in a future release. Supplying
+  both is a usage error.
 
 ### Fixed
 
@@ -308,13 +324,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parent instead of leaving them to gap-fill.
 
 ## [2.2.0] - 2026-08-04
-
-### Changed
-- **`--no-space-check` is now `--no-resource-check`** on `annotate` and
-  `download`. The flag governs the memory check as well as the disk one, so
-  "space" had become the wrong word. `--no-space-check` still works as a
-  hidden alias and warns; it will be removed in a future release. Supplying
-  both is a usage error.
 
 ### Added
 
