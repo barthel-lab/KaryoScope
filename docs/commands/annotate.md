@@ -118,7 +118,7 @@ Each BED's 4th column is the human-readable feature name. k-mers absent from the
 
 Smoothing promotes short noisy intervals (especially short `novel` runs flanked by specific features) to the lowest common ancestor of their flankers in the feature set's hierarchy.
 
-For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, the peak is set by the index rather than the input — the shared base index plus one feature set's labeling at a time — so it is ~10 GB whether you annotate a single haplotype or a combined diploid assembly such as HG002 v1.1 (request ≥ 16 GB). The **KMC backend** peaks at ~36 GB on a haplotype and ~46 GB on a combined diploid (request ≥ 96 GB). At `-t 16`, a haplotype takes ~7–9 min (HKS) or ~13–14 min (KMC); HG002 v1.1 combined takes ~14–16 min (HKS) or ~23–27 min (KMC).
+For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, the peak is set by the index rather than the input — the shared base index plus one feature set's labeling at a time — so it is ~10 GB whether you annotate a single haplotype or a combined diploid assembly such as HG002 v1.1 (request ≥ 16 GB). The **KMC backend**'s largest process peaks at ~36 GB on a haplotype and ~46 GB on a combined diploid, and its smoothing workers can collectively need as much again (request ≥ 96 GB). At `-t 16`, a haplotype takes ~7–9 min (HKS) or ~13–14 min (KMC); HG002 v1.1 combined takes ~14–16 min (HKS) or ~23–27 min (KMC).
 
 ## Progress output
 

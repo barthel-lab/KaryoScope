@@ -76,7 +76,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 - **Human whole-genome inputs (HKS backend, recommended):** `annotate`'s peak is set by the index, not by the input. It holds the shared base index (6.0 GiB) plus one feature set's labeling at a time (the largest is 3.0 GiB), so the peak is **~10 GB whatever you annotate** — a single haplotype and a combined diploid assembly measure the same. **Request ≥ 16 GB.** A single haplotype's six-feature-set run takes **~7–9 minutes** at 16 threads; a combined diploid is roughly twice that (~14–16 minutes). Measured on T2T-CHM13v2.0 and HG002 v1.1 (hap1 and combined diploid). See [Disk space](#disk-space) for storage.
 
   Memory barely moves with `--threads`, so there is no reason to hold threads back to save RAM. What *does* vary by machine is the index load: 9 GB is read per feature set, and if there is enough free RAM for the page cache to hold it, the second and later feature sets load in ~2 s instead of ~25 s. On a memory-tight machine expect every load to be cold.
-- **Human whole-genome inputs (KMC backend):** `annotate` peaks at ~36 GB on a single haplotype and ~46 GB on a combined diploid, so we recommend ≥ 96 GB RAM and ≥ 16 CPU cores. A single haplotype's six-feature-set run takes ~13–14 minutes at 16 threads; a combined diploid ~23–27 minutes.
+- **Human whole-genome inputs (KMC backend):** `annotate`'s largest process peaks at ~36 GB on a single haplotype and ~46 GB on a combined diploid, and its 16 smoothing workers can collectively need as much again, so we recommend ≥ 96 GB RAM and ≥ 16 CPU cores. A single haplotype's six-feature-set run takes ~13–14 minutes at 16 threads; a combined diploid ~23–27 minutes.
 
 ### Disk space
 
@@ -250,9 +250,9 @@ karyoscope download
 curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
 # 3. Annotate the assembly. This runs against the KMC database installed
-#    in step 1, so budget for the KMC backend: it peaks at ~46 GB on
-#    this diploid input, so request >= 96 GB of RAM, with at least 16
-#    threads. HG002 v1.1 is a combined diploid and takes ~23-27 min at
+#    in step 1, so budget for the KMC backend: its largest process peaks
+#    at ~46 GB on this diploid input (the smoothing workers can need as
+#    much again), so request >= 96 GB of RAM, with at least 16 threads. HG002 v1.1 is a combined diploid and takes ~23-27 min at
 #    -t 16; a single haplotype takes ~13-14 min.
 #    Allow ~34 GB free in results/ for six feature sets over this 6 Gbp
 #    assembly, plus headroom for the combined-BED intermediate the KMC
