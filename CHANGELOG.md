@@ -7,24 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **A BAM/CRAM input is now decoded ONCE per run, not once per feature set.** The
-  `samtools fasta` conversion lived inside `run_hks_lookup_batch`, which the
-  annotate backend calls once per feature set -- so a six-feature-set database
-  decoded the same alignment six times. On a 56 GB CRAM that is ~25 minutes each,
-  ~2.5 hours of pure redundancy. The conversion is now a context manager
-  (`materialised_queries`) that the backend enters once and reuses across every
-  set. Single-feature-set runs are unaffected; already-seekable inputs pass
-  straight through and cost nothing.
-
-- **`scaffold --combine-chromosomes` no longer makes a separate lengths pass
-  over the input FASTA.** Contig discovery collects the per-contig lengths in
-  the same read it already makes, and the combined-output writer reuses them,
-  so a combined-mode scaffold reads the input twice instead of three times.
-  Each pass over a gzipped input is a full decompression -- 55 s on the
-  HG002 v1.1 diploid, where the whole combined scaffold drops from ~3.0 to
-  ~2.3 minutes. Outputs are byte-identical; plain (non-combined) mode is
-  unchanged.
+## [2.3.0] - 2026-08-08
 
 ### Added
 
@@ -217,9 +200,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nodes often a small or RAM-backed filesystem. They now sit beside the output,
   as annotate's smoothing pass already did.
 
-- **A BAM input to `annotate` (HKS backend) is converted to FASTA once**,
-  shared by every feature set's lookup, instead of once per feature set.
-
 - **`hks` now writes KaryoScope's BED files directly, and the conversion pass
   is gone.** `convert_hks_tsv_to_bed` ran twice per feature set — on the raw
   lookup output and again inside `run_hks_smooth` — and never actually
@@ -251,6 +231,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phases, which cannot attribute a change to either. `hks` 0.3.0 likewise
   times its base-index and labeling loads separately rather than reporting one
   combined figure.
+
+- **A BAM/CRAM input is now decoded ONCE per run, not once per feature set.** The
+  `samtools fasta` conversion lived inside `run_hks_lookup_batch`, which the
+  annotate backend calls once per feature set -- so a six-feature-set database
+  decoded the same alignment six times. On a 56 GB CRAM that is ~25 minutes each,
+  ~2.5 hours of pure redundancy. The conversion is now a context manager
+  (`materialised_queries`) that the backend enters once and reuses across every
+  set. Single-feature-set runs are unaffected; already-seekable inputs pass
+  straight through and cost nothing.
+
+- **`scaffold --combine-chromosomes` no longer makes a separate lengths pass
+  over the input FASTA.** Contig discovery collects the per-contig lengths in
+  the same read it already makes, and the combined-output writer reuses them,
+  so a combined-mode scaffold reads the input twice instead of three times.
+  Each pass over a gzipped input is a full decompression -- 55 s on the
+  HG002 v1.1 diploid, where the whole combined scaffold drops from ~3.0 to
+  ~2.3 minutes. Outputs are byte-identical; plain (non-combined) mode is
+  unchanged.
 
 ### Fixed
 
@@ -1925,7 +1923,8 @@ For releases, copy the [Unreleased] section to a new heading like:
 ## [1.1.0] - YYYY-MM-DD
 -->
 
-[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/barthel-lab/KaryoScope/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.3.0
 [2.2.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.2.0
 [2.1.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.1.0
 [2.0.0]: https://github.com/barthel-lab/KaryoScope/releases/tag/v2.0.0
