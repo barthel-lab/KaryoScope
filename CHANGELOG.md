@@ -219,11 +219,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Verified byte-identical against the previous two-step pipeline on a real
   index, for both the presmoothed and the smoothed BED.
-- **`annotate` requires `hks` >= 0.3.0**, checked before the run starts. `hks`
-  has no `--version` flag, so KaryoScope reads the version it logs on startup.
-  The check fails open — an unreadable version is not treated as too old — but
-  a readable, too-old one stops the run with an upgrade message instead of
-  letting it die partway through on `unexpected argument '--miss-label'`.
+- **`annotate` requires `hks` >= 0.4.0**, checked before the run starts (0.3.0
+  added the direct BED output above; 0.4.0 made `--query`/`--output` repeatable,
+  which multi-input batching relies on). `hks` has no `--version` flag, so
+  KaryoScope reads the version it logs on startup. The check fails open — an
+  unreadable version is not treated as too old — but a readable, too-old one
+  stops the run with an upgrade message instead of letting it die partway
+  through on `unexpected argument '--miss-label'`.
 - **`annotate` reports per-phase timing, bytes and peak memory.** Each `hks`
   lookup and smooth logs its own wall time, output size and throughput, and
   peak memory is reported from `ru_maxrss` across the `hks` processes — where
