@@ -158,6 +158,40 @@ def test_bed_mode_end_to_end_from_prepared_intermediates(
         assert {ln[0] for ln in lines} == {r.new_name for r in rows}
 
 
+def test_combined_mode_reuses_the_discovery_pass_lengths(
+    populated_db_root: Path, prepared_input: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """combine_chromosomes derives contig names and true lengths from a
+    single read of the input FASTA: ``read_fasta_lengths`` runs exactly
+    once and ``read_fasta_contig_names`` is never called."""
+    calls = {"lengths": 0}
+    real_lengths = sr.read_fasta_lengths
+
+    def counting_lengths(path: Path):
+        calls["lengths"] += 1
+        return real_lengths(path)
+
+    def forbidden_names(path: Path):
+        raise AssertionError("combined mode must not re-scan the FASTA for names")
+
+    monkeypatch.setattr(sr, "read_fasta_lengths", counting_lengths)
+    monkeypatch.setattr(sr, "read_fasta_contig_names", forbidden_names)
+
+    results = _run(prepared_input, populated_db_root, mode="fasta", combine_chromosomes=True)
+    res = results["samp.fasta"]
+    assert res.combined is True
+    assert calls["lengths"] == 1
+
+    assert res.scaffolded_fasta is not None and res.scaffolded_fasta.is_file()
+    heads = sorted(
+        ln[1:].split()[0]
+        for ln in res.scaffolded_fasta.read_text().splitlines()
+        if ln.startswith(">")
+    )
+    assert len(heads) == 2
+    assert heads[0].startswith("chr1") and heads[1].startswith("chr2")
+
+
 def test_bed_mode_can_skip_the_bed_rewrite(populated_db_root: Path, prepared_input: Path) -> None:
     """write_scaffolded_beds=False still writes the map but no BEDs
     (the karyotype cascade's arrangement)."""

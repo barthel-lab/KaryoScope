@@ -454,18 +454,20 @@ def _write_combined_outputs(
     annotation_variant: str,
     bgzip: bool,
     threads: int,
+    true_lengths: dict[str, int],
 ) -> ScaffoldResult:
     """Write combined-chromosome FASTA, AGP, and (mode 'both') BEDs for one input.
 
-    The FASTA is read once and shared: true sequence lengths drive the
-    layout offsets, and the in-memory records feed the FASTA writer. The
-    same :func:`plan_combined_layout` result drives the BED rewrite and
-    the AGP, so all three agree exactly on coordinates.
+    ``true_lengths`` is the per-contig length map the caller collected
+    during contig discovery, so the input FASTA is only re-read for the
+    sequence bodies themselves. The lengths drive the layout offsets,
+    and the same :func:`plan_combined_layout` result drives the FASTA,
+    the BED rewrite, and the AGP, so all three agree exactly on
+    coordinates.
     """
     map_path = r.out_dir / f"{r.stem}.{db_id}.scaffold_map.tsv"
     stats_path = r.out_dir / f"{r.stem}.{db_id}.scaffold_stats.tsv"
 
-    true_lengths = read_fasta_lengths(r.spec.path)
     layout = plan_combined_layout(
         per_input_rows,
         true_lengths,
@@ -738,8 +740,18 @@ def scaffold_run(
     # --- build ContigInput list across all inputs --------------------
     all_contigs: list[ContigInput] = []
     contigs_per_input: dict[str, list[ContigInput]] = defaultdict(list)
+    lengths_per_input: dict[str, dict[str, int]] = {}
     for r in resolved:
-        contig_names = read_fasta_contig_names(r.spec.path)
+        if combine_chromosomes:
+            # The combined-output writer needs every contig's true
+            # length. Collecting them here rides the same full pass
+            # that contig discovery already makes, instead of paying a
+            # second decompress of the input later.
+            lengths = read_fasta_lengths(r.spec.path)
+            lengths_per_input[r.spec.path.name] = lengths
+            contig_names = [name for name in lengths if name]
+        else:
+            contig_names = read_fasta_contig_names(r.spec.path)
         explicit = r.spec.name is not None
         per_contig_hap = classify_contigs(
             contig_names,
@@ -830,6 +842,7 @@ def scaffold_run(
                 annotation_variant=annotation_variant,
                 bgzip=bgzip,
                 threads=threads,
+                true_lengths=lengths_per_input[r.spec.path.name],
             )
             continue
 
