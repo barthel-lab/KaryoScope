@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`annotate` accepts several inputs in one run.** `--input` is repeatable;
+  outputs are prefixed by each input's basename, so multiple inputs never
+  collide. On the HKS backend the whole cohort is queried on one index load
+  per feature set instead of one per input — what the `hks` 0.4.0 requirement
+  buys (repeatable `--query`/`--output`). The auto-derive cascade in
+  `scaffold` and `karyotype` batches the same way, so a diploid pair of
+  haplotypes is annotated together. A single input behaves as before.
+
 - **`--query-names-sidecar`** writes `<outdir>/<input>.query_names.txt.gz` for
   BAM/CRAM input: the record names in the order hks assigns ranks, one per line.
   It is **teed off the decode annotate performs anyway**, so it is nearly free.
@@ -252,6 +260,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ~2.3 minutes. Outputs are byte-identical; plain (non-combined) mode is
   unchanged.
 
+- **`--no-space-check` is now `--no-resource-check`** on `annotate` and
+  `download`. The flag governs the memory check as well as the disk one, so
+  "space" had become the wrong word. `--no-space-check` still works as a
+  hidden alias and warns; it will be removed in a future release. Supplying
+  both is a usage error.
+
 ### Fixed
 
 - **CI now builds `hks` and runs the tests that need it.** The six end-to-end
@@ -310,13 +324,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parent instead of leaving them to gap-fill.
 
 ## [2.2.0] - 2026-08-04
-
-### Changed
-- **`--no-space-check` is now `--no-resource-check`** on `annotate` and
-  `download`. The flag governs the memory check as well as the disk one, so
-  "space" had become the wrong word. `--no-space-check` still works as a
-  hidden alias and warns; it will be removed in a future release. Supplying
-  both is a usage error.
 
 ### Added
 
