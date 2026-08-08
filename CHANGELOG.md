@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set. Single-feature-set runs are unaffected; already-seekable inputs pass
   straight through and cost nothing.
 
+- **`scaffold --combine-chromosomes` no longer makes a separate lengths pass
+  over the input FASTA.** Contig discovery collects the per-contig lengths in
+  the same read it already makes, and the combined-output writer reuses them,
+  so a combined-mode scaffold reads the input twice instead of three times.
+  Each pass over a gzipped input is a full decompression -- 55 s on the
+  HG002 v1.1 diploid, where the whole combined scaffold drops from ~3.0 to
+  ~2.3 minutes. Outputs are byte-identical; plain (non-combined) mode is
+  unchanged.
+
 ### Added
 
 - **`--query-names-sidecar`** writes `<outdir>/<input>.query_names.txt.gz` for

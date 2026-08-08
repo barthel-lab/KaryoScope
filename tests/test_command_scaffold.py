@@ -507,6 +507,7 @@ def test_combine_outputs_rename_uncombined_acrocentrics_end_to_end(tmp_path: Pat
         annotation_variant="smoothed",
         bgzip=False,
         threads=1,
+        true_lengths={"c1a": 12, "c1b": 10, "ptg1": 7, "ptg2": 6},
     )
 
     base = f"{stem}.{db_id}"
