@@ -35,7 +35,7 @@ A pre-built database for the human genome is distributed alongside the tool, der
 
 ### Why alignment-free?
 
-- **Pangenome-scale throughput.** On the [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend, one `annotate` run covering all six feature sets finishes a complete human haplotype in **~7–9 minutes at a ~10 GB memory peak**, at 16 threads — scaling to cohorts of hundreds of phased assemblies. The original KMC backend does the same work in ~17–22 minutes at ~30–35 GB, so HKS is roughly 2.5–3× faster on about a third of the RAM. (Measured at 16 threads on T2T-CHM13v2.0, HG008N and HG008T, as a single sequential run of the whole pipeline — assignment plus smoothing for every feature set. See [System requirements](#system-requirements) for the machine.)
+- **Pangenome-scale throughput.** On the [HKS](https://github.com/jnalanko/HKS) *k*-mer indexing backend, one `annotate` run covering all six feature sets finishes a complete human haplotype in **~7–9 minutes at a ~10 GB memory peak**, at 16 threads — scaling to cohorts of hundreds of phased assemblies. The original KMC backend does the same work in ~13–14 minutes at a ~36 GB peak, so HKS is roughly 1.5–1.8× faster on under a third of the RAM. (Medians of three runs at 16 threads on T2T-CHM13v2.0 and HG002 v1.1 hap1, each a single sequential run of the whole pipeline — assignment plus smoothing for every feature set. See [System requirements](#system-requirements) for the machine.)
 - **Base-pair resolution across the entire genome.** Performs well in the satellite-dense centromeres, subtelomeres, and acrocentric short arms where alignment-based pipelines suffer from reference bias and ambiguous mappings.
 - **Multiple feature classes in a single pass.** The same *k*-mer can carry labels across feature sets simultaneously, so a single position can be annotated as belonging to a specific chromosome, satellite family, repeat class, and gene at once.
 - **Extensible.** Any annotation that tiles a reference of interest can serve as a feature set.
@@ -73,10 +73,10 @@ A pre-built database for the human genome is distributed alongside the tool, der
 **Hardware.** No non-standard hardware is required — KaryoScope runs on a standard CPU and has no GPU dependency. Every runtime and memory figure in this README was measured on a cluster node with two Intel Xeon Gold 6342 CPUs (Ice Lake, 2.80 GHz, 24 cores each, SMT disabled) and 503 GiB RAM, running the job on 16 threads. Resource needs scale with the input:
 
 - **Demo and small inputs:** run on any laptop in seconds (see [Demo](#demo)).
-- **Human whole-genome inputs (HKS backend, recommended):** `annotate`'s peak is set by the index, not by the input. It holds the shared base index (6.0 GiB) plus one feature set's labeling at a time (the largest is 3.0 GiB), so the peak is **~10 GB whatever you annotate** — a single haplotype and a combined diploid assembly measure the same. **Request ≥ 16 GB.** A single haplotype's six-feature-set run takes **~7–9 minutes** at 16 threads; a combined diploid is roughly twice that. Measured on T2T-CHM13v2.0, HG008N, HG008T and HG002 v1.1. See [Disk space](#disk-space) for storage.
+- **Human whole-genome inputs (HKS backend, recommended):** `annotate`'s peak is set by the index, not by the input. It holds the shared base index (6.0 GiB) plus one feature set's labeling at a time (the largest is 3.0 GiB), so the peak is **~10 GB whatever you annotate** — a single haplotype and a combined diploid assembly measure the same. **Request ≥ 16 GB.** A single haplotype's six-feature-set run takes **~7–9 minutes** at 16 threads; a combined diploid is roughly twice that (~14–16 minutes). Measured on T2T-CHM13v2.0 and HG002 v1.1 (hap1 and combined diploid), medians of three runs. See [Disk space](#disk-space) for storage.
 
   Memory barely moves with `--threads`, so there is no reason to hold threads back to save RAM. What *does* vary by machine is the index load: 9 GB is read per feature set, and if there is enough free RAM for the page cache to hold it, the second and later feature sets load in ~2 s instead of ~25 s. On a memory-tight machine expect every load to be cold.
-- **Human whole-genome inputs (KMC backend):** loading the KMC index during `annotate` needs roughly 30 GB of RAM (we measured ~30–35 GB peak at 16 threads), so we recommend ≥ 50 GB RAM and ≥ 16 CPU cores. A single haplotype's six-feature-set run takes ~17–22 minutes at 16 threads.
+- **Human whole-genome inputs (KMC backend):** the *k*-mer query (`get_featureIDs`) peaks at ~36 GB on a single haplotype and ~46 GB on a combined diploid (measured at 16 threads). Request well beyond that peak: the smoothing worker pool that follows the query counts toward the same allocation under SLURM's cgroup accounting, and a 64 GB request has been OOM-killed during smoothing at 16 threads on a haplotype input. Our benchmarks run at 128 GB; reducing `--threads` shrinks the smoothing pool if memory is the constraint, and an OOM-killed run resumes past the query step on rerun. A single haplotype's six-feature-set run takes ~13–14 minutes at 16 threads; a combined diploid ~23–27 minutes.
 
 ### Disk space
 
@@ -136,7 +136,7 @@ Python-only and builds neither, so each backend's query helper is a separate ste
 [HKS](https://github.com/jnalanko/HKS) powers the `HKS_human_CHM13_v2` database, any
 other `index.type: hks` database, and databases you create with
 [`karyoscope build`](docs/commands/build.md). It annotates a human haplotype
-~2.5–3× faster than KMC at about a third of the memory. The Rust toolchain is already
+~1.5–1.8× faster than KMC at under a third of the memory. The Rust toolchain is already
 in the environment, so clone HKS with its submodules and install the `hks` binary
 onto `PATH`:
 
@@ -250,10 +250,12 @@ karyoscope download
 curl -O https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/HG002/assemblies/hg002v1.1.fasta.gz
 
 # 3. Annotate the assembly. This runs against the KMC database installed
-#    in step 1, so budget for the KMC backend: it peaks at ~30-35 GB, so
-#    request >= 50 GB of RAM, with at least 16 threads. A single haplotype
-#    takes ~17-22 min at -t 16; HG002 v1.1 is a combined diploid, so expect
-#    roughly twice that.
+#    in step 1, so budget for the KMC backend: the k-mer query peaks at
+#    ~46 GB on this diploid input, and the smoothing workers that follow
+#    count toward the same allocation -- a 64 GB SLURM request has been
+#    OOM-killed during smoothing at -t 16 -- so request 128 GB of RAM,
+#    with at least 16 threads. HG002 v1.1 is a combined diploid and takes
+#    ~23-27 min at -t 16; a single haplotype takes ~13-14 min.
 #    Allow ~34 GB free in results/ for six feature sets over this 6 Gbp
 #    assembly, plus headroom for the combined-BED intermediate the KMC
 #    backend writes alongside them. See "Disk space" above.
