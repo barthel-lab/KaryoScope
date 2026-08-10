@@ -7,9 +7,12 @@ from pathlib import Path
 from karyoscope.core.hap_inference import (
     assign_per_input_labels,
     classify_contigs,
+    display_hap_labels,
     infer_hap_from_contig,
     infer_hap_from_filename,
+    infer_hap_from_pansn,
     read_fasta_contig_names,
+    short_hap_label,
 )
 
 # --- pattern matching -----------------------------------------------
@@ -250,3 +253,124 @@ class TestReadFastaContigNames:
         with gzip.open(p, "wt") as h:
             h.write(">seq_a\nACGT\n>seq_b\nGCTA\n")
         assert read_fasta_contig_names(p) == ["seq_a", "seq_b"]
+
+
+# --- display labels -------------------------------------------------
+
+
+class TestShortHapLabel:
+    def test_hap_digits_become_h_digits(self) -> None:
+        assert short_hap_label("hap1") == "h1"
+        assert short_hap_label("hap2") == "h2"
+        assert short_hap_label("hap12") == "h12"
+
+    def test_non_numeric_hap_suffix_is_not_treated_as_a_number(self) -> None:
+        # "haploid" starts with "hap" but the remainder is not digits; the two
+        # render sites used to disagree here (one guarded on .isdigit(), the
+        # other did not, yielding "h" vs "hloid" on the same plot).
+        assert short_hap_label("haploid") == "h"
+
+    def test_other_labels_reduce_to_first_character(self) -> None:
+        assert short_hap_label("maternal") == "m"
+        assert short_hap_label("paternal") == "p"
+        assert short_hap_label("unassigned") == "u"
+
+
+class TestDisplayHapLabels:
+    def test_standard_haplotypes_stay_compact(self) -> None:
+        assert display_hap_labels(["hap1", "hap2"]) == {"hap1": "h1", "hap2": "h2"}
+
+    def test_trio_labels_stay_compact(self) -> None:
+        assert display_hap_labels(["maternal", "paternal"]) == {
+            "maternal": "m",
+            "paternal": "p",
+        }
+
+    def test_colliding_compact_forms_fall_back_to_full_labels(self) -> None:
+        # The regression: explicit -i <sample>_hap1= / <sample>_hap2= names both
+        # compacted to "H", so every haplotype column carried the same letter.
+        haps = ["HG00097_hap1", "HG00097_hap2"]
+        assert display_hap_labels(haps) == {
+            "HG00097_hap1": "HG00097_hap1",
+            "HG00097_hap2": "HG00097_hap2",
+        }
+
+    def test_positional_fallback_labels_stay_distinct(self) -> None:
+        # assign_per_input_labels emits input1/input2 precisely to guarantee
+        # uniqueness; compacting them to "i" would have thrown that away.
+        assert display_hap_labels(["input1", "input2"]) == {
+            "input1": "input1",
+            "input2": "input2",
+        }
+
+    def test_display_labels_are_always_distinct(self) -> None:
+        for haps in (
+            ["hap1", "hap2"],
+            ["maternal", "paternal"],
+            ["HG00097_hap1", "HG00097_hap2"],
+            ["input1", "input2"],
+            ["hap1", "hap2", "unassigned"],
+            ["sampleA", "sampleB", "sampleC"],
+        ):
+            mapping = display_hap_labels(haps)
+            assert len(set(mapping.values())) == len(haps), haps
+
+    def test_single_haplotype_is_compact(self) -> None:
+        assert display_hap_labels(["hap1"]) == {"hap1": "h1"}
+
+    def test_duplicate_input_is_deduplicated(self) -> None:
+        assert display_hap_labels(["hap1", "hap1", "hap2"]) == {"hap1": "h1", "hap2": "h2"}
+
+
+# --- PanSN ----------------------------------------------------------
+
+
+class TestInferHapFromPanSN:
+    def test_hprc_style_name(self) -> None:
+        assert infer_hap_from_pansn("HG00097#1#CM094060.1") == "hap1"
+        assert infer_hap_from_pansn("HG00097#2#CM094075.1") == "hap2"
+
+    def test_non_pansn_returns_none(self) -> None:
+        assert infer_hap_from_pansn("chr1") is None
+        assert infer_hap_from_pansn("HG00097#1") is None
+
+    def test_non_numeric_hap_field_returns_none(self) -> None:
+        assert infer_hap_from_pansn("HG00097#mat#ctg") is None
+
+
+class TestSingleInputPanSNSplit:
+    def test_combined_pansn_file_splits_by_haplotype(self) -> None:
+        # Previously collapsed to a single hap1 because no built-in pattern
+        # matches a PanSN name.
+        result = classify_contigs(
+            ["S#1#ctgA", "S#1#ctgB", "S#2#ctgC"],
+            file_level_label="hap1",
+            is_only_input=True,
+        )
+        assert result == {"S#1#ctgA": "hap1", "S#1#ctgB": "hap1", "S#2#ctgC": "hap2"}
+
+    def test_non_pansn_contigs_take_the_first_pansn_label(self) -> None:
+        result = classify_contigs(
+            ["S#2#ctgA", "loose_contig"],
+            file_level_label="hap1",
+            is_only_input=True,
+        )
+        assert result == {"S#2#ctgA": "hap2", "loose_contig": "hap2"}
+
+    def test_builtin_patterns_still_win_over_pansn(self) -> None:
+        # A trio assembly: PanSN would say hap1/hap2, but the contig names
+        # carry mat/pat, which is the more informative label.
+        result = classify_contigs(
+            ["S#1#chr1_pat_001", "S#2#chr1_mat_001"],
+            file_level_label="hap1",
+            is_only_input=True,
+        )
+        assert result == {"S#1#chr1_pat_001": "paternal", "S#2#chr1_mat_001": "maternal"}
+
+    def test_explicit_name_still_wins_over_pansn(self) -> None:
+        result = classify_contigs(
+            ["S#1#ctgA", "S#2#ctgB"],
+            file_level_label="unassigned",
+            explicit_name_given=True,
+        )
+        assert result == {"S#1#ctgA": "unassigned", "S#2#ctgB": "unassigned"}

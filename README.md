@@ -340,15 +340,30 @@ For complete worked examples — every download URL, checksum, conversion and bu
 
 KaryoScope outputs for the [HPRC Release 2](https://humanpangenome.org/) pangenome samples are hosted by the Human Pangenome Reference Consortium at the [`TGen_HPRCv2_KaryoScope` S3 bucket](https://s3-us-west-2.amazonaws.com/human-pangenomics/index.html?prefix=submissions/B5FC8EB1-5B2A-49FE-8421-6D938943DFC9--TGen_HPRCv2_KaryoScope/). Use these to explore HPRC karyotypes without running the pipeline yourself, or as references for downstream analysis.
 
-> **Note**: the currently hosted annotations were generated against a previous version of the KaryoScope database. Updated annotations using the current release will be uploaded as they become available.
+Two generations of annotation are hosted side by side. Every filename carries the KaryoScope version that produced it, so they are told apart by the `.v2.3.0.` / `.v2.0.` segment.
 
-Per sample, the bucket contains:
+### Current: `v2.3.0` (231 release2 samples)
+
+Generated with the HKS-backed databases: `chromosome`, `region`, `repeat`, `gene`, `acrocentric` and `subtelomeric` come from [`HKS_human_CHM13_v2`](#databases), and `cytoband` from `HKS_human_CHM13_cytoband`.
 
 | Path | Contents |
 |---|---|
-| `<sample>/bed/` | Per-feature-set presmoothed annotations (`<sample>.KaryoScope.v2.0.<feature_set>.bed.gz`) |
+| `<sample>/bed/` | Smoothed annotations, one file per haplotype per feature set (`<sample>.<hap>.KaryoScope.v2.3.0.<feature_set>.bed.gz`) |
+| `<sample>/plots/` | Karyotype SVGs: genome view (chromosome feature set), centromere view (region), subtelomere view (subtelomeric) — `<sample>.<mode>.KaryoScope.v2.3.0.svg` |
+
+`<hap>` is `hap1`/`hap2` for haplotype-phased assemblies and `mat`/`pat` for trio-phased ones, matching the assembly FASTA it was derived from. Coordinates are on the assembly's own contigs, in the PanSN names the HPRC assemblies use (`<sample>#<hap>#<contig>`); they are not scaffolded to chromosomes.
+
+### Previous: `v2.0`
+
+Generated with the KMC-backed `KS_human_CHM13_v2` database, before `cytoband` was available. These files are retained; the `igv/` directory exists only for this generation.
+
+| Path | Contents |
+|---|---|
+| `<sample>/bed/` | Smoothed annotations, one file per feature set with both haplotypes concatenated (`<sample>.KaryoScope.v2.0.<feature_set>.bed.gz`) |
 | `<sample>/igv/` | Per-feature-set, per-haplotype IGV-ready BEDs with tabix index (`<sample>.KaryoScope.v2.0.<feature_set>.hap<i>.IGV.bed.gz` + `.tbi`) |
 | `<sample>/plots/` | Karyotype SVGs: genome view (chromosome feature set), centromere view (region), subtelomere view (subtelomeric) |
+
+This generation covers 234 directories: the 231 samples above, plus HG002, and the CHM13 and GRCh38 references.
 
 ## Citation
 

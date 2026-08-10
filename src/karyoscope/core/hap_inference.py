@@ -36,6 +36,13 @@ Rule summary (per :class:`InputSpec` in :mod:`karyoscope.core.scaffold`):
      matched label; non-matching contigs take the lexically first
      matched label, with a warning.
 
+3b. **PanSN fallback** — when rule 3 finds no pattern in any contig
+   name, contigs named ``<sample>#<hap>#<contig>`` (the HPRC pangenome
+   convention) are split on their haplotype field. Ranked below the
+   built-in patterns on purpose: for a trio assembly ``S#1#ctg`` is the
+   *paternal* haplotype, so PanSN must not override a ``paternal``
+   label already established by the filename or an explicit ``-i``.
+
 4. **``--split-haps REGEX``** → applied per contig, taking precedence
    over the built-in patterns. The regex's first capture group is the
    label. Contigs that don't match the regex fall through to the
@@ -57,9 +64,12 @@ from karyoscope.core.io.fasta import read_fasta_contig_names
 __all__ = [
     "assign_per_input_labels",
     "classify_contigs",
+    "display_hap_labels",
     "infer_hap_from_contig",
     "infer_hap_from_filename",
+    "infer_hap_from_pansn",
     "read_fasta_contig_names",
+    "short_hap_label",
 ]
 
 logger = logging.getLogger(__name__)
@@ -179,6 +189,68 @@ def assign_per_input_labels(
     return [label for label in out if label is not None]
 
 
+def infer_hap_from_pansn(contig: str) -> str | None:
+    """Hap label from a PanSN-spec contig name, or ``None``.
+
+    PanSN names sequences ``<sample>#<haplotype>#<contig>`` (e.g.
+    ``HG00097#1#CM094060.1``) and is the convention used across the HPRC
+    pangenome releases. The haplotype field is an integer, which maps onto our
+    ``hap<N>`` labels.
+
+    Deliberately *not* wired into the general per-contig path: for a trio
+    assembly, ``HG02723#1#...`` is the paternal haplotype, and letting PanSN
+    win there would relabel a file the user (or the filename) already
+    identified as ``paternal``. It is consulted only where inference would
+    otherwise give up -- see :func:`_single_input_inference`.
+    """
+    parts = contig.split("#")
+    if len(parts) < 3:
+        return None
+    hap = parts[1]
+    if hap.isdigit():
+        return f"hap{int(hap)}"
+    return None
+
+
+def short_hap_label(hap: str) -> str:
+    """Compact display form for one hap label.
+
+    ``hap<digits>`` becomes ``h<digits>``; anything else is reduced to its first
+    character (so ``maternal``/``paternal`` render as ``m``/``p``).
+
+    This form is LOSSY and may collide across labels -- callers that render more
+    than one haplotype must go through :func:`display_hap_labels`, which keeps
+    the set distinguishable.
+    """
+    if hap.startswith("hap") and hap[3:].isdigit():
+        return f"h{hap[3:]}"
+    return hap[:1]
+
+
+def display_hap_labels(haps: Iterable[str]) -> dict[str, str]:
+    """Map every hap label to a display label, preserving distinguishability.
+
+    Hap labels are globally unique by construction (see
+    :func:`assign_per_input_labels`, which falls back to ``input{n}`` precisely
+    to keep them so). The compact form from :func:`short_hap_label` throws that
+    away: ``HG00097_hap1`` and ``HG00097_hap2`` both shorten to ``H``, which
+    rendered every haplotype column of a diploid karyotype with the same letter.
+
+    So: use the compact form only when it stays unique across the whole set,
+    otherwise fall back to the full labels for *every* hap. All-short or
+    all-full keeps the columns readable as a group, rather than mixing widths.
+    """
+    ordered = list(dict.fromkeys(haps))
+    compact = {hap: short_hap_label(hap) for hap in ordered}
+    if len(set(compact.values())) == len(ordered):
+        return compact
+    logger.debug(
+        "compact hap labels collide (%s); falling back to full labels",
+        sorted(set(compact.values())),
+    )
+    return {hap: hap for hap in ordered}
+
+
 def classify_contigs(
     contig_names: list[str],
     *,
@@ -265,6 +337,21 @@ def _single_input_inference(contig_names: list[str], fallback: str) -> dict[str,
             matched_labels.add(label)
 
     if not matched_labels:
+        # Before giving up and collapsing everything onto one label, try PanSN
+        # (`<sample>#<hap>#<contig>`). A combined pangenome FASTA carries its
+        # haplotypes there and nowhere else, so without this a diploid PanSN
+        # input was silently flattened to a single haplotype.
+        pansn = {name: infer_hap_from_pansn(name) for name in contig_names}
+        pansn_labels = {label for label in pansn.values() if label is not None}
+        if pansn_labels:
+            default = sorted(pansn_labels)[0]
+            logger.info(
+                "no haplotype patterns matched; inferred %d haplotype(s) from "
+                "PanSN contig names: %s",
+                len(pansn_labels),
+                ", ".join(sorted(pansn_labels)),
+            )
+            return {name: (pansn[name] or default) for name in contig_names}
         if fallback == "hap1":
             logger.warning(
                 "no haplotype patterns matched any contig in this input; "

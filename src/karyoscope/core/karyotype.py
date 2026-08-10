@@ -42,7 +42,7 @@ from typing import Literal
 
 import drawsvg as draw
 
-from karyoscope.core.hap_inference import infer_hap_from_contig
+from karyoscope.core.hap_inference import display_hap_labels, infer_hap_from_contig
 from karyoscope.core.io.features import NOVEL_NAME
 from karyoscope.core.io.scaffold_map import MapRow
 from karyoscope.core.scaffold import Interval, chromosome_sort_key
@@ -1127,16 +1127,16 @@ def _draw_header_labels(
             )
         )
         if len(views.haplotypes) > 1:
+            # Compact column designators so the narrow columns stay legible
+            # without widening the layout: "h1"/"h2" for haplotypes, a
+            # single-letter tag otherwise ("u" for unassigned, "m"/"p" for
+            # maternal/paternal). display_hap_labels falls back to the full
+            # labels if compacting them would make two columns identical.
+            hap_display = display_hap_labels(views.haplotypes)
             for hap in layout.drawable_haps_per_chrom.get(chromosome, []):
                 hap_start = layout.hap_start_x[chromosome][hap]
                 hap_width = layout.hap_block_widths[chromosome][hap]
-                # Compact column designator so the narrow columns stay
-                # legible without widening the layout: "h1"/"h2" for
-                # haplotypes, a single-letter tag otherwise ("u" for
-                # unassigned, "m"/"p" for maternal/paternal).
-                hap_text = (
-                    f"h{hap[3:]}" if (hap.startswith("hap") and hap[3:].isdigit()) else hap[:1]
-                )
+                hap_text = hap_display[hap]
                 d.append(
                     draw.Rectangle(hap_start, geom.hap_line_y, hap_width, 1, fill=geom.text_color)
                 )
@@ -1503,10 +1503,11 @@ def _draw_footer_labels(
                 bottom_hap_label_y = drawing_end_y + 27
                 bottom_chrom_line_y = drawing_end_y + 32
                 bottom_chrom_label_y = drawing_end_y + 47
+                hap_display = display_hap_labels(views.haplotypes)
                 for hap in layout.drawable_haps_per_chrom.get(chromosome, []):
                     hap_start = layout.hap_start_x[chromosome][hap]
                     hap_width = layout.hap_block_widths[chromosome][hap]
-                    hap_text = f"h{hap[3:]}" if hap.startswith("hap") else hap[:1]
+                    hap_text = hap_display[hap]
                     d.append(
                         draw.Rectangle(
                             hap_start, bottom_hap_line_y, hap_width, 1, fill=geom.text_color

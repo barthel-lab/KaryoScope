@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Haplotype labels no longer collapse onto the same character.** The karyotype
+  column designator was `h<N>` only for a literal `hap<digits>` label and the
+  first character otherwise, so `-i HG00097_hap1=` / `-i HG00097_hap2=` drew
+  every haplotype column of a diploid as `H`, and the library's own
+  `input1`/`input2` positional fallbacks both drew as `i`. Labels are now
+  shortened as a set and only while they stay distinct, otherwise the full
+  labels are used. The abbreviation had also been implemented twice with
+  different rules — the top and bottom labels of one plot could disagree — and
+  is now a single helper.
+
+- **A stale scaffolded BED can no longer produce a silently near-empty plot.**
+  Artifacts downstream of scaffolding encode the haplotype label in their
+  sequence names. The scaffolded BED had no staleness guard yet is the source
+  the binned BED is built from, so binning a stale one produced binned and
+  centromere BEDs that contradicted the `scaffold_map.tsv` written in the same
+  run — and the `.mapsig` sidecar was then written from the *current* map,
+  certifying that output as fresh. The karyotype layout keys off the map, so
+  the render came out nearly empty with exit code 0. The scaffolded BED is now
+  validated before use (falling back to re-binning the annotation with the
+  current map), and every binned BED is checked exhaustively against the map
+  before rendering, raising instead of drawing an incomplete plot.
+
+### Added
+
+- **PanSN contig names (`<sample>#<hap>#<contig>`) are recognised** when
+  splitting a single combined input whose contigs match no other haplotype
+  pattern; such assemblies were previously flattened onto one haplotype. Ranked
+  below the built-in patterns and an explicit `-i NAME=`, so a trio assembly
+  keeps its `maternal`/`paternal` labels rather than being renumbered.
+
 ## [2.3.0] - 2026-08-08
 
 ### Added
