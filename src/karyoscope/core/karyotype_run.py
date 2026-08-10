@@ -344,6 +344,101 @@ def _write_binned_mapsig(binned: Path, map_rows: list[MapRow] | None) -> None:
     _binned_mapsig_path(binned).write_text(map_signature(map_rows) + "\n")
 
 
+def _first_sequence_names(path: Path, limit: int = 64) -> list[str]:
+    """Distinct sequence names from a BED, in order. ``limit=0`` reads them all."""
+    opener = gzip.open if path.suffix == ".gz" else open
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    try:
+        with opener(path, "rt") as h:
+            for raw in h:
+                line = raw.rstrip("\n")
+                if not line or line.startswith(("#", "track", "browser")):
+                    continue
+                name = line.split("\t", 1)[0]
+                if name not in seen_set:
+                    seen_set.add(name)
+                    seen.append(name)
+                    if limit and len(seen) >= limit:
+                        break
+    except OSError:
+        return []
+    return seen
+
+
+def _scaffolded_bed_is_current(scaffolded: Path, map_rows: list[MapRow] | None) -> bool:
+    """True if ``scaffolded`` encodes the same scaffold map as ``map_rows``.
+
+    The scaffolded BED bakes the map's rename + orientation into its sequence
+    names (``<chrom>_<hap>_<contig>``), exactly like the binned BED does -- but
+    it had no staleness guard, and it is the *source* the binned BED is built
+    from. Binning a stale scaffolded BED therefore produced binned/centromere
+    files whose sequence names contradicted the freshly written
+    ``scaffold_map.tsv``, and :func:`_write_binned_mapsig` then stamped that
+    output with the CURRENT signature -- certifying stale content as fresh, so
+    every later run reused it too. The karyotype layout keys off the map, so
+    nothing matched and the render came out near-empty at exit 0.
+
+    Two levels of checking:
+
+    * a ``.mapsig`` sidecar written beside the scaffolded BED (exact), or
+    * for BEDs written before that sidecar existed, a bounded sniff of the
+      leading sequence names, which must all be names the current map
+      produces.
+
+    The sniff is not exhaustive -- a map change touching only contigs beyond
+    the sampled head can slip through -- so it is a safety net for legacy
+    workdirs, not a substitute for the sidecar. Fails closed on unreadable or
+    unrecognised content: the caller then rebuilds from the annotation BED,
+    which is correct by construction.
+    """
+    if map_rows is None:
+        return True
+    sidecar = _binned_mapsig_path(scaffolded)
+    if sidecar.is_file():
+        try:
+            return sidecar.read_text().strip() == map_signature(map_rows)
+        except OSError:
+            return False
+    names = _first_sequence_names(scaffolded)
+    if not names:
+        # Empty or unreadable: nothing to contradict the map.
+        return True
+    expected = {r.new_name for r in map_rows}
+    return all(name in expected for name in names)
+
+
+def _assert_binned_matches_map(binned: Path, map_rows: list[MapRow] | None) -> None:
+    """Fail loudly if a binned BED's sequence names disagree with the map.
+
+    The last line of defence, and the cheap one: the karyotype layout is keyed
+    off ``scaffold_map.new_name``, so any binned sequence name outside that set
+    simply will not be drawn. Historically that produced a near-empty plot at
+    exit 0 -- a picture of a sample with almost no sequence, indistinguishable
+    from a real result.
+
+    Binned BEDs are small (kilobytes), so unlike the upstream inputs this check
+    can be exhaustive rather than a sample. Run it on every binned BED before it
+    reaches the renderer, however it was produced.
+    """
+    if map_rows is None:
+        return
+    expected = {r.new_name for r in map_rows}
+    if not expected:
+        return
+    names = _first_sequence_names(binned, limit=0)
+    unknown = sorted(n for n in names if n not in expected)
+    if not unknown:
+        return
+    raise KaryotypeError(
+        f"binned BED {binned.name} disagrees with the scaffold map: "
+        f"{len(unknown)} of {len(names)} sequence name(s) are not produced by "
+        f"the current map (e.g. {unknown[:3]}). Rendering would silently drop "
+        f"them and produce a near-empty plot. Delete {binned.name} (and any "
+        f"stale *.scaffolded.bed.gz beside it) and re-run."
+    )
+
+
 def _load_binned_bed(path: Path) -> OrderedDict[str, list[Interval]]:
     opener = gzip.open if path.suffix == ".gz" else open
     out: OrderedDict[str, list[Interval]] = OrderedDict()
@@ -438,6 +533,7 @@ def _ensure_binned_scaffolded(
     else:
         out = _binned_scaffolded_bed_path(out_dir, stem, db_id, fs, bin_size, variant=variant)
     if out.is_file() and _binned_bed_is_current(out, map_rows):
+        _assert_binned_matches_map(out, map_rows)
         return out
     if not auto:
         # File absent, or present but built from a superseded scaffold
@@ -473,18 +569,34 @@ def _ensure_binned_scaffolded(
             threads=threads,
         )
         _write_binned_mapsig(out, map_rows)
+        _assert_binned_matches_map(out, map_rows)
         return out
     scaffolded_src = _scaffolded_bed_path(out_dir, stem, db_id, fs, variant=variant)
     if scaffolded_src.is_file():
-        bin_features(
-            scaffolded_src,
-            out,
-            bin_size=bin_size,
-            leaf_set=leaf_set or None,
-            threads=threads,
+        # Existence is NOT sufficient: the scaffolded BED encodes the map in its
+        # sequence names, so one built from a superseded map would poison the
+        # binned output (and get stamped with the current signature, hiding it).
+        # When it does not match, fall through to the annotation path below,
+        # which re-applies the current map and is correct by construction.
+        if _scaffolded_bed_is_current(scaffolded_src, map_rows):
+            bin_features(
+                scaffolded_src,
+                out,
+                bin_size=bin_size,
+                leaf_set=leaf_set or None,
+                threads=threads,
+            )
+            _write_binned_mapsig(out, map_rows)
+            _assert_binned_matches_map(out, map_rows)
+            return out
+        logger.warning(
+            "ignoring stale scaffolded BED %s for %s (feature set %r): it was "
+            "built from a different scaffold map; re-binning the annotation BED "
+            "with the current map instead",
+            scaffolded_src.name,
+            input_name,
+            fs,
         )
-        _write_binned_mapsig(out, map_rows)
-        return out
 
     # Fallback: bin the annotation BED, then apply the scaffold map.
     if map_rows is None:
@@ -495,9 +607,14 @@ def _ensure_binned_scaffolded(
         )
     annotation_src = _annotation_bed_path(out_dir, stem, db_id, fs, variant=variant)
     if not annotation_src.is_file():
+        why = (
+            "stale (built from a different scaffold map)"
+            if scaffolded_src.is_file()
+            else "missing"
+        )
         raise KaryotypeError(
             f"cannot bin {fs!r} for {input_name}: {variant} BED missing at "
-            f"{annotation_src} (and scaffolded BED also missing)"
+            f"{annotation_src}, and the scaffolded BED at {scaffolded_src} is {why}"
         )
     tmpdir = Path(tempfile.mkdtemp(prefix="ks_karyo_bin_", dir=out_dir))
     try:
@@ -513,6 +630,7 @@ def _ensure_binned_scaffolded(
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     _write_binned_mapsig(out, map_rows)
+    _assert_binned_matches_map(out, map_rows)
     return out
 
 

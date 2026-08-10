@@ -57,9 +57,11 @@ from karyoscope.core.io.fasta import read_fasta_contig_names
 __all__ = [
     "assign_per_input_labels",
     "classify_contigs",
+    "display_hap_labels",
     "infer_hap_from_contig",
     "infer_hap_from_filename",
     "read_fasta_contig_names",
+    "short_hap_label",
 ]
 
 logger = logging.getLogger(__name__)
@@ -177,6 +179,45 @@ def assign_per_input_labels(
             pos += 1
 
     return [label for label in out if label is not None]
+
+
+def short_hap_label(hap: str) -> str:
+    """Compact display form for one hap label.
+
+    ``hap<digits>`` becomes ``h<digits>``; anything else is reduced to its first
+    character (so ``maternal``/``paternal`` render as ``m``/``p``).
+
+    This form is LOSSY and may collide across labels -- callers that render more
+    than one haplotype must go through :func:`display_hap_labels`, which keeps
+    the set distinguishable.
+    """
+    if hap.startswith("hap") and hap[3:].isdigit():
+        return f"h{hap[3:]}"
+    return hap[:1]
+
+
+def display_hap_labels(haps: Iterable[str]) -> dict[str, str]:
+    """Map every hap label to a display label, preserving distinguishability.
+
+    Hap labels are globally unique by construction (see
+    :func:`assign_per_input_labels`, which falls back to ``input{n}`` precisely
+    to keep them so). The compact form from :func:`short_hap_label` throws that
+    away: ``HG00097_hap1`` and ``HG00097_hap2`` both shorten to ``H``, which
+    rendered every haplotype column of a diploid karyotype with the same letter.
+
+    So: use the compact form only when it stays unique across the whole set,
+    otherwise fall back to the full labels for *every* hap. All-short or
+    all-full keeps the columns readable as a group, rather than mixing widths.
+    """
+    ordered = list(dict.fromkeys(haps))
+    compact = {hap: short_hap_label(hap) for hap in ordered}
+    if len(set(compact.values())) == len(ordered):
+        return compact
+    logger.debug(
+        "compact hap labels collide (%s); falling back to full labels",
+        sorted(set(compact.values())),
+    )
+    return {hap: hap for hap in ordered}
 
 
 def classify_contigs(

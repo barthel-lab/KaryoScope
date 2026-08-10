@@ -14,6 +14,7 @@ import pytest
 import karyoscope.core.karyotype_run as kr
 from karyoscope.core.io.scaffold_map import MapRow, map_signature
 from karyoscope.core.karyotype_run import (
+    _assert_binned_matches_map,
     _binned_bed_is_current,
     _binned_combined_scaffolded_bed_path,
     _binned_mapsig_path,
@@ -22,6 +23,8 @@ from karyoscope.core.karyotype_run import (
     _combined_scaffolded_bed_path,
     _common_base,
     _ensure_binned_scaffolded,
+    _first_sequence_names,
+    _scaffolded_bed_is_current,
     _write_binned_mapsig,
 )
 from karyoscope.exceptions import KaryotypeError
@@ -269,3 +272,96 @@ class TestEnsureBinnedScaffolded:
     def test_nothing_to_bin_from_is_an_error(self, tmp_path: Path) -> None:
         with pytest.raises(KaryotypeError, match="smoothed BED missing"):
             self._call(tmp_path)
+
+
+# --- stale scaffolded BED / binned-map invariant --------------------
+#
+# Regression cover for the silent-wrong-output bug: a scaffolded BED left over
+# from a run with different hap labels was reused by mere existence, its stale
+# sequence names flowed into the binned + centromere BEDs, and the freshly
+# written .mapsig then certified that stale output as current. The karyotype
+# layout keys off scaffold_map.new_name, so nothing matched and the render came
+# out near-empty at exit 0.
+
+
+def _write_bed(path: Path, names: list[str]) -> Path:
+    path.write_text("".join(f"{n}\t0\t100\tfeat\n" for n in names))
+    return path
+
+
+class TestFirstSequenceNames:
+    def test_reads_distinct_names_in_order(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "x.bed", ["a", "a", "b", "c", "b"])
+        assert _first_sequence_names(bed) == ["a", "b", "c"]
+
+    def test_limit_zero_reads_all(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "x.bed", [f"n{i}" for i in range(200)])
+        assert len(_first_sequence_names(bed, limit=0)) == 200
+
+    def test_limit_caps_the_read(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "x.bed", [f"n{i}" for i in range(200)])
+        assert len(_first_sequence_names(bed, limit=5)) == 5
+
+    def test_missing_file_is_empty(self, tmp_path: Path) -> None:
+        assert _first_sequence_names(tmp_path / "nope.bed") == []
+
+
+class TestScaffoldedBedIsCurrent:
+    def test_matching_names_are_current(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "s.bed", ["chr1_hap1_a", "chr2_hap1_b"])
+        rows = [_row("chr1_hap1_a", hap="hap1"), _row("chr2_hap1_b", hap="hap1")]
+        assert _scaffolded_bed_is_current(bed, rows)
+
+    def test_stale_hap_label_is_detected(self, tmp_path: Path) -> None:
+        # Exactly the observed failure: the BED was written when the hap label
+        # was "HG00097_hap1"; the current map uses the inferred "hap1".
+        bed = _write_bed(tmp_path / "s.bed", ["chr1_HG00097_hap1_ctg"])
+        rows = [_row("chr1_hap1_ctg", hap="hap1")]
+        assert not _scaffolded_bed_is_current(bed, rows)
+
+    def test_sidecar_takes_precedence_over_sniff(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "s.bed", ["chr1_hap1_a"])
+        rows = [_row("chr1_hap1_a", hap="hap1")]
+        _binned_mapsig_path(bed).write_text("not-the-right-signature\n")
+        assert not _scaffolded_bed_is_current(bed, rows)
+        _binned_mapsig_path(bed).write_text(map_signature(rows) + "\n")
+        assert _scaffolded_bed_is_current(bed, rows)
+
+    def test_empty_bed_is_current(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "s.bed", [])
+        assert _scaffolded_bed_is_current(bed, [_row("chr1_hap1_a", hap="hap1")])
+
+    def test_no_map_cannot_be_checked(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "s.bed", ["anything"])
+        assert _scaffolded_bed_is_current(bed, None)
+
+
+class TestAssertBinnedMatchesMap:
+    def test_matching_binned_bed_passes(self, tmp_path: Path) -> None:
+        binned = _write_bed(tmp_path / "b.bed", ["chr1_hap1_a"])
+        _assert_binned_matches_map(binned, [_row("chr1_hap1_a", hap="hap1")])
+
+    def test_mismatched_binned_bed_raises(self, tmp_path: Path) -> None:
+        binned = _write_bed(tmp_path / "b.bed", ["chr1_HG00097_hap1_ctg"])
+        with pytest.raises(KaryotypeError, match="disagrees with the scaffold map"):
+            _assert_binned_matches_map(binned, [_row("chr1_hap1_ctg", hap="hap1")])
+
+    def test_error_names_the_offending_sequences(self, tmp_path: Path) -> None:
+        binned = _write_bed(tmp_path / "b.bed", ["bogus_1", "bogus_2"])
+        with pytest.raises(KaryotypeError) as exc:
+            _assert_binned_matches_map(binned, [_row("chr1_hap1_a", hap="hap1")])
+        assert "bogus_1" in str(exc.value)
+
+    def test_partial_mismatch_still_raises(self, tmp_path: Path) -> None:
+        # The dangerous shape: most names match, so the plot renders but is
+        # quietly missing whatever did not.
+        binned = _write_bed(tmp_path / "b.bed", ["chr1_hap1_a", "chr2_STALE_b"])
+        with pytest.raises(KaryotypeError):
+            _assert_binned_matches_map(
+                binned,
+                [_row("chr1_hap1_a", hap="hap1"), _row("chr2_hap1_b", hap="hap1")],
+            )
+
+    def test_no_map_skips_the_check(self, tmp_path: Path) -> None:
+        binned = _write_bed(tmp_path / "b.bed", ["whatever"])
+        _assert_binned_matches_map(binned, None)

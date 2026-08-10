@@ -7,9 +7,11 @@ from pathlib import Path
 from karyoscope.core.hap_inference import (
     assign_per_input_labels,
     classify_contigs,
+    display_hap_labels,
     infer_hap_from_contig,
     infer_hap_from_filename,
     read_fasta_contig_names,
+    short_hap_label,
 )
 
 # --- pattern matching -----------------------------------------------
@@ -250,3 +252,70 @@ class TestReadFastaContigNames:
         with gzip.open(p, "wt") as h:
             h.write(">seq_a\nACGT\n>seq_b\nGCTA\n")
         assert read_fasta_contig_names(p) == ["seq_a", "seq_b"]
+
+
+# --- display labels -------------------------------------------------
+
+
+class TestShortHapLabel:
+    def test_hap_digits_become_h_digits(self) -> None:
+        assert short_hap_label("hap1") == "h1"
+        assert short_hap_label("hap2") == "h2"
+        assert short_hap_label("hap12") == "h12"
+
+    def test_non_numeric_hap_suffix_is_not_treated_as_a_number(self) -> None:
+        # "haploid" starts with "hap" but the remainder is not digits; the two
+        # render sites used to disagree here (one guarded on .isdigit(), the
+        # other did not, yielding "h" vs "hloid" on the same plot).
+        assert short_hap_label("haploid") == "h"
+
+    def test_other_labels_reduce_to_first_character(self) -> None:
+        assert short_hap_label("maternal") == "m"
+        assert short_hap_label("paternal") == "p"
+        assert short_hap_label("unassigned") == "u"
+
+
+class TestDisplayHapLabels:
+    def test_standard_haplotypes_stay_compact(self) -> None:
+        assert display_hap_labels(["hap1", "hap2"]) == {"hap1": "h1", "hap2": "h2"}
+
+    def test_trio_labels_stay_compact(self) -> None:
+        assert display_hap_labels(["maternal", "paternal"]) == {
+            "maternal": "m",
+            "paternal": "p",
+        }
+
+    def test_colliding_compact_forms_fall_back_to_full_labels(self) -> None:
+        # The regression: explicit -i <sample>_hap1= / <sample>_hap2= names both
+        # compacted to "H", so every haplotype column carried the same letter.
+        haps = ["HG00097_hap1", "HG00097_hap2"]
+        assert display_hap_labels(haps) == {
+            "HG00097_hap1": "HG00097_hap1",
+            "HG00097_hap2": "HG00097_hap2",
+        }
+
+    def test_positional_fallback_labels_stay_distinct(self) -> None:
+        # assign_per_input_labels emits input1/input2 precisely to guarantee
+        # uniqueness; compacting them to "i" would have thrown that away.
+        assert display_hap_labels(["input1", "input2"]) == {
+            "input1": "input1",
+            "input2": "input2",
+        }
+
+    def test_display_labels_are_always_distinct(self) -> None:
+        for haps in (
+            ["hap1", "hap2"],
+            ["maternal", "paternal"],
+            ["HG00097_hap1", "HG00097_hap2"],
+            ["input1", "input2"],
+            ["hap1", "hap2", "unassigned"],
+            ["sampleA", "sampleB", "sampleC"],
+        ):
+            mapping = display_hap_labels(haps)
+            assert len(set(mapping.values())) == len(haps), haps
+
+    def test_single_haplotype_is_compact(self) -> None:
+        assert display_hap_labels(["hap1"]) == {"hap1": "h1"}
+
+    def test_duplicate_input_is_deduplicated(self) -> None:
+        assert display_hap_labels(["hap1", "hap1", "hap2"]) == {"hap1": "h1", "hap2": "h2"}
