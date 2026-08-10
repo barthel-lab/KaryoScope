@@ -7,6 +7,7 @@ These cover the pure-Python staleness guard for binned-scaffolded BEDs
 
 from __future__ import annotations
 
+import gzip
 from pathlib import Path
 
 import pytest
@@ -285,7 +286,18 @@ class TestEnsureBinnedScaffolded:
 
 
 def _write_bed(path: Path, names: list[str]) -> Path:
-    path.write_text("".join(f"{n}\t0\t100\tfeat\n" for n in names))
+    """Write a one-row-per-name BED, gzipping when the path says ``.gz``.
+
+    The real intermediates are gzipped and the helpers key their opener off
+    the suffix, so a plain-text ``.bed.gz`` would be unreadable and every
+    name-based assertion would pass vacuously.
+    """
+    body = "".join(f"{n}\t0\t100\tfeat\n" for n in names)
+    if path.suffix == ".gz":
+        with gzip.open(path, "wt") as h:
+            h.write(body)
+    else:
+        path.write_text(body)
     return path
 
 
@@ -365,3 +377,95 @@ class TestAssertBinnedMatchesMap:
     def test_no_map_skips_the_check(self, tmp_path: Path) -> None:
         binned = _write_bed(tmp_path / "b.bed", ["whatever"])
         _assert_binned_matches_map(binned, None)
+
+
+# --- the check is a subset check, never a 1:1 correspondence ---------
+#
+# The scaffold map is the UPPER BOUND on sequence names, not an exact
+# inventory: every downstream BED is free to carry fewer. Three filters
+# produce that gap, all of them normal:
+#
+# * ``rewrite_bed`` skips a map row whose contig has no records in the
+#   input BED -- an input can legitimately produce nothing for a feature
+#   set (e.g. all-novel sequence with no smoothing pass).
+# * ``plan_combined_layout`` drops a contig absent from the FASTA's true
+#   lengths, and omits a whole (chrom, hap) object when that leaves the
+#   group empty; ``combined_map_rows`` emits a row per group regardless,
+#   so it is deliberately a superset.
+# * ``bin_features`` with a ``leaf_set`` reads only the requested feature
+#   set's leaves.
+#
+# So only names present in the BED and ABSENT from the map are an error.
+# A map that lists sequences the BED does not must stay silent. These
+# tests exist to stop the guard being tightened into an equality check,
+# which would reject correct output on every one of the paths above.
+
+
+class TestGuardsTolerateFilteredSequences:
+    @property
+    def ROWS(self) -> list[MapRow]:
+        return [
+            _row("chr1_hap1_a", hap="hap1"),
+            _row("chr2_hap1_b", hap="hap1"),
+            _row("chr3_hap1_c", hap="hap1"),
+        ]
+
+    def test_binned_bed_may_omit_mapped_sequences(self, tmp_path: Path) -> None:
+        # Feature set had records for only one of the three mapped contigs.
+        binned = _write_bed(tmp_path / "b.bed", ["chr2_hap1_b"])
+        _assert_binned_matches_map(binned, self.ROWS)
+
+    def test_empty_binned_bed_is_tolerated(self, tmp_path: Path) -> None:
+        # Nothing survived the leaf-set filter: an empty plot, not an error.
+        binned = _write_bed(tmp_path / "b.bed", [])
+        _assert_binned_matches_map(binned, self.ROWS)
+
+    def test_scaffolded_sniff_may_omit_mapped_sequences(self, tmp_path: Path) -> None:
+        bed = _write_bed(tmp_path / "s.bed", ["chr3_hap1_c"])
+        assert _scaffolded_bed_is_current(bed, self.ROWS)
+
+    def test_combined_map_rows_superset_is_tolerated(self, tmp_path: Path) -> None:
+        # combined_map_rows() has no length filter, so it names objects that
+        # plan_combined_layout() may never have emitted.
+        binned = _write_bed(tmp_path / "b.bed", ["chr1_hap1", "chr2_hap1"])
+        crows = [
+            _row("chr1_hap1", hap="hap1"),
+            _row("chr2_hap1", hap="hap1"),
+            _row("chr3_hap1", hap="hap1"),
+        ]
+        _assert_binned_matches_map(binned, crows)
+
+    def test_sparse_binned_bed_survives_the_full_ensure_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End of the real path: bin a scaffolded BED that covers one of three
+        # mapped contigs, and take the result through the reuse branch too.
+        # No .mapsig beside it, so this also pins the legacy sniff: a sparse
+        # scaffolded BED must not be judged stale. If it were, the call falls
+        # through to the annotation path and raises "smoothed BED missing".
+        src = tmp_path / "s.db.region.smoothed.scaffolded.bed.gz"
+        _write_bed(src, ["chr2_hap1_b"])
+        out = _binned_scaffolded_bed_path(tmp_path, "s", "db", "region", 100_000)
+
+        monkeypatch.setattr(
+            kr, "bin_features", lambda source, dest, **kw: _write_bed(dest, ["chr2_hap1_b"])
+        )
+        kwargs = dict(
+            out_dir=tmp_path,
+            stem="s",
+            db_id="db",
+            fs="region",
+            bin_size=100_000,
+            leaf_set=set(),
+            auto=True,
+            input_name="s.fa",
+            threads=1,
+            map_rows=self.ROWS,
+        )
+        assert _ensure_binned_scaffolded(**kwargs) == out
+
+        # Second call takes the "already current" branch, which asserts again.
+        monkeypatch.setattr(
+            kr, "bin_features", lambda *a, **kw: pytest.fail("must not rebin a current BED")
+        )
+        assert _ensure_binned_scaffolded(**kwargs) == out

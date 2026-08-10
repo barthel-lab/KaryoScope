@@ -384,7 +384,9 @@ def _scaffolded_bed_is_current(scaffolded: Path, map_rows: list[MapRow] | None) 
     * a ``.mapsig`` sidecar written beside the scaffolded BED (exact), or
     * for BEDs written before that sidecar existed, a bounded sniff of the
       leading sequence names, which must all be names the current map
-      produces.
+      produces -- a subset check, for the reasons in
+      :func:`_assert_binned_matches_map`; the map may name sequences this BED
+      does not carry.
 
     The sniff is not exhaustive -- a map change touching only contigs beyond
     the sampled head can slip through -- so it is a safety net for legacy
@@ -420,6 +422,15 @@ def _assert_binned_matches_map(binned: Path, map_rows: list[MapRow] | None) -> N
     Binned BEDs are small (kilobytes), so unlike the upstream inputs this check
     can be exhaustive rather than a sample. Run it on every binned BED before it
     reaches the renderer, however it was produced.
+
+    Subset, not equality. The map is the upper bound on sequence names and every
+    downstream BED may carry fewer: :func:`rewrite_bed` skips a map row whose
+    contig has no records in this feature set, :func:`plan_combined_layout` omits
+    a ``(chrom, hap)`` object whose contigs are absent from the FASTA lengths
+    while :func:`combined_map_rows` still emits a row for it, and binning applies
+    a ``leaf_set``. Only a name the map does not produce is an error.
+    ``tests/test_karyotype_run.py::TestGuardsTolerateFilteredSequences`` pins
+    this direction.
     """
     if map_rows is None:
         return
@@ -1153,7 +1164,15 @@ def karyotype_run(
     combined_cen_by_input: dict[Path, dict[str, tuple[int, int]]] = {}
     if combine_chromosomes:
         for spec, out_dir, stem in per_input_state:
-            per_contig_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
+            # scaffold_db_id_resolved, not db_id_resolved: scaffold_run names
+            # the map after the LAYOUT database. The two are identical here --
+            # --scaffold-db with --combine-chromosomes is rejected above -- but
+            # the other two read sites already spell it this way, and spelling
+            # it differently here is what would turn relaxing that guard into a
+            # "scaffold map not found".
+            per_contig_rows = read_map(
+                out_dir / f"{stem}.{scaffold_db_id_resolved}.scaffold_map.tsv"
+            )
             crows = combined_map_rows(
                 per_contig_rows,
                 acrocentrics=acros_set,
