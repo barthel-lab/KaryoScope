@@ -10,6 +10,7 @@ from karyoscope.core.hap_inference import (
     display_hap_labels,
     infer_hap_from_contig,
     infer_hap_from_filename,
+    infer_hap_from_pansn,
     read_fasta_contig_names,
     short_hap_label,
 )
@@ -319,3 +320,57 @@ class TestDisplayHapLabels:
 
     def test_duplicate_input_is_deduplicated(self) -> None:
         assert display_hap_labels(["hap1", "hap1", "hap2"]) == {"hap1": "h1", "hap2": "h2"}
+
+
+# --- PanSN ----------------------------------------------------------
+
+
+class TestInferHapFromPanSN:
+    def test_hprc_style_name(self) -> None:
+        assert infer_hap_from_pansn("HG00097#1#CM094060.1") == "hap1"
+        assert infer_hap_from_pansn("HG00097#2#CM094075.1") == "hap2"
+
+    def test_non_pansn_returns_none(self) -> None:
+        assert infer_hap_from_pansn("chr1") is None
+        assert infer_hap_from_pansn("HG00097#1") is None
+
+    def test_non_numeric_hap_field_returns_none(self) -> None:
+        assert infer_hap_from_pansn("HG00097#mat#ctg") is None
+
+
+class TestSingleInputPanSNSplit:
+    def test_combined_pansn_file_splits_by_haplotype(self) -> None:
+        # Previously collapsed to a single hap1 because no built-in pattern
+        # matches a PanSN name.
+        result = classify_contigs(
+            ["S#1#ctgA", "S#1#ctgB", "S#2#ctgC"],
+            file_level_label="hap1",
+            is_only_input=True,
+        )
+        assert result == {"S#1#ctgA": "hap1", "S#1#ctgB": "hap1", "S#2#ctgC": "hap2"}
+
+    def test_non_pansn_contigs_take_the_first_pansn_label(self) -> None:
+        result = classify_contigs(
+            ["S#2#ctgA", "loose_contig"],
+            file_level_label="hap1",
+            is_only_input=True,
+        )
+        assert result == {"S#2#ctgA": "hap2", "loose_contig": "hap2"}
+
+    def test_builtin_patterns_still_win_over_pansn(self) -> None:
+        # A trio assembly: PanSN would say hap1/hap2, but the contig names
+        # carry mat/pat, which is the more informative label.
+        result = classify_contigs(
+            ["S#1#chr1_pat_001", "S#2#chr1_mat_001"],
+            file_level_label="hap1",
+            is_only_input=True,
+        )
+        assert result == {"S#1#chr1_pat_001": "paternal", "S#2#chr1_mat_001": "maternal"}
+
+    def test_explicit_name_still_wins_over_pansn(self) -> None:
+        result = classify_contigs(
+            ["S#1#ctgA", "S#2#ctgB"],
+            file_level_label="unassigned",
+            explicit_name_given=True,
+        )
+        assert result == {"S#1#ctgA": "unassigned", "S#2#ctgB": "unassigned"}
