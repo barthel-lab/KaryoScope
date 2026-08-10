@@ -608,9 +608,7 @@ def _ensure_binned_scaffolded(
     annotation_src = _annotation_bed_path(out_dir, stem, db_id, fs, variant=variant)
     if not annotation_src.is_file():
         why = (
-            "stale (built from a different scaffold map)"
-            if scaffolded_src.is_file()
-            else "missing"
+            "stale (built from a different scaffold map)" if scaffolded_src.is_file() else "missing"
         )
         raise KaryotypeError(
             f"cannot bin {fs!r} for {input_name}: {variant} BED missing at "
