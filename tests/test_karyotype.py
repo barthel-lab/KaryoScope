@@ -1141,6 +1141,11 @@ class TestCliSurface:
                 "--scaffold-db",
                 "some_other_db",
                 "--combine-chromosomes",
+                # The cascade preflights bgzip + seqtk before karyotype_run
+                # is entered; neither is on PATH in the unit-test job, and
+                # that error would mask the one under test.
+                "--no-bgzip",
+                "--no-auto",
             ],
         )
         assert result.exit_code != 0
