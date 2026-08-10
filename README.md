@@ -363,7 +363,7 @@ Generated with the KMC-backed `KS_human_CHM13_v2` database, before `cytoband` wa
 | `<sample>/igv/` | Per-feature-set, per-haplotype IGV-ready BEDs with tabix index (`<sample>.KaryoScope.v2.0.<feature_set>.hap<i>.IGV.bed.gz` + `.tbi`) |
 | `<sample>/plots/` | Karyotype SVGs: genome view (chromosome feature set), centromere view (region), subtelomere view (subtelomeric) |
 
-This generation covers 232 samples — the 231 above plus HG002 — and additionally the CHM13 and GRCh38 references.
+This generation covers 234 directories: the 231 samples above, plus HG002, and the CHM13 and GRCh38 references.
 
 ## Citation
 
