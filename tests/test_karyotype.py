@@ -1113,6 +1113,39 @@ class TestCliSurface:
         assert result.exit_code != 0
         assert "scaffold-gap-size" in result.output
 
+    def test_scaffold_db_with_combine_chromosomes_rejected(
+        self,
+        cli_runner: CliRunner,
+        populated_db_root: Path,
+        tmp_path: Path,
+    ) -> None:
+        """The two flags are mutually exclusive, and the combine path relies on it.
+
+        Combined layout reads the plotted feature set's scaffolded BEDs from
+        the layout database, which a separate --scaffold-db does not have. The
+        combine path also reads scaffold_map.tsv under the layout database's
+        id, so it only agrees with what scaffold_run wrote while the two ids
+        are the same. Nothing pinned this rejection; if it were relaxed, the
+        first symptom would be "scaffold map not found".
+        """
+        fa = tmp_path / "x.fa"
+        fa.write_text(">a\nACGT\n")
+        result = cli_runner.invoke(
+            main,
+            [
+                "karyotype",
+                "-i",
+                str(fa),
+                "--db-root",
+                str(populated_db_root),
+                "--scaffold-db",
+                "some_other_db",
+                "--combine-chromosomes",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--scaffold-db cannot be combined with --combine-chromosomes" in result.output
+
 
 # --- integration tests against the dummy DB ------------------------
 

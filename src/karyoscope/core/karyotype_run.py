@@ -1164,7 +1164,15 @@ def karyotype_run(
     combined_cen_by_input: dict[Path, dict[str, tuple[int, int]]] = {}
     if combine_chromosomes:
         for spec, out_dir, stem in per_input_state:
-            per_contig_rows = read_map(out_dir / f"{stem}.{db_id_resolved}.scaffold_map.tsv")
+            # scaffold_db_id_resolved, not db_id_resolved: scaffold_run names
+            # the map after the LAYOUT database. The two are identical here --
+            # --scaffold-db with --combine-chromosomes is rejected above -- but
+            # the other two read sites already spell it this way, and spelling
+            # it differently here is what would turn relaxing that guard into a
+            # "scaffold map not found".
+            per_contig_rows = read_map(
+                out_dir / f"{stem}.{scaffold_db_id_resolved}.scaffold_map.tsv"
+            )
             crows = combined_map_rows(
                 per_contig_rows,
                 acrocentrics=acros_set,
