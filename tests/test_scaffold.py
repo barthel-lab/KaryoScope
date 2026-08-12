@@ -88,6 +88,26 @@ class TestAssignMainChromosome:
         bins: list[Interval] = [(0, 1000, "novel"), (1000, 2000, "categorized")]
         assert assign_main_chromosome(bins, {"chr1"}) is None
 
+    def test_mass_overrides_the_binned_proxy(self) -> None:
+        # GM03786 haplotype2-0000063, a 2.48 Mb female-X contig of pseudo-autosomal
+        # + X-transposed sequence. The binned view says chrY because bin 1 fell to
+        # chrY by 3 kb in a million and the trailing runt bin -- which chrX won --
+        # was folded into that chrY row, donating its width. True coverage is
+        # chrX 629,147 bp vs chrY 538,023 bp.
+        bins: list[Interval] = [(0, 1_000_000, "chrX"), (1_000_000, 2_477_740, "chrY")]
+        leaves = {"chrX", "chrY"}
+        assert assign_main_chromosome(bins, leaves) == "chrY"  # the old, wrong answer
+        mass = {"chrX": 629_147, "chrY": 538_023, "sex": 1_198_259}
+        assert assign_main_chromosome(bins, leaves, mass=mass) == "chrX"
+
+    def test_mass_ignores_internal_nodes_and_empty_falls_back(self) -> None:
+        bins: list[Interval] = [(0, 1000, "chr2")]
+        # "sex"/"autosome" are internal nodes: huge mass, no vote.
+        mass = {"autosome": 10_000, "chr1": 400, "chr2": 300}
+        assert assign_main_chromosome(bins, {"chr1", "chr2"}, mass=mass) == "chr1"
+        # Mass with no leaf at all -> None, not a silent fall back to the bins.
+        assert assign_main_chromosome(bins, {"chr1", "chr2"}, mass={"autosome": 10}) is None
+
 
 class TestFindLargestContiguousRegion:
     def test_full_match(self) -> None:

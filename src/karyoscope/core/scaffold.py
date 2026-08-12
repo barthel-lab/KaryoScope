@@ -30,7 +30,7 @@ import logging
 import shutil
 import tempfile
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from itertools import groupby
 from pathlib import Path
@@ -91,6 +91,10 @@ class ContigInput:
     chromosome_bins: list[Interval]
     region_bins: list[Interval]
     telo: TeloFlags = field(default_factory=lambda: TeloFlags(False, False))
+    #: True annotated bp per chromosome label, from the UNBINNED chromosome BED.
+    #: Drives the chromosome assignment; see :func:`assign_main_chromosome` for
+    #: why the binned rows are not a safe substitute. ``None`` -> fall back to them.
+    chromosome_mass: dict[str, int] | None = None
 
 
 # --- pure helpers ---------------------------------------------------
@@ -123,17 +127,36 @@ def get_simple_region(feature_name: str) -> str:
 def assign_main_chromosome(
     chromosome_bins: Iterable[Interval],
     chromosome_leaves: set[str],
+    *,
+    mass: Mapping[str, int] | None = None,
 ) -> str | None:
     """Pick the leaf chromosome with the largest weighted overlap.
 
-    Bins whose feature is not a leaf are ignored. Ties broken by the
-    natural :func:`chromosome_sort_key` ordering so the result is
-    deterministic when two leaves have identical coverage.
+    ``mass`` is this contig's true annotated bp per label, read from the
+    unbinned chromosome BED. Prefer it: the binned rows are winner-take-all,
+    so summing their widths is only a proxy for coverage, and the proxy can
+    invert the answer on a contig whose signal is genuinely mixed. A bin won
+    by a hair casts the same full-width vote as one won outright, and a
+    trailing runt bin is folded into its neighbour's row (see
+    ``_RUNT_BIN_FRACTION`` in :mod:`karyoscope.core.bin`), donating its width
+    to a label that did not win it. On an HG002-like female X contig carrying
+    pseudo-autosomal and X-transposed sequence, those two effects together
+    returned chrY off 538 kb of chrY content against 629 kb of chrX.
+
+    Falls back to bin widths when ``mass`` is absent, so callers that have
+    only the binned view still work. Bins/labels that are not leaves are
+    ignored. Ties broken by the natural :func:`chromosome_sort_key` ordering
+    so the result is deterministic when two leaves have identical coverage.
     """
     counts: dict[str, int] = defaultdict(int)
-    for start, stop, name in chromosome_bins:
-        if name in chromosome_leaves:
-            counts[name] += stop - start
+    if mass is not None:
+        for name, bp in mass.items():
+            if name in chromosome_leaves:
+                counts[name] += bp
+    else:
+        for start, stop, name in chromosome_bins:
+            if name in chromosome_leaves:
+                counts[name] += stop - start
     if not counts:
         return None
     best_overlap = max(counts.values())
@@ -567,7 +590,9 @@ def classify_and_orient(
     # Assign each surviving contig to a chromosome.
     main_chrom: dict[int, str | None] = {}
     for i, c in enumerate(kept):
-        main_chrom[i] = assign_main_chromosome(c.chromosome_bins, chromosome_leaves)
+        main_chrom[i] = assign_main_chromosome(
+            c.chromosome_bins, chromosome_leaves, mass=c.chromosome_mass
+        )
 
     # Group by (chromosome, hap). Skip contigs without a chromosome.
     cells: dict[tuple[str, str], list[int]] = defaultdict(list)
