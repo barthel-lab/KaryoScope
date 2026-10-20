@@ -137,13 +137,23 @@ Python-only and builds neither, so each backend's query helper is a separate ste
 other `index.type: hks` database, and databases you create with
 [`karyoscope build`](docs/commands/build.md). It annotates a human haplotype
 ~1.5–1.8× faster than KMC at under a third of the memory. The Rust toolchain is already
-in the environment, so clone HKS with its submodules and install the `hks` binary
-onto `PATH`:
+in the environment, so clone HKS with its submodules, check out the pinned commit,
+and install the `hks` binary onto `PATH`:
 
 ```bash
 git clone --recurse-submodules https://github.com/jnalanko/HKS.git
-cargo install --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/hks
+git -C HKS checkout 04bbc52                       # hks 0.4.0
+git -C HKS submodule update --init --recursive
+cp resources/hks/Cargo.lock HKS/Cargo.lock
+cargo install --locked --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/hks
 ```
+
+The commands run from the KaryoScope checkout. `04bbc52` is the HKS commit used for
+the published runtimes. `resources/hks/Cargo.lock` is the `Cargo.lock` committed at that
+commit with the `hks` package version changed from 0.3.0 to 0.4.0 to match HKS's
+`Cargo.toml`; with the committed file, `cargo install --locked` stops with "cannot update
+the lock file". `--locked` builds every dependency at the version in the lock file.
+Without it, `cargo install` resolves dependencies to their newest compatible versions.
 
 KaryoScope finds `hks` on `PATH` automatically (or set `$KARYOSCOPE_HKS` to its
 path). A future release will bundle `hks` via conda so this step goes away.
@@ -172,7 +182,7 @@ it automatically. See [`native/README.md`](native/README.md) for build-system de
 `-Wl,-rpath,$CONDA_PREFIX/lib` shim). The `KMC` tool itself is only needed to *build*
 a KMC database, not to query one.
 
-**Typical install time.** On a normal desktop with a good network connection, creating the conda environment is the bulk of the time — usually ~5–10 minutes to resolve and download the bioinformatics tools. `pip install -e .` then takes under a minute, and building the C++ helper takes a few seconds. Reinstalls into an existing environment are much faster.
+**Typical install time.** On a normal desktop with a good network connection, creating the conda environment is the bulk of the time — usually ~5–10 minutes to resolve and download the bioinformatics tools. `pip install -e .` then takes under a minute, building the C++ helper takes a few seconds, and cloning and building HKS (`git clone` plus `cargo install`) takes about 1.5 minutes. Reinstalls into an existing environment are much faster.
 
 ## Demo
 

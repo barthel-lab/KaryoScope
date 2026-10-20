@@ -36,8 +36,11 @@ pre-commit install
 make -C native/get_featureIDs
 
 # For `karyoscope build` and HKS-backend work, also build the `hks`
-# binary from a checkout of https://github.com/jnalanko/HKS:
-#   cargo install --path ../HKS --root "$CONDA_PREFIX"
+# binary from a checkout of https://github.com/jnalanko/HKS at the
+# pinned commit, using the lock file shipped here (see README "HKS"):
+#   git -C ../HKS checkout 04bbc52 && git -C ../HKS submodule update --init --recursive
+#   cp resources/hks/Cargo.lock ../HKS/Cargo.lock
+#   cargo install --locked --path ../HKS --root "$CONDA_PREFIX"
 
 # Verify the install
 karyoscope --version
