@@ -144,12 +144,12 @@ and install the `hks` binary onto `PATH`:
 git clone --recurse-submodules https://github.com/jnalanko/HKS.git
 git -C HKS checkout 04bbc52                       # hks 0.4.0
 git -C HKS submodule update --init --recursive
-cp resources/hks/Cargo.lock HKS/Cargo.lock
+cp native/hks/Cargo.lock HKS/Cargo.lock
 cargo install --locked --path HKS --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/hks
 ```
 
 The commands run from the KaryoScope checkout. `04bbc52` is the HKS commit used for
-the published runtimes. `resources/hks/Cargo.lock` is the `Cargo.lock` committed at that
+the published runtimes. `native/hks/Cargo.lock` is the `Cargo.lock` committed at that
 commit with the `hks` package version changed from 0.3.0 to 0.4.0 to match HKS's
 `Cargo.toml`; with the committed file, `cargo install --locked` stops with "cannot update
 the lock file". `--locked` builds every dependency at the version in the lock file.

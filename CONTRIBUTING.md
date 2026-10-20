@@ -39,7 +39,7 @@ make -C native/get_featureIDs
 # binary from a checkout of https://github.com/jnalanko/HKS at the
 # pinned commit, using the lock file shipped here (see README "HKS"):
 #   git -C ../HKS checkout 04bbc52 && git -C ../HKS submodule update --init --recursive
-#   cp resources/hks/Cargo.lock ../HKS/Cargo.lock
+#   cp native/hks/Cargo.lock ../HKS/Cargo.lock
 #   cargo install --locked --path ../HKS --root "$CONDA_PREFIX"
 
 # Verify the install

@@ -116,9 +116,7 @@ tests/data/__pycache__/
 
 # Local database resources (multi-GB KaryoScope database archives and
 # unpacked index directories; installed/managed locally, never tracked).
-# resources/hks/ is tracked: it holds the Cargo.lock the README HKS install uses.
-/resources/*
-!/resources/hks/
+/resources/
 
 # Local results and scratch
 results/

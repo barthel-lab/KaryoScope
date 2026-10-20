@@ -10,6 +10,7 @@ extension and no Python-side compilation step.
 ```
 native/
 ├── README.md                       # this file
+├── hks/Cargo.lock                  # HKS 04bbc52 lock file for `cargo install --locked` (see README.md)
 ├── external/                       # vendored third-party code (read-only)
 │   ├── kmc_api/                    # KMC 3.2.4 API headers + sources (GPL-3)
 │   └── cxxopts/cxxopts.hpp         # cxxopts 3.2.0 single-header (MIT)
