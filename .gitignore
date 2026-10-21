@@ -135,3 +135,6 @@ native/*/bin/
 
 # Operating system
 Thumbs.db
+
+# HKS clone made by the README install steps (built with cargo install)
+/HKS/

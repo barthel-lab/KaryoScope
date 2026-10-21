@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the compressed file is the only copy that ever touches the disk. `bgzip`
   is therefore required whenever a `.gz` output is requested, including
   `--query-names-sidecar`.
+- **The README's HKS install is pinned.** It checks out HKS commit `04bbc52`
+  (hks 0.4.0), copies `native/hks/Cargo.lock` into the clone and runs
+  `cargo install --locked`. The shipped lock file is the one committed at
+  `04bbc52` with the `hks` package version changed from 0.3.0 to 0.4.0; the
+  committed file makes `cargo install --locked` fail. Previously the README
+  installed the HKS default branch without `--locked`, so `cargo` resolved
+  dependencies to their newest compatible versions. "Typical install time" now
+  includes the HKS clone and build (about 1.5 minutes).
 
 ### Fixed
 
