@@ -903,6 +903,7 @@ def rewrite_bed(
     *,
     map_rows: list[MapRow],
     gzip_out: bool | None = None,
+    flip_labels: Mapping[str, str] | None = None,
 ) -> None:
     """Rewrite a per-feature-set BED to use the scaffolded contig names.
 
@@ -914,7 +915,9 @@ def rewrite_bed(
     new encoded name. Contigs flagged ``flipped=True`` have their
     intervals mirrored to ``[length - stop, length - start)`` and
     written in reverse order, so the output remains coordinate-sorted
-    within each renamed contig.
+    within each renamed contig. ``flip_labels`` (the feature set's
+    ``Manifest.flip_labels`` entry) also relabels a flipped contig's records;
+    it is empty for every strand-independent feature set.
 
     Contigs that the input BED knows about but the map doesn't list
     (because they were dropped by the length filter or had no leaf
@@ -934,25 +937,50 @@ def rewrite_bed(
 
     needed = {row.original_name for row in map_rows}
     if str(input_path) != "-" and input_path.suffix != ".gz":
-        _rewrite_bed_seek(input_path, output_path, map_rows, needed, gzip_out=gzip_out)
+        _rewrite_bed_seek(
+            input_path, output_path, map_rows, needed, gzip_out=gzip_out, flip_labels=flip_labels
+        )
     else:
-        _rewrite_bed_spill(input_path, output_path, map_rows, needed, gzip_out=gzip_out)
+        _rewrite_bed_spill(
+            input_path, output_path, map_rows, needed, gzip_out=gzip_out, flip_labels=flip_labels
+        )
+
+
+def _flip_label(rest: str, flip_labels: Mapping[str, str] | None) -> str:
+    """Apply a feature set's flip map to a record's label (the first ``rest`` column).
+
+    The coordinate mirror is not enough for a strand-dependent label: a k-mer that
+    reads ``plus`` on the original contig reads ``minus`` on its reverse complement.
+    Identity for every other feature set (``flip_labels`` empty or ``None``).
+    """
+    if not flip_labels:
+        return rest
+    label, sep, tail = rest.partition("\t")
+    return flip_labels.get(label, label) + sep + tail
 
 
 def _emit_row_records(
     out: IO[str],
     row: MapRow,
     records: Iterable[tuple[int, int, str]],
+    flip_labels: Mapping[str, str] | None = None,
 ) -> None:
     """Write ``records`` under ``row.new_name``, mirroring when flipped.
 
     A flipped contig is buffered (to reverse it); an un-flipped one is
-    written straight through as it streams.
+    written straight through as it streams. ``flip_labels`` relabels the
+    records of a flipped contig (see :func:`_flip_label`).
     """
     if row.flipped:
         recs = list(records)
         for start, stop, rest in reversed(recs):
-            _write_bed_row(out, row.new_name, row.length - stop, row.length - start, rest)
+            _write_bed_row(
+                out,
+                row.new_name,
+                row.length - stop,
+                row.length - start,
+                _flip_label(rest, flip_labels),
+            )
     else:
         for start, end, rest in records:
             _write_bed_row(out, row.new_name, start, end, rest)
@@ -965,6 +993,7 @@ def _rewrite_bed_spill(
     needed: set[str],
     *,
     gzip_out: bool,
+    flip_labels: Mapping[str, str] | None = None,
 ) -> None:
     """Gzip / stdin path: spill placed contigs to temp files, read in map order."""
     with (
@@ -973,7 +1002,7 @@ def _rewrite_bed_spill(
     ):
         for row in map_rows:
             if spilled.has(row.original_name):
-                _emit_row_records(out, row, spilled.read(row.original_name))
+                _emit_row_records(out, row, spilled.read(row.original_name), flip_labels)
 
 
 def _rewrite_bed_seek(
@@ -983,6 +1012,7 @@ def _rewrite_bed_seek(
     needed: set[str],
     *,
     gzip_out: bool,
+    flip_labels: Mapping[str, str] | None = None,
 ) -> None:
     """Plain-file path: index placed contigs by byte range, seek + read in map order.
 
@@ -1017,7 +1047,9 @@ def _rewrite_bed_seek(
         for row in map_rows:
             contig_ranges = ranges.get(row.original_name)
             if contig_ranges is not None:
-                _emit_row_records(out, row, _iter_byte_ranges(f, input_path, contig_ranges))
+                _emit_row_records(
+                    out, row, _iter_byte_ranges(f, input_path, contig_ranges), flip_labels
+                )
 
 
 def _iter_byte_ranges(
@@ -1106,6 +1138,7 @@ def remap_bed_with_map(
     *,
     gzip_out: bool | None = None,
     strict: bool = False,
+    flip_labels: Mapping[str, str] | None = None,
 ) -> RemapStats:
     """Apply an existing ``scaffold_map.tsv`` to a separately-annotated BED.
 
@@ -1226,7 +1259,7 @@ def remap_bed_with_map(
         stats.dropped_contigs,
         stats.map_contigs_absent_from_bed,
     )
-    rewrite_bed(input_bed, output_bed, map_rows=rows, gzip_out=gzip_out)
+    rewrite_bed(input_bed, output_bed, map_rows=rows, gzip_out=gzip_out, flip_labels=flip_labels)
     return stats
 
 
@@ -1874,6 +1907,7 @@ def rewrite_bed_combined(
     *,
     objects: list[ScaffoldObject],
     gzip_out: bool | None = None,
+    flip_labels: Mapping[str, str] | None = None,
 ) -> None:
     """Rewrite a per-feature-set BED into combined-chromosome coordinates.
 
@@ -1928,7 +1962,9 @@ def rewrite_bed_combined(
                     recs = list(spilled.read(comp.row.original_name))
                     ext = comp.bed_extent
                     for start, stop, rest in reversed(recs):
-                        coalescer.push(off + ext - stop, off + ext - start, rest)
+                        coalescer.push(
+                            off + ext - stop, off + ext - start, _flip_label(rest, flip_labels)
+                        )
                 else:
                     for start, end, rest in spilled.read(comp.row.original_name):
                         coalescer.push(off + start, off + end, rest)

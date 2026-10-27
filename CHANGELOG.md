@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Strand-dependent feature sets survive scaffolding.** A manifest may declare
+  `feature_set_options.<set>.flip_labels` -- how each label changes when a contig
+  is reverse-complemented -- e.g. `plus: minus, minus: plus` for the `strand` set
+  (`hks add-feature-set --forward-only` over CHM13 and its reverse complement).
+  `scaffold` and `remap-bed` apply it to flipped contigs (both the per-contig and
+  the combined BED rewrite); before this a flipped contig's strand labels were
+  copied verbatim, so it read as inverted. `remap-bed` gains `--db` /
+  `--feature-set` / `--db-root` to look the map up. The map must be a swap
+  (flipping twice is the identity); every existing set declares none, so nothing
+  else changes.
+
+### Fixed
+
+- **`annotate` no longer requires a `features.tsv` column for HKS feature sets.**
+  The HKS backend reads label names from the index; only KMC uses
+  `features.tsv`. An HKS manifest that still lists the file (older databases do)
+  made annotating a set layered on with `hks add-feature-set` (which has no
+  column) fail with "declared in manifest but missing from features.tsv".
+
 ### Changed
 
 - **Every `.gz` KaryoScope writes is now bgzip.** `bin -o x.bed.gz`,
