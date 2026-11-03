@@ -184,7 +184,12 @@ Sizes for all six sets of a 2,356-read HG002 sample (64 Mbp) against `HKS_human_
 | 1 merged `.kst`, `--kst-effort low` (2.0 s to write) | 3.35 MB | 21× |
 | 1 merged `.kst`, `--kst-effort medium` (17.7 s to write) | 1.61 MB | 44× |
 
-Peak disk is not lower than a BED run's yet: the backend still writes each set's presmoothed BED before karyozip compresses it (a merged track needs every set's at once; per-set tracks are compressed as each set finishes). `annotate`'s disk check accounts for this.
+**Peak disk** depends on the installed `hks`:
+
+- With an `hks` whose `lookup` has `--format kst` (and karyozip ≥ 0.3.0), on an HKS database, `hks` writes each set's `.kst` itself and **no presmoothed BED is written at all**. Per-set tracks land under their final names, indexed by `hks`; for a merged track `hks` writes per-set `.kst` into `<input>.<dbid>.kst-sets.tmp/`, which `karyozip compress -d` merges (to the same bytes as from BEDs) before the directory is removed. The peak is then a few percent of a BED run's.
+- Otherwise (an older `hks`, or the KMC backend) the backend writes each set's presmoothed BED and karyozip compresses it, so the peak is that of the BEDs (a merged track needs every set's at once; per-set tracks are compressed as each set finishes).
+
+`annotate` picks the first when it can, falls back to the second with a log line, and sizes its disk check for whichever it runs. The manifest's `kst.written_by` says which one wrote the track.
 
 **Reading a `.kst` back.** Every KaryoScope command that reads annotate output (`bin`, `remap-bed`, `scaffold`, `centromeres`, `karyotype`) accepts the `.kst` in place of the BEDs: the pipeline commands find `<input>.<dbid>.kst` next to the input as they would the BEDs, and `bin`/`remap-bed` take it with `--kst-track smoothed|presmoothed` and `--feature-set`/`--db`. Outside KaryoScope, use `karyozip` directly:
 
@@ -243,7 +248,8 @@ Measured on HG002 v1.1 against `HKS_human_CHM13_v2`: 21.7 GB of presmoothed BED,
 
 - `--feature-set` to annotate a subset at a time
 - `--no-keep-presmoothed` (drops the larger of the two variants, ~0.6 of the 0.8 GB) or `--no-smooth`
-- `--format kst` with a `--feature-set` subset or a database without `features.tsv`: each set's BED is compressed as soon as it is written, so the peak is one set's presmoothed BED (~0.6 GB per Gbp) rather than all of them
+- `--format kst` on an HKS database with an `hks` that has `lookup --format kst`: no presmoothed BED is written at all (see [Compact output](#compact-output---format-kst))
+- `--format kst` otherwise, with a `--feature-set` subset or a database without `features.tsv`: each set's BED is compressed as soon as it is written, so the peak is one set's presmoothed BED (~0.6 GB per Gbp) rather than all of them
 - splitting a diploid assembly into per-haplotype runs
 
 `annotate` estimates this footprint before starting and refuses if `--outdir` can't hold it, so a full disk is caught in a second rather than after the k-mer query. The estimate uses an exact base count from a sibling `.fai` when one exists, and otherwise scales the input file size. Pass `--no-resource-check` if the estimate is wrong for your input.

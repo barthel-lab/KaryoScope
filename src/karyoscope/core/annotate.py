@@ -52,6 +52,7 @@ from karyoscope.core.io.hierarchy import (
 )
 from karyoscope.core.io.hks import (
     estimate_hks_memory_bytes,
+    hks_supports_kst,
     materialised_queries,
     run_hks_lookup_batch,
     run_hks_smooth,
@@ -312,6 +313,11 @@ PRESMOOTHED_BYTES_PER_BASE = 0.60
 #: Bytes of smoothed BED per input base, per feature set.
 SMOOTHED_BYTES_PER_BASE = 0.20
 
+#: Bytes of per-set ``.kst`` (``-e low``) per input base, per feature set.
+#: Measured 5.95 MB for six per-set tracks of a 64 Mbp read sample, 0.015;
+#: rounded up, as a track's size depends on how fragmented its labels are.
+KST_BYTES_PER_BASE = 0.03
+
 #: Transient intermediate allowance, as a multiple of one feature set's
 #: presmoothed estimate. Covers the KMC combined BED, and the HKS lookup
 #: output in the one case where it is still a temp file. Both are "one row
@@ -420,6 +426,7 @@ def estimate_output_bytes(
     output_format: str = "bed",
     kst_merged: bool = False,
     smoothed_bed: bool = False,
+    kst_via_hks: bool = False,
 ) -> int:
     """Estimate peak bytes written to the output directory by one annotate run.
 
@@ -441,7 +448,19 @@ def estimate_output_bytes(
     set's until the end. KMC compresses its combined BED directly when merged
     and splits it into every set's BED otherwise. ``smoothed_bed`` adds the
     ``--smoothed-bed`` output.
+
+    ``kst_via_hks``: ``hks lookup --format kst`` writes the tracks directly,
+    so no presmoothed BED exists at any point. The peak is then the ``.kst``
+    themselves (:data:`KST_BYTES_PER_BASE` per set; twice that for a merged
+    track, whose per-set inputs exist until the merge) plus any
+    ``--smoothed-bed`` output.
     """
+    if output_format == "kst" and kst_via_hks:
+        n_kst = 2 * n_feature_sets if kst_merged else n_feature_sets
+        direct = input_bases * KST_BYTES_PER_BASE * n_kst
+        if smoothed_bed:
+            direct += input_bases * SMOOTHED_BYTES_PER_BASE * n_feature_sets
+        return int(direct)
     if output_format == "kst":
         n_pre = n_feature_sets if (kst_merged or index_type != "hks") else 1
         if index_type != "hks" and kst_merged:
@@ -571,6 +590,13 @@ class _KstPlan:
     exactly those columns. ``columns`` is then that file's column order, the
     order ``compress -d`` takes one BED per set in. Otherwise each set gets
     its own ``<prefix>.<set>.kst``.
+
+    ``via_hks`` (step 2 of the plan): the HKS backend's ``hks lookup --format
+    kst`` writes each set's track itself, so no presmoothed BED is ever
+    written. Per-set tracks land at their final name (indexed by hks); a
+    merged track is then ``karyozip compress -d`` over those per-set ``.kst``
+    files, which karyozip >= 0.3.0 merges to the same bytes as from BEDs.
+    Without it, the backend writes BEDs and karyozip compresses them.
     """
 
     effort: str
@@ -580,6 +606,7 @@ class _KstPlan:
     hierarchy: Path
     smoothed_bed: bool
     bgzip: bool
+    via_hks: bool = False
 
 
 def _features_columns(path: Path) -> list[str]:
@@ -587,6 +614,35 @@ def _features_columns(path: Path) -> list[str]:
     with path.open() as h:
         header = h.readline().rstrip("\n").split("\t")
     return header[1:]
+
+
+#: The oldest karyozip that merges per-set ``.kst`` inputs with ``compress -d``,
+#: which the ``hks lookup --format kst`` path relies on.
+KARYOZIP_MIN_FOR_HKS_KST = "0.3.0"
+
+
+def _hks_writes_kst() -> bool:
+    """Whether this run can have ``hks lookup`` write ``.kst`` directly.
+
+    Needs an hks with ``lookup --format kst`` and a karyozip that is known to
+    be at least :data:`KARYOZIP_MIN_FOR_HKS_KST` (an unreadable version does
+    not count). Either missing falls back to BED-then-compress, with a note.
+    """
+    from karyoscope.versions import at_least
+
+    if not hks_supports_kst():
+        logger.info("hks lookup has no --format kst; writing BEDs and compressing them")
+        return False
+    have = kmz.parse_karyozip_version(kmz.karyozip_version())
+    if have is None or not at_least(have, KARYOZIP_MIN_FOR_HKS_KST):
+        logger.info(
+            "hks lookup can write .kst, but karyozip %s is older than %s (or unreadable); "
+            "writing BEDs and compressing them",
+            have,
+            KARYOZIP_MIN_FOR_HKS_KST,
+        )
+        return False
+    return True
 
 
 def _plan_kst(
@@ -623,6 +679,7 @@ def _plan_kst(
         hierarchy=db_dir / manifest.hierarchy,
         smoothed_bed=smoothed_bed,
         bgzip=bgzip,
+        via_hks=manifest.index.type == "hks" and _hks_writes_kst(),
     )
 
 
@@ -668,6 +725,24 @@ def kst_path(output_dir: Path, prefix: str, fs: str | None = None) -> Path:
 def _kst_tmp_bed(output_dir: Path, prefix: str, fs: str) -> Path:
     """Where a ``--format kst`` run's backend writes a set's presmoothed BED."""
     return output_dir / f"{prefix}.{fs}.presmoothed.kst-input.bed"
+
+
+def _kst_sets_dir(output_dir: Path, prefix: str) -> Path:
+    """Temp dir for the per-set ``.kst`` hks writes before they are merged."""
+    return output_dir / f"{prefix}.kst-sets.tmp"
+
+
+def _kst_backend_output(plan: _KstPlan, output_dir: Path, prefix: str, fs: str) -> Path:
+    """Where the backend writes set ``fs`` of a ``--format kst`` run.
+
+    A temp BED, unless hks writes ``.kst`` itself: then the final per-set
+    track, or a per-set ``.kst`` in :func:`_kst_sets_dir` awaiting the merge.
+    """
+    if not plan.via_hks:
+        return _kst_tmp_bed(output_dir, prefix, fs)
+    if plan.merged:
+        return _kst_sets_dir(output_dir, prefix) / f"{fs}.kst"
+    return kst_path(output_dir, prefix, fs)
 
 
 def _compress_kst(
@@ -749,7 +824,10 @@ def _finish_kst(
                 merged=False,
             )
     finally:
-        _unlink_quietly(pre_beds.values())
+        done = set(kst_paths.values())
+        _unlink_quietly(p for p in pre_beds.values() if p not in done)
+        with contextlib.suppress(OSError):
+            _kst_sets_dir(output_dir, prefix).rmdir()
 
     smoothed: dict[str, Path] = {}
     if plan.smoothed_bed:
@@ -858,6 +936,7 @@ def _write_annotate_manifest(
             "karyozip_version": kmz.karyozip_version(),
             "effort": plan.effort,
             "merged": plan.merged,
+            "written_by": "hks lookup --format kst" if plan.via_hks else "karyozip compress",
             "columns": list(plan.columns),
             "read_with": (
                 "karyozip decompress -i <kst> -d features.tsv --hier hierarchy.tsv --set <set> "
@@ -1648,6 +1727,17 @@ def _run_hks_feature_sets(
                 threads=threads,
                 report_query_names=report_names,
                 capture=True,
+                **(
+                    {
+                        "output_format": "kst",
+                        "kst_effort": kst.effort,
+                        # A per-set track is final as written; merge inputs
+                        # are temporary and need no index.
+                        "kst_index": not kst.merged,
+                    }
+                    if kst is not None and kst.via_hks
+                    else {}
+                ),
             )
         dt_lookup = time.perf_counter() - t_lookup
 
@@ -1672,7 +1762,12 @@ def _run_hks_feature_sets(
             dt_lookup,
         )
 
-        if kst is not None and not kst.merged:
+        if kst is not None and kst.via_hks and not kst.merged:
+            # hks wrote (and indexed) the final per-set track itself.
+            assert kst_by_input is not None
+            for p in input_paths:
+                kst_by_input[p][fs] = lookup_by_input[p]
+        elif kst is not None and not kst.merged:
             assert kst_by_input is not None
             try:
                 for p in input_paths:
@@ -1920,6 +2015,7 @@ def annotate(
         output_format=output_format,
         kst_merged=kst_plan is not None and kst_plan.merged,
         smoothed_bed=smoothed_bed,
+        kst_via_hks=kst_plan is not None and kst_plan.via_hks,
     )
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp of input",
@@ -2034,7 +2130,9 @@ def annotate(
     # the smoothed track is derived on read (or by --smoothed-bed below).
     kst_paths: dict[str, Path] = {}
     if kst_plan is not None:
-        presmoothed_paths = {fs: _kst_tmp_bed(output_dir, prefix, fs) for fs in requested}
+        presmoothed_paths = {
+            fs: _kst_backend_output(kst_plan, output_dir, prefix, fs) for fs in requested
+        }
         smoothed_paths = {}
 
     try:
@@ -2083,6 +2181,7 @@ def annotate(
     except BaseException:
         if kst_plan is not None:
             _unlink_quietly(presmoothed_paths.values())
+            shutil.rmtree(_kst_sets_dir(output_dir, prefix), ignore_errors=True)
         raise
 
     if kst_plan is not None:
@@ -2580,6 +2679,7 @@ def annotate_batch(
         output_format=output_format,
         kst_merged=kst_plan is not None and kst_plan.merged,
         smoothed_bed=smoothed_bed,
+        kst_via_hks=kst_plan is not None and kst_plan.via_hks,
     )
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp "
@@ -2647,7 +2747,7 @@ def annotate_batch(
     kst_by_input: dict[Path, dict[str, Path]] = {p: {} for p in input_paths}
     if kst_plan is not None:
         presmoothed_by_input = {
-            p: {fs: _kst_tmp_bed(output_dir, prefixes[p], fs) for fs in requested}
+            p: {fs: _kst_backend_output(kst_plan, output_dir, prefixes[p], fs) for fs in requested}
             for p in input_paths
         }
         smoothed_by_input = {p: {} for p in input_paths}
@@ -2688,8 +2788,9 @@ def annotate_batch(
             progress.stage("karyozip", time.perf_counter() - t_kst)
     except BaseException:
         if kst_plan is not None:
-            for by_fs in presmoothed_by_input.values():
+            for p, by_fs in presmoothed_by_input.items():
                 _unlink_quietly(by_fs.values())
+                shutil.rmtree(_kst_sets_dir(output_dir, prefixes[p]), ignore_errors=True)
         raise
 
     results: dict[Path, AnnotateResult] = {}

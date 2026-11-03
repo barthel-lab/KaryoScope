@@ -32,8 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   70.2 MB; the merged `.kst` is 3.35 MB (`low`) or 1.61 MB (`medium`).
   `<input>.<db>.annotate_manifest.json` records the karyozip version and each
   output's SHA-256. Both backends are supported (KMC's combined featureID BED
-  is compressed directly). The peak disk footprint is unchanged for now: the
-  backends still write the presmoothed BEDs before karyozip compresses them.
+  is compressed directly). With an `hks` whose `lookup` has `--format kst`
+  (detected from `hks lookup --help`) and karyozip >= 0.3.0, the HKS backend
+  has hks write each set's `.kst` directly (`--format kst --kst-effort E`,
+  `--kst-index` for per-set tracks) and merges per-set `.kst` with
+  `karyozip compress -d`, so no presmoothed BED is written at all and the peak
+  disk footprint drops with the final one. Otherwise (older hks, KMC) the
+  backends write the presmoothed BEDs first and karyozip compresses them; the
+  manifest's `kst.written_by` says which. The minimum karyozip is 0.3.0.
 - **Every reader of annotate output accepts `.kst`.** `bin` and `remap-bed`
   take a `.kst` input (`--kst-track smoothed|presmoothed`, and `--feature-set`
   / `--db` to name the set of a merged track and the hierarchy to smooth

@@ -108,9 +108,10 @@ DEPENDENCIES: dict[str, Dependency] = {
             '    cargo install --path karyozip/rust --root "$CONDA_PREFIX"\n'
             "  or re-run with --format bed (the default)."
         ),
-        # 0.2.0 is the first release with everything annotate drives: merged
-        # tracks (compress -d), --hier, decompress/query --smooth and index.
-        min_version="0.2.0",
+        # 0.3.0: merged tracks (compress -d) from per-set .kst inputs, which
+        # annotate needs when hks writes the per-set tracks itself, on top of
+        # what 0.2.0 already had (-d from BEDs, --hier, --smooth, index).
+        min_version="0.3.0",
     ),
     "tabix": Dependency(
         name="tabix",

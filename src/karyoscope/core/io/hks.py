@@ -164,6 +164,40 @@ def get_hks_binary() -> str:
     )
 
 
+_KST_SUPPORT: dict[str, bool] = {}
+
+
+def hks_supports_kst(binary: str | None = None) -> bool:
+    """True when ``hks lookup`` can write ``.kst`` itself (``--format kst``).
+
+    Read from ``hks lookup --help`` (which lists ``--format`` with a ``kst``
+    value only on builds that have it) and cached per binary path. Any failure
+    to ask means no: the caller then falls back to writing BEDs and
+    compressing them with karyozip, which every hks supports.
+    """
+    try:
+        exe = binary or get_hks_binary()
+    except KaryoscopeError:
+        return False
+    if exe not in _KST_SUPPORT:
+        try:
+            proc = subprocess.run(
+                [exe, "lookup", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+                env={**os.environ, "RUST_LOG": "error"},
+            )
+            text = proc.stdout + proc.stderr
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.debug("could not ask %s about --format kst: %s", exe, exc)
+            text = ""
+        _KST_SUPPORT[exe] = "--format" in text and "kst" in text and "--kst-index" in text
+        logger.debug("hks %s lookup --format kst: %s", exe, _KST_SUPPORT[exe])
+    return _KST_SUPPORT[exe]
+
+
 def estimate_hks_memory_bytes(
     *, db_dir: Path, basename: str, feature_sets: list[str]
 ) -> int | None:
@@ -385,8 +419,16 @@ def run_hks_lookup_batch(
     reference: Path | None = None,
     query_names_sidecar: dict[Path, Path] | None = None,
     capture: bool = False,
+    output_format: str = "bed",
+    kst_effort: str = "low",
+    kst_index: bool = False,
 ) -> None:
     """Invoke ``hks lookup`` ONCE for a feature set, querying many inputs.
+
+    ``output_format="kst"`` (an hks for which :func:`hks_supports_kst` holds)
+    makes each output a ``.kst`` with the same rows as the BED, compressed as
+    it is written at karyozip effort ``kst_effort``; ``kst_index`` also writes
+    each ``<output>.kzi``. No BED is written at all.
 
     ``io_pairs`` is a list of ``(input_path, output_tsv_path)``. The (large) base
     index and feature-set file are loaded a single time and every input is queried
@@ -481,6 +523,12 @@ def run_hks_lookup_batch(
             "-t",
             str(n_threads),
         ]
+        if output_format == "kst":
+            cmd += ["--format", "kst", "--kst-effort", kst_effort]
+            if kst_index:
+                cmd.append("--kst-index")
+        elif output_format != "bed":
+            raise KaryoscopeError(f"unknown hks lookup output format {output_format!r}")
         for query_path, (_input_path, output_path) in zip(query_paths, io_pairs, strict=True):
             cmd += ["-q", str(query_path), "-o", str(output_path)]
 

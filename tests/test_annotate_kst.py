@@ -345,16 +345,34 @@ def stub_hks(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
     def fake_lookup(*, feature_set_file, io_pairs, report_query_names, **kw):
         fs = feature_set_file.name.split(".")[1]
-        calls.append({"fs": fs, "names": report_query_names, "n": len(io_pairs)})
+        fmt = kw.get("output_format", "bed")
+        calls.append({"fs": fs, "names": report_query_names, "n": len(io_pairs), "format": fmt})
         for i, (query, out) in enumerate(io_pairs):
             name = query.stem if report_query_names else str(i)
-            out.write_text("".join(f"{name}\t{s}\t{e}\t{lab}\n" for s, e, lab in _LOOKUP[fs]))
+            rows = "".join(f"{name}\t{s}\t{e}\t{lab}\n" for s, e, lab in _LOOKUP[fs])
+            if fmt == "bed":
+                out.write_text(rows)
+                continue
+            # Stand-in for `hks lookup --format kst`: the same rows, as a .kst,
+            # without a BED ever landing in the output directory.
+            assert out.suffix == ".kst"
+            from karyoscope.core.io import karyozip as kmz
+
+            out.parent.mkdir(parents=True, exist_ok=True)
+            src = query.parent / f".{out.name}.rows.bed"
+            src.write_text(rows)
+            kmz.compress(inputs=[src], output=out, effort=kw["kst_effort"])
+            src.unlink()
+            if kw.get("kst_index"):
+                kmz.index(out)
 
     def no_smooth(**kw):
         raise AssertionError("--format kst must not run hks smooth")
 
     monkeypatch.setattr(ann, "run_hks_lookup_batch", fake_lookup)
     monkeypatch.setattr(ann, "run_hks_smooth", no_smooth)
+    # Step 1 (BED, then karyozip) unless a test opts into hks writing .kst.
+    monkeypatch.setattr(ann, "_hks_writes_kst", lambda: False)
     return calls
 
 
@@ -622,3 +640,69 @@ def test_scaffold_run_on_kst_matches_bed(populated_db_root: Path, tmp_path: Path
         )
     assert results["kst"] == results["bed"]
     assert set(results["kst"][1]) == {"chromosome", "region"}
+
+
+# --- hks lookup --format kst (step 2) -------------------------------------
+
+
+@pytest.mark.integration
+@requires_karyozip
+@pytest.mark.parametrize("subset", [None, ["region"]], ids=["merged", "per-set"])
+def test_hks_writing_kst_matches_bed_then_compress(
+    hks_db_root: Path,
+    query_fasta: Path,
+    tmp_path: Path,
+    stub_hks: list,
+    monkeypatch: pytest.MonkeyPatch,
+    subset: list[str] | None,
+) -> None:
+    """With an hks that writes .kst, no BED is written and the bytes are unchanged."""
+    outs = {}
+    for via_hks in (False, True):
+        monkeypatch.setattr(ann, "_hks_writes_kst", lambda v=via_hks: v)
+        out = tmp_path / ("hks" if via_hks else "bed")
+        result = annotate(
+            input_path=query_fasta,
+            output_dir=out,
+            db_root=hks_db_root,
+            feature_sets=subset,
+            threads=1,
+            output_format="kst",
+            smoothed_bed=True,
+            bgzip=False,
+        )
+        outs[via_hks] = (out, result)
+    assert {c["format"] for c in stub_hks[: len(stub_hks) // 2]} == {"bed"}
+    assert {c["format"] for c in stub_hks[len(stub_hks) // 2 :]} == {"kst"}
+    (bed_dir, _), (hks_dir, hks_res) = outs[False], outs[True]
+    assert hks_res.kst_merged is (subset is None)
+    names = sorted(p.name for p in hks_dir.iterdir())
+    assert names == sorted(p.name for p in bed_dir.iterdir())  # no temp left behind
+    for name in names:
+        if name.endswith(".json"):
+            continue
+        assert (hks_dir / name).read_bytes() == (bed_dir / name).read_bytes(), name
+    doc = json.loads(hks_res.manifest_path.read_text())
+    assert doc["kst"]["written_by"] == "hks lookup --format kst"
+
+
+def test_direct_kst_disk_estimate_has_no_presmoothed_bed() -> None:
+    bases = 1_000_000_000
+    est = ann.estimate_output_bytes
+    common = {"input_bases": bases, "n_feature_sets": 6, "keep_presmoothed": True, "smooth": True}
+    direct = est(**common, index_type="hks", output_format="kst", kst_merged=True, kst_via_hks=True)
+    assert direct == int(bases * ann.KST_BYTES_PER_BASE * 12)
+    assert direct < est(**common, index_type="hks", output_format="kst", kst_merged=True) / 5
+
+
+def test_hks_writes_kst_needs_hks_support_and_karyozip_0_3(monkeypatch) -> None:
+    monkeypatch.setattr(ann, "hks_supports_kst", lambda: False)
+    assert not ann._hks_writes_kst()
+    monkeypatch.setattr(ann, "hks_supports_kst", lambda: True)
+    for line, want in (
+        ("karyozip 0.3.0, format KST00001", True),
+        ("karyozip 0.2.0, format KST00001", False),
+        (None, False),
+    ):
+        monkeypatch.setattr(ann.kmz, "karyozip_version", lambda line=line: line)
+        assert ann._hks_writes_kst() is want
