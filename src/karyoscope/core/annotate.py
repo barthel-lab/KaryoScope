@@ -42,6 +42,7 @@ from typing import TextIO
 
 from karyoscope import cpus as _cpus
 from karyoscope import diskspace, memory, preflight
+from karyoscope.core.io import karyozip as kmz
 from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.features import NOVEL_NAME, Features, parse_features, render_feature
 from karyoscope.core.io.hierarchy import (
@@ -125,17 +126,33 @@ class AnnotateResult:
         The rank -> record-name sidecar written for ``--query-names-sidecar``
         (``<outdir>/<input>.query_names.txt.gz``), or ``None`` when it was not
         requested.
+    kst_paths
+        ``--format kst`` only: ``{feature_set: path}`` of the ``.kst`` holding
+        each set. With a merged track every set maps to the same
+        ``<prefix>.kst``. ``presmoothed_paths`` is then empty, and
+        ``smoothed_paths`` holds the ``--smoothed-bed`` BEDs, if asked for.
+    manifest_path
+        ``--format kst`` only: the ``<prefix>.annotate_manifest.json`` recording
+        the run's tools and each output's SHA-256.
     """
 
     presmoothed_paths: dict[str, Path] = field(default_factory=dict)
     smoothed_paths: dict[str, Path] = field(default_factory=dict)
     combined_intermediate: Path | None = None
     query_names_sidecar: Path | None = None
+    kst_paths: dict[str, Path] = field(default_factory=dict)
+    manifest_path: Path | None = None
+
+    @property
+    def kst_merged(self) -> bool:
+        """True when every feature set is in one merged ``.kst``."""
+        return len(self.kst_paths) > 1 and len(set(self.kst_paths.values())) == 1
 
     @property
     def all_output_paths(self) -> list[Path]:
-        """All output BED paths in a flat list (for CLI display)."""
-        return list(self.presmoothed_paths.values()) + list(self.smoothed_paths.values())
+        """All output track paths (BEDs, then distinct ``.kst``) in a flat list."""
+        kst = list(dict.fromkeys(self.kst_paths.values()))
+        return list(self.presmoothed_paths.values()) + list(self.smoothed_paths.values()) + kst
 
 
 # --- helpers ----------------------------------------------------------
@@ -400,6 +417,9 @@ def estimate_output_bytes(
     keep_presmoothed: bool,
     smooth: bool,
     index_type: str = "kmc",
+    output_format: str = "bed",
+    kst_merged: bool = False,
+    smoothed_bed: bool = False,
 ) -> int:
     """Estimate peak bytes written to the output directory by one annotate run.
 
@@ -413,7 +433,29 @@ def estimate_output_bytes(
     anything, so charging it for one would refuse runs that fit — about
     5 GB's worth on a diploid human assembly. The default is the
     conservative backend, so a caller that does not know errs high.
+
+    ``output_format="kst"``: the final ``.kst`` is small (a few percent of
+    the BEDs), but the backends still write the presmoothed BEDs first, so
+    they set the peak. HKS writes one set at a time; a per-set run compresses
+    each as it lands (one set's BEDs at a time), a merged one keeps every
+    set's until the end. KMC compresses its combined BED directly when merged
+    and splits it into every set's BED otherwise. ``smoothed_bed`` adds the
+    ``--smoothed-bed`` output.
     """
+    if output_format == "kst":
+        n_pre = n_feature_sets if (kst_merged or index_type != "hks") else 1
+        if index_type != "hks" and kst_merged:
+            n_pre = 0
+        kst_outputs = input_bases * PRESMOOTHED_BYTES_PER_BASE * n_pre
+        if smoothed_bed:
+            kst_outputs += input_bases * SMOOTHED_BYTES_PER_BASE * n_feature_sets
+        kst_transient = (
+            input_bases * PRESMOOTHED_BYTES_PER_BASE * TRANSIENT_INTERMEDIATE_FACTOR
+            if index_type != "hks"
+            else 0.0
+        )
+        return int(kst_outputs + kst_transient)
+
     per_set = 0.0
     if keep_presmoothed:
         per_set += PRESMOOTHED_BYTES_PER_BASE
@@ -475,23 +517,362 @@ def _require_hks_memory(
 
 
 def _annotate_dependencies(
-    *, index_type: str, input_path: Path, bgzip: bool, query_names_sidecar: bool = False
+    *,
+    index_type: str,
+    input_path: Path,
+    bgzip: bool,
+    query_names_sidecar: bool = False,
+    output_format: str = "bed",
+    smoothed_bed: bool = False,
 ) -> list[str]:
     """External tools this particular annotate run will need.
 
     Resolved from the database's backend, the input format, and the output
     flags rather than assumed, so a user is never told to install ``kmc``
-    for an HKS run or ``samtools`` for a FASTA one.
+    for an HKS run or ``samtools`` for a FASTA one -- or ``karyozip`` for a
+    BED run.
     """
     needed = ["hks"] if index_type == "hks" else ["get_featureIDs"]
     if input_path.suffix.lower() in (".bam", ".cram"):
         needed.append("samtools")
+    if output_format == "kst":
+        needed.append("karyozip")
+        # A .kst run writes no BED unless --smoothed-bed asks for one.
+        compresses_beds = bgzip and smoothed_bed
+    else:
+        compresses_beds = bgzip
     # --query-names-sidecar needs no reader of its own -- a FASTA/FASTQ is
     # scanned with awk (core.io.query_names) and an alignment's names come off
     # the samtools decode already required above -- but the sidecar is bgzipped.
-    if bgzip or query_names_sidecar:
+    if compresses_beds or query_names_sidecar:
         needed.append("bgzip")
     return needed
+
+
+# --- .kst output (--format kst) --------------------------------------
+#
+# Step 1 of the .kst plan: the backends still write presmoothed BEDs, and
+# karyozip compresses them. BED stays the default; .kst is for groups running
+# many samples who need to minimise space. On the 2,356-read HG002 test
+# sample the six sets' 12 bgzipped BEDs are 70.2 MB; one merged .kst is
+# 3.35 MB at -e low and 1.61 MB at -e medium.
+
+#: Output formats ``annotate --format`` accepts.
+OUTPUT_FORMATS: tuple[str, ...] = ("bed", "kst")
+
+
+@dataclass(frozen=True)
+class _KstPlan:
+    """How this run writes its ``.kst`` output.
+
+    ``merged`` is one ``<prefix>.kst`` holding every feature set as
+    ``features.tsv`` featureIDs (``karyozip compress -d``), possible only when
+    every set of the database is requested and its ``features.tsv`` has
+    exactly those columns. ``columns`` is then that file's column order, the
+    order ``compress -d`` takes one BED per set in. Otherwise each set gets
+    its own ``<prefix>.<set>.kst``.
+    """
+
+    effort: str
+    merged: bool
+    columns: tuple[str, ...]
+    features: Path | None
+    hierarchy: Path
+    smoothed_bed: bool
+    bgzip: bool
+
+
+def _features_columns(path: Path) -> list[str]:
+    """Feature-set columns of a ``features.tsv``, in file order (header only)."""
+    with path.open() as h:
+        header = h.readline().rstrip("\n").split("\t")
+    return header[1:]
+
+
+def _plan_kst(
+    *,
+    manifest,
+    db_dir: Path,
+    requested: list[str],
+    effort: str,
+    smoothed_bed: bool,
+    bgzip: bool,
+) -> _KstPlan:
+    """Decide between one merged ``.kst`` and one per set (see :class:`_KstPlan`)."""
+    features = db_dir / manifest.features if manifest.features else None
+    columns: list[str] = []
+    if features is not None and features.is_file():
+        columns = _features_columns(features)
+    merged = (
+        bool(columns)
+        and set(requested) == set(manifest.feature_sets)
+        and sorted(columns) == sorted(requested)
+    )
+    if not merged:
+        logger.info(
+            "writing one .kst per feature set (%s)",
+            "a merged track needs every feature set and the database's features.tsv"
+            if features is None or not columns
+            else "a merged track needs every feature set of features.tsv",
+        )
+    return _KstPlan(
+        effort=effort,
+        merged=merged,
+        columns=tuple(columns) if merged else (),
+        features=features if merged else None,
+        hierarchy=db_dir / manifest.hierarchy,
+        smoothed_bed=smoothed_bed,
+        bgzip=bgzip,
+    )
+
+
+def _check_format_args(
+    *,
+    output_format: str,
+    kst_effort: str,
+    smooth: bool,
+    keep_presmoothed: bool,
+    smoothed_bed: bool,
+) -> None:
+    """Refuse flag combinations that mean nothing for the chosen ``--format``."""
+    if output_format not in OUTPUT_FORMATS:
+        raise KaryoscopeError(
+            f"unknown output format {output_format!r}; expected one of {OUTPUT_FORMATS}"
+        )
+    if output_format == "bed":
+        if smoothed_bed:
+            raise KaryoscopeError(
+                "--smoothed-bed only applies with --format kst; --format bed already "
+                "writes the smoothed BED unless --no-smooth is given."
+            )
+        return
+    if kst_effort not in kmz.KST_EFFORTS:
+        raise KaryoscopeError(
+            f"unknown --kst-effort {kst_effort!r}; expected one of {kmz.KST_EFFORTS}"
+        )
+    if not keep_presmoothed:
+        raise KaryoscopeError(
+            "--format kst stores the presmoothed track, and the smoothed track is "
+            "derived from it on read; --no-keep-presmoothed does not apply. Pass "
+            "--smoothed-bed to also write the smoothed BED."
+        )
+    if smoothed_bed and not smooth:
+        raise KaryoscopeError("--smoothed-bed cannot be combined with --no-smooth.")
+
+
+def kst_path(output_dir: Path, prefix: str, fs: str | None = None) -> Path:
+    """``<prefix>.kst`` (merged) or ``<prefix>.<fs>.kst`` (one feature set)."""
+    return output_dir / (f"{prefix}.kst" if fs is None else f"{prefix}.{fs}.kst")
+
+
+def _kst_tmp_bed(output_dir: Path, prefix: str, fs: str) -> Path:
+    """Where a ``--format kst`` run's backend writes a set's presmoothed BED."""
+    return output_dir / f"{prefix}.{fs}.presmoothed.kst-input.bed"
+
+
+def _compress_kst(
+    *,
+    inputs: list[Path],
+    output: Path,
+    plan: _KstPlan,
+    threads: int,
+    merged: bool,
+) -> Path:
+    """Compress ``inputs`` into ``output`` and index it; log what it saved."""
+    t0 = time.perf_counter()
+    in_bytes = sum(p.stat().st_size for p in inputs)
+    kmz.compress(
+        inputs=inputs,
+        output=output,
+        effort=plan.effort,
+        features=plan.features if merged else None,
+        hierarchy=plan.hierarchy if merged else None,
+        threads=threads,
+    )
+    kmz.index(output)
+    logger.info(
+        "karyozip wrote %s (%s from %s of BED, -e %s) in %.1fs",
+        output.name,
+        diskspace.format_bytes(output.stat().st_size),
+        diskspace.format_bytes(in_bytes),
+        plan.effort,
+        time.perf_counter() - t0,
+    )
+    return output
+
+
+def _unlink_quietly(paths) -> None:
+    for p in paths:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("could not remove %s: %s", p, exc)
+
+
+def _finish_kst(
+    *,
+    plan: _KstPlan,
+    output_dir: Path,
+    prefix: str,
+    requested: list[str],
+    pre_beds: dict[str, Path],
+    kst_paths: dict[str, Path],
+    threads: int,
+) -> dict[str, Path]:
+    """Write whatever ``.kst`` is still owed, then the ``--smoothed-bed`` BEDs.
+
+    ``kst_paths`` holds what is already written (per-set tracks compressed
+    as each set finished, or KMC's merged track compressed straight from its
+    combined BED); it is filled in place. ``pre_beds`` are the presmoothed
+    BEDs still on disk, removed here once compressed. Returns the smoothed
+    BED paths (bgzipped unless ``--no-bgzip``).
+    """
+    try:
+        if plan.merged and not kst_paths:
+            merged = _compress_kst(
+                inputs=[pre_beds[fs] for fs in plan.columns],
+                output=kst_path(output_dir, prefix),
+                plan=plan,
+                threads=threads,
+                merged=True,
+            )
+            kst_paths.update({fs: merged for fs in requested})
+        missing = [fs for fs in requested if fs not in kst_paths]
+        for fs in missing:
+            kst_paths[fs] = _compress_kst(
+                inputs=[pre_beds[fs]],
+                output=kst_path(output_dir, prefix, fs),
+                plan=plan,
+                threads=threads,
+                merged=False,
+            )
+    finally:
+        _unlink_quietly(pre_beds.values())
+
+    smoothed: dict[str, Path] = {}
+    if plan.smoothed_bed:
+        t0 = time.perf_counter()
+        for fs in requested:
+            out = output_dir / f"{prefix}.{fs}.smoothed.bed"
+            kmz.decompress_to_file(
+                kst_paths[fs],
+                out,
+                smoothed=True,
+                feature_set=fs,
+                features=plan.features,
+                hierarchy=plan.hierarchy,
+                merged=plan.merged,
+                threads=threads,
+            )
+            smoothed[fs] = bgzip_file(out, threads=threads) if plan.bgzip else out
+        logger.info(
+            "karyozip wrote %d smoothed BED(s) in %.1fs",
+            len(smoothed),
+            time.perf_counter() - t0,
+        )
+    return smoothed
+
+
+def annotate_manifest_path(output_dir: Path, prefix: str) -> Path:
+    """``<outdir>/<prefix>.annotate_manifest.json``: provenance of a ``.kst`` run."""
+    return output_dir / f"{prefix}.annotate_manifest.json"
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _write_annotate_manifest(
+    *,
+    output_dir: Path,
+    prefix: str,
+    input_path: Path,
+    db_id: str,
+    manifest,
+    plan: _KstPlan,
+    requested: list[str],
+    kst_paths: dict[str, Path],
+    smoothed_paths: dict[str, Path],
+    query_k: int,
+) -> Path:
+    """Record what a ``--format kst`` run wrote, and with which tools.
+
+    The ``.kst`` is only readable with a karyozip that understands its
+    format, and a merged one only with this database's ``features.tsv``, so
+    both are recorded next to each output's size and SHA-256. Written to a
+    temp name and renamed, so a reader never sees half a manifest.
+    """
+    import json
+
+    from karyoscope import __version__
+
+    outputs: list[dict[str, object]] = []
+    seen: set[Path] = set()
+    for fs in requested:
+        p = kst_paths[fs]
+        if p in seen:
+            continue
+        seen.add(p)
+        sets = [s for s in requested if kst_paths[s] == p]
+        for path, kind in ((p, "kst"), (Path(str(p) + ".kzi"), "kst_index")):
+            if path.is_file():
+                outputs.append(
+                    {
+                        "path": path.name,
+                        "kind": kind,
+                        "feature_sets": sets,
+                        "bytes": path.stat().st_size,
+                        "sha256": _sha256(path),
+                    }
+                )
+    for fs, path in smoothed_paths.items():
+        outputs.append(
+            {
+                "path": path.name,
+                "kind": "smoothed_bed",
+                "feature_sets": [fs],
+                "bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+        )
+    backend = manifest.index.type
+    doc = {
+        "karyoscope_version": __version__,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "input": str(input_path),
+        "database": {"id": db_id, "version": manifest.version},
+        "backend": backend,
+        "backend_version": preflight.installed_version("hks") if backend == "hks" else None,
+        "k": query_k,
+        "format": "kst",
+        "feature_sets": list(requested),
+        "kst": {
+            "karyozip_version": kmz.karyozip_version(),
+            "effort": plan.effort,
+            "merged": plan.merged,
+            "columns": list(plan.columns),
+            "read_with": (
+                "karyozip decompress -i <kst> -d features.tsv --hier hierarchy.tsv --set <set> "
+                "[--smooth]"
+                if plan.merged
+                else "karyozip decompress -i <kst> [--smooth --hier hierarchy.tsv]"
+            ),
+        },
+        "outputs": outputs,
+    }
+    path = annotate_manifest_path(output_dir, prefix)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(doc, indent=2) + "\n")
+    tmp.replace(path)
+    return path
 
 
 def _iter_bed_records(handle: TextIO) -> Iterator[tuple[str, int, int, int]]:
@@ -1105,6 +1486,8 @@ def _run_hks_backend(
     query_names: bool | None = None,
     query_names_sidecar: bool = False,
     progress: Progress = SILENT,
+    kst: _KstPlan | None = None,
+    kst_by_input: dict[Path, dict[str, Path]] | None = None,
 ) -> None:
     """Run the HKS lookup and optional smoothing for every requested feature set.
 
@@ -1138,6 +1521,12 @@ def _run_hks_backend(
 
     ``k`` is the query k-mer length (``manifest.kmer.size`` unless overridden
     for a variable-k index).
+
+    ``kst`` (``--format kst``): the caller passes ``smooth=False`` and points
+    ``presmoothed_by_input`` at temporary BEDs. For a per-set plan each set's
+    BEDs are compressed into ``kst_by_input[input][set]`` as soon as its
+    lookup finishes, so only one set's BEDs are ever on disk; a merged plan
+    leaves them for the caller to compress together.
     """
     base_path = db_dir / (manifest.index.basename + ".hksb")
 
@@ -1183,6 +1572,8 @@ def _run_hks_backend(
             progress=progress,
             tracker=tracker,
             t_hks_start=t_hks_start,
+            kst=kst,
+            kst_by_input=kst_by_input,
         )
     if sidecars:
         for path in sidecars.values():
@@ -1210,6 +1601,8 @@ def _run_hks_feature_sets(
     progress: Progress,
     tracker,
     t_hks_start: float,
+    kst: _KstPlan | None = None,
+    kst_by_input: dict[Path, dict[str, Path]] | None = None,
 ) -> None:
     """Query every feature set against inputs that are ALREADY seekable.
 
@@ -1278,6 +1671,20 @@ def _run_hks_feature_sets(
             len(input_paths),
             dt_lookup,
         )
+
+        if kst is not None and not kst.merged:
+            assert kst_by_input is not None
+            try:
+                for p in input_paths:
+                    kst_by_input[p][fs] = _compress_kst(
+                        inputs=[lookup_by_input[p]],
+                        output=kst_path(output_dir, prefixes[p], fs),
+                        plan=kst,
+                        threads=threads,
+                        merged=False,
+                    )
+            finally:
+                _unlink_quietly(lookup_by_input.values())
 
         try:
             if smooth:
@@ -1355,6 +1762,9 @@ def annotate(
     query_names: bool | None = None,
     query_names_sidecar: bool = False,
     progress: Progress = SILENT,
+    output_format: str = "bed",
+    kst_effort: str = "low",
+    smoothed_bed: bool = False,
 ) -> AnnotateResult:
     """Run the full annotate pipeline for one input FASTA.
 
@@ -1425,7 +1835,19 @@ def annotate(
         or ``bgzip`` (when requested) isn't found.
     ExternalToolError
         If a subprocess exits non-zero.
+
+    ``output_format="kst"`` writes the presmoothed tracks as ``.kst`` instead
+    of BEDs (see :class:`_KstPlan`): no smoothing pass and no bgzip pass run,
+    ``kst_effort`` is karyozip's ``-e``, and ``smoothed_bed`` additionally
+    writes each set's smoothed BED, derived with ``karyozip --smooth``.
     """
+    _check_format_args(
+        output_format=output_format,
+        kst_effort=kst_effort,
+        smooth=smooth,
+        keep_presmoothed=keep_presmoothed,
+        smoothed_bed=smoothed_bed,
+    )
     if not smooth and not keep_presmoothed:
         raise KaryoscopeError(
             "no output would be produced: cannot combine --no-smooth with "
@@ -1470,8 +1892,22 @@ def annotate(
             input_path=input_path,
             bgzip=bgzip,
             query_names_sidecar=query_names_sidecar,
+            output_format=output_format,
+            smoothed_bed=smoothed_bed,
         ),
         context=f"annotate against {db_id_resolved}",
+    )
+    kst_plan = (
+        _plan_kst(
+            manifest=manifest,
+            db_dir=db_dir,
+            requested=requested,
+            effort=kst_effort,
+            smoothed_bed=smoothed_bed,
+            bgzip=bgzip,
+        )
+        if output_format == "kst"
+        else None
     )
     _cpus.warn_if_oversubscribed(threads, what=f"annotate against {db_id_resolved}")
     input_bases = estimate_input_bases(input_path)
@@ -1481,6 +1917,9 @@ def annotate(
         keep_presmoothed=keep_presmoothed,
         smooth=smooth,
         index_type=manifest.index.type,
+        output_format=output_format,
+        kst_merged=kst_plan is not None and kst_plan.merged,
+        smoothed_bed=smoothed_bed,
     )
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp of input",
@@ -1590,7 +2029,151 @@ def annotate(
     smoothed_paths: dict[str, Path] = (
         {fs: output_dir / f"{prefix}.{fs}.smoothed.bed" for fs in requested} if smooth else {}
     )
+    # --format kst: the backends write the presmoothed BEDs to temporary
+    # names, karyozip compresses them, and no smoothing pass runs at all --
+    # the smoothed track is derived on read (or by --smoothed-bed below).
+    kst_paths: dict[str, Path] = {}
+    if kst_plan is not None:
+        presmoothed_paths = {fs: _kst_tmp_bed(output_dir, prefix, fs) for fs in requested}
+        smoothed_paths = {}
 
+    try:
+        combined_kept = _annotate_backend(
+            manifest=manifest,
+            db_dir=db_dir,
+            input_path=input_path,
+            output_dir=output_dir,
+            prefix=prefix,
+            requested=requested,
+            features=features,
+            indices=indices,
+            smooth=smooth,
+            keep_presmoothed=keep_presmoothed,
+            keep_intermediates=keep_intermediates,
+            presmoothed_paths=presmoothed_paths,
+            smoothed_paths=smoothed_paths,
+            threads=threads,
+            query_k=query_k,
+            reference=reference,
+            query_names=query_names,
+            query_names_sidecar=query_names_sidecar,
+            sidecar_path=sidecar_path,
+            preserve_input_order=preserve_input_order,
+            force=force,
+            progress=progress,
+            kst_plan=kst_plan,
+            kst_paths=kst_paths,
+        )
+        if kst_plan is not None:
+            t_kst = time.perf_counter()
+            smoothed_paths = _finish_kst(
+                plan=kst_plan,
+                output_dir=output_dir,
+                prefix=prefix,
+                requested=requested,
+                pre_beds=presmoothed_paths,
+                kst_paths=kst_paths,
+                threads=threads,
+            )
+            progress.stage("karyozip", time.perf_counter() - t_kst)
+    except BaseException:
+        if kst_plan is not None:
+            _unlink_quietly(presmoothed_paths.values())
+        raise
+
+    if kst_plan is not None:
+        manifest_path = _write_annotate_manifest(
+            output_dir=output_dir,
+            prefix=prefix,
+            input_path=input_path,
+            db_id=db_id_resolved,
+            manifest=manifest,
+            plan=kst_plan,
+            requested=requested,
+            kst_paths=kst_paths,
+            smoothed_paths=smoothed_paths,
+            query_k=query_k,
+        )
+        logger.info(
+            "annotate complete in %.1fs (%d .kst, %d smoothed BED(s))",
+            time.perf_counter() - t_annotate_start,
+            len(set(kst_paths.values())),
+            len(smoothed_paths),
+        )
+        return AnnotateResult(
+            smoothed_paths=smoothed_paths,
+            combined_intermediate=combined_kept,
+            query_names_sidecar=sidecar_path,
+            kst_paths=kst_paths,
+            manifest_path=manifest_path,
+        )
+
+    # bgzip (or not).
+    if bgzip:
+        n_to_bgzip = sum(1 for fs in requested if fs in presmoothed_paths) + sum(
+            1 for fs in requested if fs in smoothed_paths
+        )
+        logger.info("bgzip pass: %d BED(s) (threads=%d each)", n_to_bgzip, threads)
+        t_bgzip_start = time.perf_counter()
+        for fs in requested:
+            if fs in presmoothed_paths:
+                presmoothed_paths[fs] = bgzip_file(presmoothed_paths[fs], threads=threads)
+            if fs in smoothed_paths:
+                smoothed_paths[fs] = bgzip_file(smoothed_paths[fs], threads=threads)
+        logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
+        # Worth its own line: compressing 12 BEDs of a human diploid run
+        # takes minutes, and it happens after the last feature-set line, so
+        # without this the run looks finished-but-hung right at the end.
+        progress.stage(f"bgzip ({n_to_bgzip} file(s))", time.perf_counter() - t_bgzip_start)
+
+    n_outputs = len(presmoothed_paths) + len(smoothed_paths)
+    logger.info(
+        "annotate complete in %.1fs (%d output BED(s))",
+        time.perf_counter() - t_annotate_start,
+        n_outputs,
+    )
+
+    return AnnotateResult(
+        presmoothed_paths=presmoothed_paths,
+        smoothed_paths=smoothed_paths,
+        combined_intermediate=combined_kept,
+        query_names_sidecar=sidecar_path,
+    )
+
+
+def _annotate_backend(
+    *,
+    manifest,
+    db_dir: Path,
+    input_path: Path,
+    output_dir: Path,
+    prefix: str,
+    requested: list[str],
+    features: Features | None,
+    indices: dict[str, HierarchyIndex],
+    smooth: bool,
+    keep_presmoothed: bool,
+    keep_intermediates: bool,
+    presmoothed_paths: dict[str, Path],
+    smoothed_paths: dict[str, Path],
+    threads: int,
+    query_k: int,
+    reference: Path | None,
+    query_names: bool | None,
+    query_names_sidecar: bool,
+    sidecar_path: Path | None,
+    preserve_input_order: bool,
+    force: bool,
+    progress: Progress,
+    kst_plan: _KstPlan | None,
+    kst_paths: dict[str, Path],
+) -> Path | None:
+    """Run one input's backend, leaving its BEDs (or .kst) on disk.
+
+    Split out of :func:`annotate` so a ``--format kst`` run can clean up its
+    temporary BEDs on any failure. Returns the kept combined intermediate
+    (KMC with ``--keep-intermediates``), else ``None``.
+    """
     # --- Backend dispatch -------------------------------------------------
     # The combined-BED intermediate is a KMC-only artifact; the HKS backend
     # writes per-feature-set BEDs directly and has nothing to keep here.
@@ -1606,7 +2189,7 @@ def annotate(
             prefixes={input_path: prefix},
             output_dir=output_dir,
             requested=requested,
-            smooth=smooth,
+            smooth=smooth and kst_plan is None,
             keep_presmoothed=keep_presmoothed,
             presmoothed_by_input={input_path: presmoothed_paths},
             smoothed_by_input={input_path: smoothed_paths},
@@ -1616,6 +2199,8 @@ def annotate(
             query_names=query_names,
             query_names_sidecar=query_names_sidecar,
             progress=progress,
+            kst=kst_plan,
+            kst_by_input={input_path: kst_paths},
         )
     else:  # "kmc" -- the only other supported type (guaranteed by parse_manifest)
         # Run the C++ helper -- unless a complete combined BED from a prior
@@ -1700,7 +2285,23 @@ def annotate(
         # :func:`_smooth_all_feature_sets` for the architectural rationale.
         # When smoothing is off we use the simpler in-process splitter
         # (no need to fork workers for a one-line translation).
-        if smooth:
+        if kst_plan is not None and kst_plan.merged:
+            # The combined featureID BED is exactly what `compress -d` takes:
+            # no per-set BED is ever written.
+            t_kst = time.perf_counter()
+            merged = _compress_kst(
+                inputs=[combined_bed],
+                output=kst_path(output_dir, prefix),
+                plan=kst_plan,
+                threads=threads,
+                merged=True,
+            )
+            kst_paths.update({fs: merged for fs in requested})
+            progress.stage("karyozip", time.perf_counter() - t_kst)
+        elif kst_plan is not None:
+            assert features is not None  # a KMC database always has features.tsv
+            _split_combined_bed(combined_bed, requested, features, presmoothed_paths)
+        elif smooth:
             is_reads = _is_reads_input(input_path)
             logger.info(
                 "smoothing pass: %d feature set(s), threads=%d",
@@ -1761,37 +2362,7 @@ def annotate(
         else:
             combined_kept = combined_bed
 
-    # bgzip (or not).
-    if bgzip:
-        n_to_bgzip = sum(1 for fs in requested if fs in presmoothed_paths) + sum(
-            1 for fs in requested if fs in smoothed_paths
-        )
-        logger.info("bgzip pass: %d BED(s) (threads=%d each)", n_to_bgzip, threads)
-        t_bgzip_start = time.perf_counter()
-        for fs in requested:
-            if fs in presmoothed_paths:
-                presmoothed_paths[fs] = bgzip_file(presmoothed_paths[fs], threads=threads)
-            if fs in smoothed_paths:
-                smoothed_paths[fs] = bgzip_file(smoothed_paths[fs], threads=threads)
-        logger.info("bgzip pass complete in %.1fs", time.perf_counter() - t_bgzip_start)
-        # Worth its own line: compressing 12 BEDs of a human diploid run
-        # takes minutes, and it happens after the last feature-set line, so
-        # without this the run looks finished-but-hung right at the end.
-        progress.stage(f"bgzip ({n_to_bgzip} file(s))", time.perf_counter() - t_bgzip_start)
-
-    n_outputs = len(presmoothed_paths) + len(smoothed_paths)
-    logger.info(
-        "annotate complete in %.1fs (%d output BED(s))",
-        time.perf_counter() - t_annotate_start,
-        n_outputs,
-    )
-
-    return AnnotateResult(
-        presmoothed_paths=presmoothed_paths,
-        smoothed_paths=smoothed_paths,
-        combined_intermediate=combined_kept,
-        query_names_sidecar=sidecar_path,
-    )
+    return combined_kept
 
 
 # --- multi-input batch (HKS backend) ----------------------------------
@@ -1817,6 +2388,9 @@ def annotate_batch(
     query_names: bool | None = None,
     query_names_sidecar: bool = False,
     progress: Progress = SILENT,
+    output_format: str = "bed",
+    kst_effort: str = "low",
+    smoothed_bed: bool = False,
 ) -> dict[Path, AnnotateResult]:
     """Annotate several inputs, loading the index once per feature set (HKS).
 
@@ -1837,6 +2411,13 @@ def annotate_batch(
     if not input_paths:
         return {}
 
+    _check_format_args(
+        output_format=output_format,
+        kst_effort=kst_effort,
+        smooth=smooth,
+        keep_presmoothed=keep_presmoothed,
+        smoothed_bed=smoothed_bed,
+    )
     _reject_query_names_for_reads(input_paths, query_names)
 
     # A single input has nothing to batch — delegate to the exact, battle-tested
@@ -1865,6 +2446,9 @@ def annotate_batch(
                 query_names=query_names,
                 query_names_sidecar=query_names_sidecar,
                 progress=progress,
+                output_format=output_format,
+                kst_effort=kst_effort,
+                smoothed_bed=smoothed_bed,
             )
         }
 
@@ -1902,6 +2486,9 @@ def annotate_batch(
                 query_names=query_names,
                 query_names_sidecar=query_names_sidecar,
                 progress=progress,
+                output_format=output_format,
+                kst_effort=kst_effort,
+                smoothed_bed=smoothed_bed,
             )
             for p in input_paths
         }
@@ -1959,9 +2546,23 @@ def annotate_batch(
                 input_path=p,
                 bgzip=bgzip,
                 query_names_sidecar=query_names_sidecar,
+                output_format=output_format,
+                smoothed_bed=smoothed_bed,
             ),
             context=f"annotate against {db_id_resolved}",
         )
+    kst_plan = (
+        _plan_kst(
+            manifest=manifest,
+            db_dir=db_dir,
+            requested=requested,
+            effort=kst_effort,
+            smoothed_bed=smoothed_bed,
+            bgzip=bgzip,
+        )
+        if output_format == "kst"
+        else None
+    )
     _cpus.warn_if_oversubscribed(threads, what=f"annotate against {db_id_resolved}")
     total_bases = sum(estimate_input_bases(p) for p in input_paths)
     needed_bytes = estimate_output_bytes(
@@ -1969,6 +2570,12 @@ def annotate_batch(
         n_feature_sets=len(requested),
         keep_presmoothed=keep_presmoothed,
         smooth=smooth,
+        # The BED estimate keeps its long-standing conservative default here;
+        # the kst one depends on the backend, which on this path is HKS.
+        index_type="hks" if kst_plan is not None else "kmc",
+        output_format=output_format,
+        kst_merged=kst_plan is not None and kst_plan.merged,
+        smoothed_bed=smoothed_bed,
     )
     logger.info(
         "estimated output footprint: %s for %d feature set(s) over ~%.2f Gbp "
@@ -2033,28 +2640,84 @@ def annotate_batch(
         smoothed_by_input[p] = (
             {fs: output_dir / f"{prefix}.{fs}.smoothed.bed" for fs in requested} if smooth else {}
         )
+    kst_by_input: dict[Path, dict[str, Path]] = {p: {} for p in input_paths}
+    if kst_plan is not None:
+        presmoothed_by_input = {
+            p: {fs: _kst_tmp_bed(output_dir, prefixes[p], fs) for fs in requested}
+            for p in input_paths
+        }
+        smoothed_by_input = {p: {} for p in input_paths}
 
-    _run_hks_backend(
-        manifest=manifest,
-        db_dir=db_dir,
-        input_paths=input_paths,
-        prefixes=prefixes,
-        output_dir=output_dir,
-        requested=requested,
-        smooth=smooth,
-        keep_presmoothed=keep_presmoothed,
-        presmoothed_by_input=presmoothed_by_input,
-        smoothed_by_input=smoothed_by_input,
-        threads=threads,
-        k=query_k,
-        reference=reference,
-        query_names=query_names,
-        query_names_sidecar=query_names_sidecar,
-        progress=progress,
-    )
+    try:
+        _run_hks_backend(
+            manifest=manifest,
+            db_dir=db_dir,
+            input_paths=input_paths,
+            prefixes=prefixes,
+            output_dir=output_dir,
+            requested=requested,
+            smooth=smooth and kst_plan is None,
+            keep_presmoothed=keep_presmoothed,
+            presmoothed_by_input=presmoothed_by_input,
+            smoothed_by_input=smoothed_by_input,
+            threads=threads,
+            k=query_k,
+            reference=reference,
+            query_names=query_names,
+            query_names_sidecar=query_names_sidecar,
+            progress=progress,
+            kst=kst_plan,
+            kst_by_input=kst_by_input,
+        )
+        if kst_plan is not None:
+            t_kst = time.perf_counter()
+            for p in input_paths:
+                smoothed_by_input[p] = _finish_kst(
+                    plan=kst_plan,
+                    output_dir=output_dir,
+                    prefix=prefixes[p],
+                    requested=requested,
+                    pre_beds=presmoothed_by_input[p],
+                    kst_paths=kst_by_input[p],
+                    threads=threads,
+                )
+            progress.stage("karyozip", time.perf_counter() - t_kst)
+    except BaseException:
+        if kst_plan is not None:
+            for by_fs in presmoothed_by_input.values():
+                _unlink_quietly(by_fs.values())
+        raise
+
+    results: dict[Path, AnnotateResult] = {}
+    if kst_plan is not None:
+        for p in input_paths:
+            results[p] = AnnotateResult(
+                smoothed_paths=smoothed_by_input[p],
+                query_names_sidecar=(
+                    query_names_sidecar_path(output_dir, p) if query_names_sidecar else None
+                ),
+                kst_paths=kst_by_input[p],
+                manifest_path=_write_annotate_manifest(
+                    output_dir=output_dir,
+                    prefix=prefixes[p],
+                    input_path=p,
+                    db_id=db_id_resolved,
+                    manifest=manifest,
+                    plan=kst_plan,
+                    requested=requested,
+                    kst_paths=kst_by_input[p],
+                    smoothed_paths=smoothed_by_input[p],
+                    query_k=query_k,
+                ),
+            )
+        logger.info(
+            "annotate batch complete in %.1fs (%d input(s))",
+            time.perf_counter() - t_start,
+            len(input_paths),
+        )
+        return results
 
     # bgzip per input (mutating each input's path dicts in place), then build results.
-    results: dict[Path, AnnotateResult] = {}
     for p in input_paths:
         pre = presmoothed_by_input[p]
         smo = smoothed_by_input[p]
