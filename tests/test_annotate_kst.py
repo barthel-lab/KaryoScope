@@ -575,3 +575,50 @@ def test_scaffold_cascade_finds_and_reads_a_kst(kst_and_beds, populated_db_root:
     assert found == Track(kst, smoothed=True, feature_set="chromosome", db_dir=db_dir)
     assert found.is_file()
     assert _load_label_mass(found) == _load_label_mass(smoothed_beds["chromosome"])
+
+
+@pytest.mark.integration
+@requires_karyozip
+def test_scaffold_run_on_kst_matches_bed(populated_db_root: Path, tmp_path: Path) -> None:
+    """``scaffold --mode bed`` from per-set ``.kst`` writes what it writes from BEDs.
+
+    The binned BEDs are derived (auto) in both runs, so the ``.kst`` run bins
+    its smoothed track through karyozip, tallies label mass from it, and
+    rewrites it into scaffold coordinates.
+    """
+    from karyoscope.core.io import karyozip as kmz
+    from karyoscope.core.scaffold_run import InputSpec, scaffold_run
+
+    mb = 1_000_000
+    tracks = {
+        "chromosome": f"ctgA\t0\t{6 * mb}\tchr1\nctgB\t0\t{6 * mb}\tchr2\n",
+        "region": f"ctgA\t0\t{3 * mb}\trA\nctgA\t{3 * mb}\t{6 * mb}\trB\nctgB\t0\t{6 * mb}\trC\n",
+    }
+    results = {}
+    for fmt in ("bed", "kst"):
+        d = tmp_path / fmt
+        d.mkdir()
+        fasta = d / "samp.fasta"
+        fasta.write_text(">ctgA\nACGT\n>ctgB\nACGT\n")
+        (d / "samp.telo").write_text("")
+        for fs, rows in tracks.items():
+            bed = d / f"samp.{DUMMY_DB_ID}.{fs}.smoothed.bed"
+            bed.write_text(rows)
+            if fmt == "kst":
+                kmz.compress(inputs=[bed], output=d / f"samp.{DUMMY_DB_ID}.{fs}.kst")
+                bed.unlink()
+        out = scaffold_run(
+            inputs=[InputSpec(name=None, path=fasta, telo_path=None)],
+            db_root=populated_db_root,
+            mode="bed",
+            bgzip=False,
+            auto=True,
+            output_dir=d,
+        )
+        r = out["samp.fasta"]
+        results[fmt] = (
+            r.map_path.read_text(),
+            {fs: p.read_text() for fs, p in r.scaffolded_beds.items()},
+        )
+    assert results["kst"] == results["bed"]
+    assert set(results["kst"][1]) == {"chromosome", "region"}
