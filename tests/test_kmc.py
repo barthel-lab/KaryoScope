@@ -7,6 +7,7 @@ explicitly and then runs ``pytest -m integration``.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from karyoscope.core.external import ExternalToolError, ToolNotFoundError
 from karyoscope.core.io.kmc import (
     BINARY_NAME,
     ENV_OVERRIDE,
+    _editable_install_candidate,
     get_featureids_binary,
     run_get_featureids,
 )
@@ -232,8 +234,20 @@ def test_env_override_pointing_at_real_file_is_used(
 def test_lookup_falls_back_when_env_not_set(
     monkeypatch: pytest.MonkeyPatch, featureids_binary: str
 ) -> None:
-    """Without the env var, the lookup still resolves via $PATH or source tree."""
+    """Without the env var, the lookup still resolves via $PATH or source tree.
+
+    The fixture may have found the binary only through ``$ENV_OVERRIDE`` (a
+    checkout that uses a binary built elsewhere); with the override removed
+    there is then nothing left for this lookup to find, which says nothing
+    about the fallback itself, so the test skips rather than fails.
+    """
     monkeypatch.delenv(ENV_OVERRIDE, raising=False)
+    if shutil.which(BINARY_NAME) is None and _editable_install_candidate() is None:
+        pytest.skip(
+            f"{BINARY_NAME} is neither on $PATH nor built in this checkout "
+            f"(only {ENV_OVERRIDE} points at one); build it with "
+            "`make -C native/get_featureIDs` to exercise the fallback"
+        )
     found = get_featureids_binary()
     # Should at least be the same file as our test fixture (resolved differently).
     assert Path(found).is_file()
