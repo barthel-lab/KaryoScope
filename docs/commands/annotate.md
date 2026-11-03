@@ -31,6 +31,9 @@ karyoscope annotate -i INPUT [OPTIONS]
 | `--keep-intermediates` | Keep the combined `.featureIDs.bed` from the C++ step (useful for debugging). |
 | `--force` | Regenerate the combined intermediate even if a complete one already exists. By default a rerun reuses a verified combined BED left by a previous (e.g. OOM-killed) run and skips the `get_featureIDs` step, resuming straight into smoothing. A partial file from a killed run is never reused regardless of this flag. |
 | `--bgzip` / `--no-bgzip` | bgzip the per-feature-set output BEDs. Pass `--no-bgzip` to write plain `.bed` files. Note this shrinks the final output but not peak disk usage: compression runs after every BED has been written in full. [default: `bgzip`] |
+| `--format [bed\|kst]` | Output format. `bed` (the default) is unchanged. `kst` stores the presmoothed tracks as compressed `.kst` files instead, 12–44× smaller than the bgzipped BEDs, and stores no smoothed track: it is derived on read. Requires `karyozip` on PATH. See [Compact output: `--format kst`](#compact-output---format-kst). [default: `bed`] |
+| `--kst-effort [low\|medium]` | karyozip compression effort for `--format kst`. `low` writes as fast as bgzip and keeps single-read queries at ~0.02 s; `medium` is about half the size, ~10× slower to write, and ~1.4 s per single-read query. [default: `low`] |
+| `--smoothed-bed` | With `--format kst`, also write each set's smoothed BED (`<input>.<dbid>.<set>.smoothed.bed[.gz]`, bgzipped unless `--no-bgzip`), derived from the `.kst` with `karyozip decompress --smooth`. |
 | `--no-resource-check` | Skip the up-front disk **and memory** checks. Disk: the output footprint on `--outdir`, see [Disk space](#disk-space). Memory: HKS databases must hold their index resident (~10 GB for a human database), so an under-allocated run is killed by the OS mid-query; the check reads the requirement from the index files themselves. |
 | `--preserve-order` / `--no-preserve-order` | Write output BEDs with sequences in the same order as the input. Pass `--no-preserve-order` for the fastest path when order doesn't matter downstream (typically read data). [default: `preserve-order`] |
 | `-h`, `--help` | Show this message and exit. |
@@ -46,6 +49,9 @@ karyoscope annotate -i asm.fa --feature-set chromosome -o results/
 
 # Read-level input (FASTQ): faster writes when output order doesn't matter
 karyoscope annotate -i reads.fastq.gz -o results/ --no-preserve-order
+
+# Compact output for a cohort: one merged .kst per input, no BEDs
+karyoscope annotate -i sample.fa.gz --db HKS_human_CHM13_v2 -o results/ --format kst
 
 # Read-level input, keeping the rank -> read-name mapping next to the output
 karyoscope annotate -i tumor.cram --reference GRCh38.fasta -o results/ --query-names-sidecar
@@ -145,7 +151,7 @@ gzip -dc reads.fastq.gz | sed -n 'p;n;n;n' | sed 's/^.//;s/^[[:space:]]*//;s/[[:
 
 ## Output
 
-For each feature set, `annotate` writes up to two BEDs:
+With `--format kst`, see [Compact output](#compact-output---format-kst). Otherwise, for each feature set, `annotate` writes up to two BEDs:
 
 - Presmoothed (raw): `<input>.<dbid>.<feature_set>.presmoothed.bed[.gz]`
 - Smoothed (hierarchy-smoothed): `<input>.<dbid>.<feature_set>.smoothed.bed[.gz]`
@@ -157,6 +163,51 @@ Each BED's 4th column is the human-readable feature name. k-mers absent from the
 Smoothing promotes short noisy intervals (especially short `novel` runs flanked by specific features) to the lowest common ancestor of their flankers in the feature set's hierarchy.
 
 For human-scale inputs, use at least 16 threads. Memory to request depends on the backend and input shape. With the **HKS backend**, the peak is set by the index rather than the input — the shared base index plus one feature set's labeling at a time — so it is ~10 GB whether you annotate a single haplotype or a combined diploid assembly such as HG002 v1.1 (request ≥ 16 GB). The **KMC backend**'s largest process peaks at ~36 GB on a haplotype and ~46 GB on a combined diploid, and its smoothing workers can collectively need as much again (request ≥ 96 GB). At `-t 16`, a haplotype takes ~7–9 min (HKS) or ~13–14 min (KMC); HG002 v1.1 combined takes ~14–16 min (HKS) or ~23–27 min (KMC).
+
+## Compact output: `--format kst`
+
+BED stays the default, because most downstream processing wants it. `--format kst` is for groups annotating many samples who need to minimise disk space. It writes the presmoothed tracks as [karyozip](https://github.com/AndreaGuarracino/karyozip) `.kst` files and nothing else:
+
+- **One merged `<input>.<dbid>.kst`** when every feature set of the database is annotated and the database has a `features.tsv` (e.g. `HKS_human_CHM13_v2`, and every KMC database). It holds all sets as `features.tsv` featureIDs.
+- **One `<input>.<dbid>.<set>.kst` per set** otherwise: a `--feature-set` subset, or a database without `features.tsv` (e.g. `HKS_hpv_PaVE`).
+- Each `.kst` is indexed (`<file>.kzi`), so single-read queries stay fast.
+- `<input>.<dbid>.annotate_manifest.json` records the karyozip version, the effort, and each output's size and SHA-256.
+
+No smoothing pass and no bgzip pass run: the smoothed track is not stored, because karyozip rebuilds it on read, row for row as `annotate` would have written it. `--smoothed-bed` writes the smoothed BEDs as well, for tools that want them on disk. `--no-keep-presmoothed` does not apply.
+
+Sizes for all six sets of a 2,356-read HG002 sample (64 Mbp) against `HKS_human_CHM13_v2`:
+
+| Storage | Size | Smaller than BED by |
+|---|---|---|
+| 6 presmoothed + 6 smoothed `.bed.gz` (`--format bed`) | 70.2 MB | 1× |
+| 6 per-set `.kst`, `-e low` | 5.95 MB | 12× |
+| 1 merged `.kst`, `--kst-effort low` (2.0 s to write) | 3.35 MB | 21× |
+| 1 merged `.kst`, `--kst-effort medium` (17.7 s to write) | 1.61 MB | 44× |
+
+Peak disk is not lower than a BED run's yet: the backend still writes each set's presmoothed BED before karyozip compresses it (a merged track needs every set's at once; per-set tracks are compressed as each set finishes). `annotate`'s disk check accounts for this.
+
+**Reading a `.kst` back.** Every KaryoScope command that reads annotate output (`bin`, `remap-bed`, `scaffold`, `centromeres`, `karyotype`) accepts the `.kst` in place of the BEDs: the pipeline commands find `<input>.<dbid>.kst` next to the input as they would the BEDs, and `bin`/`remap-bed` take it with `--kst-track smoothed|presmoothed` and `--feature-set`/`--db`. Outside KaryoScope, use `karyozip` directly:
+
+```bash
+# A per-set track: the presmoothed BED, or the smoothed one
+karyozip decompress -i sample.HKS_hpv_PaVE.type.kst
+karyozip decompress -i sample.HKS_hpv_PaVE.type.kst --smooth --hier $DB/hierarchy.tsv
+
+# A merged track: name the set, and give the database's features.tsv and hierarchy.tsv
+DB=~/.karyoscope/db/HKS_human_CHM13_v2
+karyozip decompress -i sample.HKS_human_CHM13_v2.kst -d $DB/features.tsv --hier $DB/hierarchy.tsv --set chromosome
+karyozip decompress -i sample.HKS_human_CHM13_v2.kst -d $DB/features.tsv --hier $DB/hierarchy.tsv --set chromosome --smooth
+
+# Every set as a BED under a directory
+karyozip decompress -i sample.HKS_human_CHM13_v2.kst -d $DB/features.tsv --hier $DB/hierarchy.tsv --out-dir beds/
+
+# One read, or a range of one; with --smooth the whole read is smoothed first,
+# so a range sees exactly what a full run would
+karyozip query -i sample.HKS_human_CHM13_v2.kst -d $DB/features.tsv --hier $DB/hierarchy.tsv \
+    --set region --smooth -r 'read_123:1000-5000'
+```
+
+Read-level input is identified by rank (see [Query names](#query-names)); karyozip stores consecutive ranks without storing names at all, and names (`--query-names`, assemblies) are stored tokenised. Both come back exactly.
 
 ## Progress output
 
@@ -192,6 +243,7 @@ Measured on HG002 v1.1 against `HKS_human_CHM13_v2`: 21.7 GB of presmoothed BED,
 
 - `--feature-set` to annotate a subset at a time
 - `--no-keep-presmoothed` (drops the larger of the two variants, ~0.6 of the 0.8 GB) or `--no-smooth`
+- `--format kst` with a `--feature-set` subset or a database without `features.tsv`: each set's BED is compressed as soon as it is written, so the peak is one set's presmoothed BED (~0.6 GB per Gbp) rather than all of them
 - splitting a diploid assembly into per-haplotype runs
 
 `annotate` estimates this footprint before starting and refuses if `--outdir` can't hold it, so a full disk is caught in a second rather than after the k-mer query. The estimate uses an exact base count from a sibling `.fai` when one exists, and otherwise scales the input file size. Pass `--no-resource-check` if the estimate is wrong for your input.

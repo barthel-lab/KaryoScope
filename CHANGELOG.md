@@ -19,6 +19,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--feature-set` / `--db-root` to look the map up. The map must be a swap
   (flipping twice is the identity); every existing set declares none, so nothing
   else changes.
+- **`annotate --format kst`: compact `.kst` output, opt-in.** BED stays the
+  default. With `--format kst` the presmoothed tracks are compressed with
+  [karyozip](https://github.com/AndreaGuarracino/karyozip) (which must be on
+  `PATH`): one merged `<input>.<db>.kst` holding every feature set when the
+  whole database is annotated and it has a `features.tsv`, otherwise one
+  `<input>.<db>.<set>.kst` per set; each is indexed (`.kzi`). No smoothing pass
+  and no bgzip pass run: the smoothed track is derived on read with
+  `karyozip decompress --smooth`, and `--smoothed-bed` also writes it as BED.
+  `--kst-effort low|medium` (default `low`) trades write and query time for
+  size. On six sets of a 2,356-read HG002 sample the 12 bgzipped BEDs are
+  70.2 MB; the merged `.kst` is 3.35 MB (`low`) or 1.61 MB (`medium`).
+  `<input>.<db>.annotate_manifest.json` records the karyozip version and each
+  output's SHA-256. Both backends are supported (KMC's combined featureID BED
+  is compressed directly). The peak disk footprint is unchanged for now: the
+  backends still write the presmoothed BEDs before karyozip compresses them.
+- **Every reader of annotate output accepts `.kst`.** `bin` and `remap-bed`
+  take a `.kst` input (`--kst-track smoothed|presmoothed`, and `--feature-set`
+  / `--db` to name the set of a merged track and the hierarchy to smooth
+  with); `scaffold`, `centromeres` and `karyotype` find `<input>.<db>.kst`
+  where they look for the BEDs. They all read through one new reader,
+  `karyoscope.core.io.track.open_track`, which streams `karyozip decompress`
+  through a pipe, so no BED is written.
+- **Smoother parity test.** `tests/test_kst_parity.py` checks on 122 real
+  HG002 reads (six sets, `tests/data/kst_parity`) that `hks smooth`, the Python
+  smoother and `karyozip --smooth` (C and Rust builds) write byte-identical
+  smoothed BEDs, and that a merged `.kst` decodes to every set's BEDs.
 
 ### Fixed
 

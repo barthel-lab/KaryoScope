@@ -101,7 +101,9 @@ Size tracks the genome, not the tool: the 135 Mb *Arabidopsis* database installs
 
 Measured on HG002 v1.1 against `HKS_human_CHM13_v2`. An HKS run needs no headroom beyond its outputs: `hks lookup` writes the presmoothed BED directly, so no intermediate copy of it ever exists. (Under `--no-keep-presmoothed` that file becomes a temp one, and the KMC column applies instead.) The KMC backend still writes a combined intermediate BED alongside.
 
-Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-resource-check` to override the estimate.
+Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally.
+
+**For many samples, `--format kst`** stores the presmoothed tracks as compressed [karyozip](https://github.com/AndreaGuarracino/karyozip) `.kst` files instead of BEDs: one merged `<input>.<db>.kst` holding every feature set, 21× smaller than the bgzipped BEDs at the default `--kst-effort low` and 44× at `medium` (3.35 MB and 1.61 MB against 70.2 MB for six sets of a 2,356-read HG002 sample). The smoothed track is derived on read, and every KaryoScope command that reads annotate output accepts the `.kst`. BED stays the default. It lowers the final footprint, not the peak, which is still the presmoothed BEDs. See [`annotate`: Compact output](docs/commands/annotate.md#compact-output---format-kst) for how to read a `.kst` back with `karyozip decompress` / `query`. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-resource-check` to override the estimate.
 
 ## Installation
 
