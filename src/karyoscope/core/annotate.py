@@ -2065,6 +2065,9 @@ def annotate(
             kst_paths=kst_paths,
         )
         if kst_plan is not None:
+            # KMC's merged track is already written (and reported) by now;
+            # what is left may be nothing at all.
+            owed = kst_plan.smoothed_bed or len(kst_paths) < len(requested)
             t_kst = time.perf_counter()
             smoothed_paths = _finish_kst(
                 plan=kst_plan,
@@ -2075,7 +2078,8 @@ def annotate(
                 kst_paths=kst_paths,
                 threads=threads,
             )
-            progress.stage("karyozip", time.perf_counter() - t_kst)
+            if owed:
+                progress.stage("karyozip", time.perf_counter() - t_kst)
     except BaseException:
         if kst_plan is not None:
             _unlink_quietly(presmoothed_paths.values())
