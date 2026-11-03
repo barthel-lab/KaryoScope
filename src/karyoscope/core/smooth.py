@@ -68,7 +68,6 @@ per-feature-set BED.
 
 from __future__ import annotations
 
-import gzip
 import logging
 import re
 from collections.abc import Iterator
@@ -738,10 +737,13 @@ def chunked_seq_reader(
     sequence, or EOF is reached. This guarantees that ``smooth_intervals``
     never sees a partial sequence.
 
-    Supports plain text and gzip-compressed inputs based on extension.
+    Reads any annotation track :func:`karyoscope.core.io.track.open_track_text`
+    does: a plain or gzipped BED, or a ``.kst`` (``path`` may then be a
+    :class:`~karyoscope.core.io.track.Track` saying which set and variant).
     """
-    opener = gzip.open if path.suffix == ".gz" else open
-    with opener(path, "rt") as fh:  # type: ignore[operator]
+    from karyoscope.core.io.track import open_track_text
+
+    with open_track_text(path) as fh:
         yield from _chunked_seq_reader_from_handle(fh, chunk_size)
 
 

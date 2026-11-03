@@ -43,7 +43,7 @@ Differences from the archive port:
 
 from __future__ import annotations
 
-import gzip
+import contextlib
 import logging
 import multiprocessing as mp
 import time
@@ -56,6 +56,7 @@ from karyoscope import cpus as _cpus
 from karyoscope.core.io.bgzip import open_bgzip_writer
 from karyoscope.core.io.features import NOVEL_NAME
 from karyoscope.core.io.hierarchy import Hierarchy
+from karyoscope.core.io.track import Track, open_track_text
 from karyoscope.core.smooth import chunked_seq_reader
 from karyoscope.exceptions import BinError
 
@@ -318,27 +319,11 @@ def bin_records(
     yield from out
 
 
-def _open_in(path: Path) -> IO[str]:
-    """Open ``path`` for text reading.
-
-    Returns ``sys.stdin`` when ``path`` is ``-``. Callers must not
-    close the returned handle in that case; use :func:`_close_if_owned`
-    or check ``handle is sys.stdin`` before closing.
-    """
-    if str(path) == "-":
-        import sys
-
-        return sys.stdin
-    if path.suffix == ".gz":
-        return gzip.open(path, "rt")
-    return path.open("r")
-
-
 def _open_out(path: Path, *, gzip_out: bool) -> IO[str]:
     """Open ``path`` for text writing, streaming through ``bgzip`` if ``gzip_out``.
 
-    Returns ``sys.stdout`` when ``path`` is ``-``. Same close-semantics
-    caveat as :func:`_open_in`. The compressor gets one thread: ``--threads``
+    Returns ``sys.stdout`` when ``path`` is ``-``; callers must not close it
+    then (see :func:`_close_if_owned`). The compressor gets one thread: ``--threads``
     is the worker pool's budget, and the binned output is a small fraction
     of the input (a human genome at 100 kb bins is tens of thousands of
     lines), so parallel compression would add contention and buffers for no
@@ -360,6 +345,22 @@ def _close_if_owned(handle: IO[str]) -> None:
     if handle is sys.stdin or handle is sys.stdout:
         return
     handle.close()
+
+
+@contextlib.contextmanager
+def _input_lines(path: Path | Track) -> Iterator[IO[str]]:
+    """The input as a text handle: stdin for ``-``, else any annotation track.
+
+    A ``.kst`` (or a :class:`~karyoscope.core.io.track.Track` naming one) is
+    streamed through ``karyozip decompress``; BEDs open as before.
+    """
+    if str(path) == "-":
+        import sys
+
+        yield sys.stdin
+        return
+    with open_track_text(path) as h:
+        yield h
 
 
 def _iter_bed(handle: IO[str]) -> Iterator[tuple[str, int, int, str]]:
@@ -462,7 +463,7 @@ def process_seq_chunk(chunk: list[str]) -> list[str]:
 
 
 def bin_features(
-    input_path: Path,
+    input_path: Path | Track,
     output_path: Path,
     *,
     bin_size: int,
@@ -473,7 +474,9 @@ def bin_features(
 ) -> None:
     """Bin a BED file and write the result.
 
-    ``input_path`` may be plain or gzipped (``.gz``). When
+    ``input_path`` may be plain or gzipped (``.gz``), or a ``.kst`` -- for a
+    merged or smoothed read, a :class:`~karyoscope.core.io.track.Track` that
+    says which feature set and variant to stream out of it. When
     ``gzip_out`` is ``None`` (the default) the output is gzipped iff
     ``output_path`` ends in ``.gz``. Use ``Path("-")`` for either
     path to mean stdin/stdout (always single-threaded in that case --
@@ -511,17 +514,16 @@ def bin_features(
 
     if not use_pool:
         # Single-threaded path: stream directly through the binner.
-        in_h = _open_in(input_path)
-        out_h = _open_out(output_path, gzip_out=gzip_out)
-        try:
+        with _input_lines(input_path) as in_h:
+            out_h = _open_out(output_path, gzip_out=gzip_out)
+            try:
 
-            def _emit(c: str, s: int, e: int, f: str) -> None:
-                out_h.write(f"{c}\t{s}\t{e}\t{f}\n")
+                def _emit(c: str, s: int, e: int, f: str) -> None:
+                    out_h.write(f"{c}\t{s}\t{e}\t{f}\n")
 
-            _drive(_iter_bed(in_h), bin_size, leaf_set, _emit)
-        finally:
-            _close_if_owned(in_h)
-            _close_if_owned(out_h)
+                _drive(_iter_bed(in_h), bin_size, leaf_set, _emit)
+            finally:
+                _close_if_owned(out_h)
         logger.info("binned %s in %.1fs", output_path, time.perf_counter() - t_start)
         return
 

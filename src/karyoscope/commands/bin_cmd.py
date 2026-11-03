@@ -32,6 +32,8 @@ import click
 from karyoscope import paths
 from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.io.hierarchy import parse_hierarchy
+from karyoscope.core.io.karyozip import is_kst, kst_holds_feature_ids
+from karyoscope.core.io.track import Track
 from karyoscope.exceptions import (
     BinError,
     KaryoscopeError,
@@ -52,7 +54,8 @@ logger = logging.getLogger(__name__)
     "input_path",
     type=click.Path(dir_okay=False, path_type=Path),
     required=True,
-    help="Input BED file (sorted by chrom then start). Use '-' for stdin. .gz supported.",
+    help="Input BED file (sorted by chrom then start). Use '-' for stdin. .gz supported, "
+    "and so is a .kst from `annotate --format kst` (see --kst-track).",
 )
 @click.option(
     "--output",
@@ -100,6 +103,15 @@ logger = logging.getLogger(__name__)
     help="Per-sequence-chunk parallelism. 0 = auto (the CPUs this process may actually use: a SLURM allocation or CPU affinity, not the machine's core count). 1 = single-threaded. "
     "Stdin/stdout I/O is always single-threaded regardless of this flag.",
 )
+@click.option(
+    "--kst-track",
+    type=click.Choice(["smoothed", "presmoothed"]),
+    default=None,
+    help="For a .kst input: bin the smoothed track (derived on read with karyozip "
+    "--smooth; the default) or the stored presmoothed one. Smoothing, and a merged "
+    ".kst holding every feature set, need the database: pass --feature-set (and "
+    "--db unless exactly one is installed).",
+)
 def cmd(
     input_path: Path,
     output_path: Path,
@@ -108,6 +120,7 @@ def cmd(
     db_root_arg: Path | None,
     feature_set: str | None,
     threads: int,
+    kst_track: str | None,
 ) -> None:
     """Run the binner.
 
@@ -120,11 +133,22 @@ def cmd(
 
         # Bare binning, no leaf prioritisation, stdin to stdout
         gunzip -c sample.bed.gz | karyoscope bin -i - -o - -b 100000
+
+        # The smoothed chromosome track of an `annotate --format kst` output
+        karyoscope bin -i sample.HKS_human_CHM13_v2.kst -o chrom.binned1Mb.bed.gz \\
+                       -b 1000000 --feature-set chromosome --db HKS_human_CHM13_v2
     """
     if bin_size < 1:
         raise click.UsageError("--bin-size must be a positive integer")
 
+    kst_input = is_kst(input_path)
+    if kst_track is not None and not kst_input:
+        raise click.UsageError("--kst-track only applies to a .kst input")
+    if kst_input and not input_path.is_file():
+        raise click.UsageError(f"input not found: {input_path}")
+
     leaf_set: set[str] | None = None
+    db_dir: Path | None = None
     if feature_set is not None:
         try:
             db_root = paths.ensure_db_root(db_root_arg)
@@ -150,9 +174,24 @@ def cmd(
     elif db_id is not None:
         raise click.UsageError("--db requires --feature-set; pass both or neither")
 
+    source: Path | Track = input_path
+    if kst_input:
+        smoothed = (kst_track or "smoothed") == "smoothed"
+        try:
+            merged = kst_holds_feature_ids(input_path)
+        except KaryoscopeError as e:
+            raise click.ClickException(str(e)) from e
+        if db_dir is None and (smoothed or merged):
+            what = "its smoothed track" if smoothed else "a merged .kst"
+            raise click.UsageError(
+                f"reading {what} needs the database it was annotated against: "
+                "pass --feature-set (and --db unless exactly one is installed)"
+            )
+        source = Track(input_path, smoothed=smoothed, feature_set=feature_set, db_dir=db_dir)
+
     try:
         bin_features(
-            input_path=input_path,
+            input_path=source,
             output_path=output_path,
             bin_size=bin_size,
             leaf_set=leaf_set,

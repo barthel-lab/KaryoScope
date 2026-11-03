@@ -42,6 +42,7 @@ from karyoscope.core.io.bgzip import open_bgzip_writer
 from karyoscope.core.io.fasta import reverse_complement
 from karyoscope.core.io.scaffold_map import MapRow, read_map
 from karyoscope.core.io.telo import TeloFlags
+from karyoscope.core.io.track import Track, is_plain_bed, open_track_text
 from karyoscope.exceptions import ScaffoldError
 
 #: Default number of N bases inserted between concatenated contigs when
@@ -853,7 +854,7 @@ def _spill_needed_contigs(
     handles: dict[str, IO[str]] = {}
     paths: dict[str, Path] = {}
     try:
-        with _open_bed_in(input_path) as h:
+        with open_track_text(input_path) as h:
             for i, raw in enumerate(h, start=1):
                 line = raw.rstrip("\n")
                 if not line:
@@ -898,7 +899,7 @@ def _write_bed_row(out: IO[str], name: str, start: int, end: int, rest: str) -> 
 
 
 def rewrite_bed(
-    input_path: Path,
+    input_path: Path | Track,
     output_path: Path,
     *,
     map_rows: list[MapRow],
@@ -931,12 +932,14 @@ def rewrite_bed(
     contig be read directly in map order -- no temp files, and the input
     is parsed once. A gzip input can't be seeked, so its placed contigs
     are spilled to per-contig temp files first, then read back in order.
+    The same goes for a ``.kst`` (``input_path`` may be a
+    :class:`~karyoscope.core.io.track.Track`), streamed from karyozip.
     """
     if gzip_out is None:
         gzip_out = str(output_path).endswith(".gz")
 
     needed = {row.original_name for row in map_rows}
-    if str(input_path) != "-" and input_path.suffix != ".gz":
+    if is_plain_bed(input_path):
         _rewrite_bed_seek(
             input_path, output_path, map_rows, needed, gzip_out=gzip_out, flip_labels=flip_labels
         )
@@ -1132,7 +1135,7 @@ class RemapStats:
 
 
 def remap_bed_with_map(
-    input_bed: Path,
+    input_bed: Path | Track,
     output_bed: Path,
     map_path: Path,
     *,
@@ -1196,7 +1199,7 @@ def remap_bed_with_map(
     # (only the contigs the map knows about can violate the length bound).
     bed_names: set[str] = set()
     max_end: dict[str, int] = {}
-    with _open_bed_in(input_bed) as h:
+    with open_track_text(input_bed) as h:
         for i, raw in enumerate(h, start=1):
             line = raw.rstrip("\n")
             if not line:
@@ -1902,7 +1905,7 @@ class _ObjectCoalescer:
 
 
 def rewrite_bed_combined(
-    input_path: Path,
+    input_path: Path | Track,
     output_path: Path,
     *,
     objects: list[ScaffoldObject],

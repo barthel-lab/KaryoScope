@@ -56,6 +56,7 @@ from karyoscope.core.io.colors import (
 )
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, map_signature, read_map
+from karyoscope.core.io.track import Track, annotation_track
 from karyoscope.core.karyotype import (
     DEFAULT_HUMAN_CHROMOSOMES,
     RenderInput,
@@ -233,21 +234,25 @@ def _scaffolded_bed_path(
 
 
 def _annotation_bed_path(
-    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
-) -> Path:
+    out_dir: Path,
+    stem: str,
+    db_id: str,
+    fs: str,
+    variant: str = "smoothed",
+    *,
+    db_dir: Path | None = None,
+) -> Path | Track:
     """The annotate-produced BED path (smoothed or presmoothed).
 
     Used on the ``--no-scaffolding`` codepath where scaffolding skipped
     writing per-FS scaffolded BEDs. We bin this file and apply the
     scaffold map at bin time via :func:`rewrite_bed`.
+
+    A ``.kst`` from ``annotate --format kst`` is found too (see
+    :func:`karyoscope.core.io.track.annotation_track`); ``db_dir`` is what
+    it is read against.
     """
-    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed.gz"
-    if gz.is_file():
-        return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed"
-    if plain.is_file():
-        return plain
-    return gz
+    return annotation_track(out_dir, stem, db_id, fs, variant, db_dir=db_dir)
 
 
 def _binned_scaffolded_bed_path(
@@ -504,6 +509,7 @@ def _ensure_binned_scaffolded(
     input_name: str,
     threads: int,
     map_rows: list[MapRow] | None = None,
+    db_dir: Path | None = None,
     variant: str = "smoothed",
     combined: bool = False,
 ) -> Path:
@@ -618,7 +624,7 @@ def _ensure_binned_scaffolded(
             f"{scaffolded_src} and no scaffold map provided for post-bin "
             f"renaming."
         )
-    annotation_src = _annotation_bed_path(out_dir, stem, db_id, fs, variant=variant)
+    annotation_src = _annotation_bed_path(out_dir, stem, db_id, fs, variant=variant, db_dir=db_dir)
     if not annotation_src.is_file():
         why = (
             "stale (built from a different scaffold map)" if scaffolded_src.is_file() else "missing"
@@ -1252,6 +1258,7 @@ def karyotype_run(
                     map_rows=render_map_rows,
                     variant=annotation_variant,
                     combined=combine_chromosomes,
+                    db_dir=db_dir,
                 )
                 binned_bed = _load_binned_bed(binned_path)
 
