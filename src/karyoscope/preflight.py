@@ -98,6 +98,20 @@ DEPENDENCIES: dict[str, Dependency] = {
             "  or re-run with --no-bgzip to write plain .bed files."
         ),
     ),
+    "karyozip": Dependency(
+        name="karyozip",
+        kind="binary",
+        purpose="writing and reading .kst tracks (annotate --format kst)",
+        install_hint=(
+            "Build it from source and put it on PATH:\n"
+            "    git clone https://github.com/AndreaGuarracino/karyozip\n"
+            '    cargo install --path karyozip/rust --root "$CONDA_PREFIX"\n'
+            "  or re-run with --format bed (the default)."
+        ),
+        # 0.2.0 is the first release with everything annotate drives: merged
+        # tracks (compress -d), --hier, decompress/query --smooth and index.
+        min_version="0.2.0",
+    ),
     "tabix": Dependency(
         name="tabix",
         kind="binary",
@@ -205,10 +219,18 @@ def _hks_version(path: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _karyozip_version(path: str) -> str | None:
+    """``karyozip --version`` prints ``karyozip X.Y.Z, format KST00001``."""
+    from karyoscope.core.io.karyozip import karyozip_version, parse_karyozip_version
+
+    return parse_karyozip_version(karyozip_version(path))
+
+
 #: How to read the installed version of a binary, keyed as :data:`_RESOLVERS`.
 #: A dependency with a ``min_version`` but no probe here is never checked.
 _VERSION_PROBES: dict[str, Callable[[str], str | None]] = {
     "hks": _hks_version,
+    "karyozip": _karyozip_version,
 }
 
 
@@ -324,7 +346,7 @@ def require(names: list[str], *, context: str) -> None:
             lines.append(f"    {hint_line}")
     lines.append(
         "\nThe conda environment shipped with KaryoScope (environment.yml) "
-        "provides all of these except hks and get_featureIDs, which are "
+        "provides all of these except hks, get_featureIDs and karyozip, which are "
         "built separately — see the Installation section of the README.\n"
         "Run `karyoscope version` to see what KaryoScope can currently find."
     )

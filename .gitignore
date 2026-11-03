@@ -93,6 +93,8 @@ docs/site/
 *.bed
 *.bed.gz
 *.bed.gz.tbi
+*.kst
+*.kzi
 *.kmc_pre
 *.kmc_suf
 *.fai
