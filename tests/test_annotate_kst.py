@@ -706,3 +706,70 @@ def test_hks_writes_kst_needs_hks_support_and_karyozip_0_3(monkeypatch) -> None:
     ):
         monkeypatch.setattr(ann.kmz, "karyozip_version", lambda line=line: line)
         assert ann._hks_writes_kst() is want
+
+
+# --- centromeres and karyotype from a .kst, end to end ---------------------
+
+
+def _get_featureids_available() -> bool:
+    from karyoscope.core.external import ToolNotFoundError
+    from karyoscope.core.io.kmc import get_featureids_binary
+
+    try:
+        get_featureids_binary()
+    except ToolNotFoundError:
+        return False
+    return True
+
+
+@pytest.mark.integration
+@requires_karyozip
+@requires_bgzip
+@pytest.mark.skipif(shutil.which("seqtk") is None, reason="needs seqtk on PATH")
+@pytest.mark.skipif(not _get_featureids_available(), reason="needs get_featureIDs")
+@pytest.mark.parametrize("subset", [None, ["chromosome", "region"]], ids=["merged", "per-set"])
+def test_centromeres_and_karyotype_from_kst_match_bed(
+    populated_db_root: Path, tmp_path: Path, subset: list[str] | None
+) -> None:
+    """The real KMC annotate on the dummy db, as BED and as .kst, then the cascade.
+
+    ``centromeres`` and ``karyotype`` (genome and centromere modes) run on each
+    directory; every file they write must be byte-identical (``.gz`` compared
+    decompressed). The SVGs embed no path or time, so nothing is normalised.
+    """
+    seed = "ACGTGCTAGCTAGGCTATCGTAC"
+    runner = CliRunner()
+    produced: dict[str, dict[str, bytes]] = {}
+    for fmt in ("bed", "kst"):
+        d = tmp_path / fmt
+        d.mkdir()
+        fa = d / "assembly.fa"
+        fa.write_text(f">seq_for_chr1\n{seed[:21]}\n>seq_for_chr2\n{seed[2:23]}\n")
+        annotate(
+            input_path=fa,
+            output_dir=d,
+            db_root=populated_db_root,
+            feature_sets=subset,
+            threads=1,
+            output_format=fmt,
+        )
+        before = {p.name for p in d.iterdir()}
+        sets = [a for fs in (subset or []) for a in ("--feature-set", fs)]
+        for args in (
+            ["centromeres", "--coarse-bin-size", "10", "--fine-bin-size", "0"],
+            ["karyotype", "--mode", "genome", "--bin-size", "10", *sets],
+            ["karyotype", "--mode", "centromere", "--bin-size", "10", *sets],
+        ):
+            result = runner.invoke(
+                main,
+                [*args, "-i", f"hap1={fa}", "--outdir", str(d), "--min-scaffold-length", "1"],
+            )
+            assert result.exit_code == 0, (fmt, args, result.output)
+        produced[fmt] = {
+            p.name: (gzip.decompress(p.read_bytes()) if p.suffix == ".gz" else p.read_bytes())
+            for p in d.iterdir()
+            if p.name not in before
+        }
+    assert any(n.endswith(".svg") for n in produced["kst"])
+    assert any("centromeres" in n for n in produced["kst"])
+    assert produced["kst"] == produced["bed"]
