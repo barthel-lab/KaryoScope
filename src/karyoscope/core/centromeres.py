@@ -40,6 +40,7 @@ from karyoscope.core.bin import bin_features, leaves_for
 from karyoscope.core.io.bgzip import bgzip_file
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, read_map
+from karyoscope.core.io.track import Track, annotation_track
 from karyoscope.core.scaffold import (
     DEFAULT_MIN_SCAFFOLD_LENGTH,
     Interval,
@@ -213,22 +214,26 @@ def _scaffolded_bed_path(
 
 
 def _annotation_bed_path(
-    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
-) -> Path:
+    out_dir: Path,
+    stem: str,
+    db_id: str,
+    fs: str,
+    variant: str = "smoothed",
+    *,
+    db_dir: Path | None = None,
+) -> Path | Track:
     """The annotate-produced BED path (smoothed or presmoothed).
 
     Looked at only on the ``write_scaffolded_beds=False`` codepath
     (when scaffolding skipped writing per-FS scaffolded BEDs). The
     binning step then runs against this file and the scaffold map is
     applied post-bin via :func:`rewrite_bed`.
+
+    A ``.kst`` from ``annotate --format kst`` is found too (see
+    :func:`karyoscope.core.io.track.annotation_track`); ``db_dir`` is what
+    it is read against.
     """
-    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed.gz"
-    if gz.is_file():
-        return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed"
-    if plain.is_file():
-        return plain
-    return gz  # default to expecting .gz
+    return annotation_track(out_dir, stem, db_id, fs, variant, db_dir=db_dir)
 
 
 def _binned_scaffolded_bed_path(
@@ -282,6 +287,7 @@ def _ensure_binned_scaffolded(
     input_name: str,
     threads: int,
     map_rows: list[MapRow] | None = None,
+    db_dir: Path | None = None,
 ) -> Path:
     """Return the binned scaffolded BED path, building it if missing.
 
@@ -322,7 +328,7 @@ def _ensure_binned_scaffolded(
             f"{scaffolded_src} and no scaffold map provided for post-bin "
             f"renaming."
         )
-    smoothed_src = _annotation_bed_path(out_dir, stem, db_id, fs)
+    smoothed_src = _annotation_bed_path(out_dir, stem, db_id, fs, db_dir=db_dir)
     if not smoothed_src.is_file():
         raise CentromereError(
             f"cannot bin {fs!r} for {input_name}: smoothed BED missing at "
@@ -496,6 +502,7 @@ def centromeres_run(
             input_name=spec.path.name,
             threads=threads,
             map_rows=map_rows,
+            db_dir=db_dir,
         )
         coarse_bins = _load_binned_bed(coarse_path)
 
@@ -512,6 +519,7 @@ def centromeres_run(
                 input_name=spec.path.name,
                 threads=threads,
                 map_rows=map_rows,
+                db_dir=db_dir,
             )
             fine_bins = _load_binned_bed(fine_path)
 

@@ -26,10 +26,13 @@ A BED contig that is *absent* from the map is not an error: the map only lists c
 
 | Option | Description |
 | --- | --- |
-| `-b, --bed FILE` | Annotation BED in original (unscaffolded) contig coordinates. `.gz` supported. [required] |
+| `-b, --bed FILE` | Annotation BED in original (unscaffolded) contig coordinates. `.gz` supported, and so is a `.kst` from [`annotate --format kst`](annotate.md#compact-output---format-kst). [required] |
 | `-m, --map FILE` | A `scaffold_map.tsv` written by `karyoscope scaffold` (or `karyotype`). [required] |
 | `-o, --output FILE` | Output BED in scaffolded coordinates. bgzipped iff the path ends in `.gz`. [required] |
 | `--strict` | Promote advisory checks (filename-stem mismatch; map contigs with no records in the BED) from warnings to hard errors. |
+| `--kst-track [smoothed\|presmoothed]` | For a `.kst` `--bed`: remap the smoothed track (derived on read with `karyozip --smooth`; the default) or the stored presmoothed one. |
+| `--feature-set TEXT` | The feature set the BED (or `.kst`) holds. With `--db`, its `feature_set_options.<set>.flip_labels` relabels flipped contigs (required for a strand set, whose `plus`/`minus` must swap). For a `.kst` `--bed` it is the set to read, required for a merged `.kst`. |
+| `--db TEXT`, `--db-root DIRECTORY` | The database the BED was annotated against; goes with `--feature-set` for a BED. For a `.kst` `--bed` it also supplies `hierarchy.tsv` (smoothing) and `features.tsv` (merged track), and defaults to the unique installed database. |
 
 ## Example
 

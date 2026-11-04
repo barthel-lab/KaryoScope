@@ -101,7 +101,9 @@ Size tracks the genome, not the tool: the 135 Mb *Arabidopsis* database installs
 
 Measured on HG002 v1.1 against `HKS_human_CHM13_v2`. An HKS run needs no headroom beyond its outputs: `hks lookup` writes the presmoothed BED directly, so no intermediate copy of it ever exists. (Under `--no-keep-presmoothed` that file becomes a temp one, and the KMC column applies instead.) The KMC backend still writes a combined intermediate BED alongside.
 
-Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-resource-check` to override the estimate.
+Restricting `--feature-set`, or dropping one output variant with `--no-keep-presmoothed` / `--no-smooth`, scales this down proportionally.
+
+**For many samples, `--format kst`** stores the presmoothed tracks as compressed [karyozip](https://github.com/AndreaGuarracino/karyozip) `.kst` files instead of BEDs: one merged `<input>.<db>.kst` holding every feature set, 21× smaller than the bgzipped BEDs at the default `--kst-effort low` and 44× at `medium` (3.35 MB and 1.61 MB against 70.2 MB for six sets of a 2,356-read HG002 sample). The smoothed track is derived on read, and every KaryoScope command that reads annotate output accepts the `.kst`. BED stays the default. With an `hks` whose `lookup` has `--format kst`, no presmoothed BED is written at all, so the peak drops too; with an older `hks` or the KMC backend the presmoothed BEDs are still written first and set the peak. See [`annotate`: Compact output](docs/commands/annotate.md#compact-output---format-kst) for how to read a `.kst` back with `karyozip decompress` / `query`. `annotate` estimates the footprint from the input size and checks `--outdir` before starting; pass `--no-resource-check` to override the estimate.
 
 ## Installation
 
@@ -181,6 +183,23 @@ it automatically. See [`native/README.md`](native/README.md) for build-system de
 (CXX selection, `pkg-config`-driven zlib lookup, and the macOS + conda
 `-Wl,-rpath,$CONDA_PREFIX/lib` shim). The `KMC` tool itself is only needed to *build*
 a KMC database, not to query one.
+
+### Optional: karyozip, for `annotate --format kst`
+
+[karyozip](https://github.com/AndreaGuarracino/karyozip) writes and reads the
+compact `.kst` tracks of `annotate --format kst` (BED, the default, does not need
+it). Install release 0.3.0 or newer onto `PATH`; it needs cargo, a C and a C++
+compiler and libgomp, and builds on Linux:
+
+```bash
+git clone --branch v0.3.0 https://github.com/AndreaGuarracino/karyozip
+cargo install --path karyozip/rust --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/karyozip
+```
+
+With an `hks` built against karyozip 0.3.0 (its `lookup --format kst`, not yet in
+the pinned HKS commit above), `annotate --format kst` has `hks` write the tracks
+directly and no BED is written at all; with the pinned `hks` it writes the BEDs and
+compresses them, with the same result.
 
 **Typical install time.** On a normal desktop with a good network connection, creating the conda environment is the bulk of the time — usually ~5–10 minutes to resolve and download the bioinformatics tools. `pip install -e .` then takes under a minute, building the C++ helper takes a few seconds, and cloning and building HKS (`git clone` plus `cargo install`) takes about 1.5 minutes. Reinstalls into an existing environment are much faster.
 

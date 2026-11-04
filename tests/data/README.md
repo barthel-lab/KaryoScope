@@ -53,3 +53,24 @@ byte-identical, and the SHA-256 in `dummy_db.sha256` should match. If
 anything about the database contents or manifest schema changes, also
 update the `sha256` field in `dummy_registry.yaml` to match the new
 `dummy_db.sha256`.
+
+## `kst_parity/`: fixed real tracks for the smoother parity test
+
+Used by `tests/test_kst_parity.py`, which checks that `hks smooth`,
+KaryoScope's Python smoother and `karyozip decompress --smooth` (C and Rust
+builds) produce byte-identical smoothed BEDs. `annotate --format kst` stores
+only the presmoothed track and derives the smoothed one with karyozip, so the
+four must agree.
+
+- **`<set>.presmoothed.bed.gz`, `<set>.smoothed.bed.gz`** for the six sets of
+  `HKS_human_CHM13_v2` (acrocentric, chromosome, gene, region, repeat,
+  subtelomeric): 122 of the 2,356 HG002 reads in
+  `BIR_endarch/hg002_scoring/population_rescore_2026-11-02/reads.fa`,
+  annotated with `karyoscope annotate` 2.3.0 / HKS 0.4.0 (every 7th of the
+  840 shortest reads, plus two of 31 kb and 39 kb). The smoothed BEDs are what
+  that run wrote with `hks smooth`. Read names are replaced by `r001`..`r122`
+  in file order, which changes no row otherwise.
+- **`hierarchy.tsv`**: that database's hierarchy (what karyozip and the Python
+  smoother read).
+- **`hks/<set>.hierarchy.txt`**: its per-set HKS hierarchy files (what
+  `hks smooth` reads).

@@ -57,6 +57,7 @@ from karyoscope.core.io.fasta import read_fasta_lengths
 from karyoscope.core.io.hierarchy import parse_hierarchy
 from karyoscope.core.io.scaffold_map import MapRow, write_legacy_stats, write_map
 from karyoscope.core.io.telo import TeloFlags, parse_telo_file, run_seqtk_telo
+from karyoscope.core.io.track import Track, annotation_track, open_track_text
 from karyoscope.core.scaffold import (
     DEFAULT_HUMAN_ACROCENTRICS,
     DEFAULT_MIN_SCAFFOLD_LENGTH,
@@ -242,16 +243,21 @@ def _resolve_roles(
 
 
 def _annotation_bed_path(
-    out_dir: Path, stem: str, db_id: str, fs: str, variant: str = "smoothed"
-) -> Path:
-    """Path to an ``annotate``-produced BED (smoothed or presmoothed)."""
-    gz = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed.gz"
-    if gz.is_file():
-        return gz
-    plain = out_dir / f"{stem}.{db_id}.{fs}.{variant}.bed"
-    if plain.is_file():
-        return plain
-    return gz  # default to expecting .gz
+    out_dir: Path,
+    stem: str,
+    db_id: str,
+    fs: str,
+    variant: str = "smoothed",
+    *,
+    db_dir: Path | None = None,
+) -> Path | Track:
+    """Path to an ``annotate``-produced BED (smoothed or presmoothed).
+
+    A ``.kst`` from ``annotate --format kst`` is found too (see
+    :func:`karyoscope.core.io.track.annotation_track`); ``db_dir`` is what
+    it is read against.
+    """
+    return annotation_track(out_dir, stem, db_id, fs, variant, db_dir=db_dir)
 
 
 def _binned_bed_path(
@@ -413,6 +419,7 @@ def _ensure_binned(
     leaf_set: set[str],
     auto: bool,
     threads: int,
+    db_dir: Path | None = None,
 ) -> Path:
     """Return the binned-BED path, running the binner if necessary."""
     out = _binned_bed_path(spec.out_dir, spec.stem, db_id, fs, bin_size)
@@ -424,7 +431,7 @@ def _ensure_binned(
             f"bin size {bin_size} (expected at {out}). Re-run with auto-derive "
             f"enabled."
         )
-    src = _annotation_bed_path(spec.out_dir, spec.stem, db_id, fs)
+    src = _annotation_bed_path(spec.out_dir, spec.stem, db_id, fs, db_dir=db_dir)
     if not src.is_file():
         raise ScaffoldError(
             f"can't bin {fs!r} for {spec.spec.path.name}: smoothed BED missing "
@@ -458,7 +465,7 @@ def _load_binned_bed(path: Path) -> dict[str, list[tuple[int, int, str]]]:
     return out
 
 
-def _load_label_mass(path: Path) -> dict[str, dict[str, int]]:
+def _load_label_mass(path: Path | Track) -> dict[str, dict[str, int]]:
     """Total annotated bp per label, per sequence, from an UNBINNED BED.
 
     Feeds the chromosome assignment, which must not be decided off the binned
@@ -466,11 +473,8 @@ def _load_label_mass(path: Path) -> dict[str, dict[str, int]]:
     totals are kept, so memory is O(sequences x labels) regardless of how many
     records the BED holds; the smoothed chromosome BED streams in a few seconds.
     """
-    import gzip
-
-    opener = gzip.open if path.suffix == ".gz" else open
     out: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    with opener(path, "rt") as h:
+    with open_track_text(path) as h:
         for raw in h:
             parts = raw.rstrip("\n").split("\t")
             if len(parts) < 4:
@@ -506,6 +510,7 @@ def _write_combined_outputs(
     threads: int,
     true_lengths: dict[str, int],
     flip_labels: dict[str, dict[str, str]] | None = None,
+    db_dir: Path | None = None,
 ) -> ScaffoldResult:
     """Write combined-chromosome FASTA, AGP, and (mode 'both') BEDs for one input.
 
@@ -533,7 +538,9 @@ def _write_combined_outputs(
     scaffolded_beds: dict[str, Path] = {}
     if mode == "both":
         for fs in requested:
-            src = _annotation_bed_path(r.out_dir, r.stem, db_id, fs, variant=annotation_variant)
+            src = _annotation_bed_path(
+                r.out_dir, r.stem, db_id, fs, variant=annotation_variant, db_dir=db_dir
+            )
             if not src.is_file():
                 logger.warning(
                     "%s BED for %s / %s not found at %s; skipping",
@@ -786,6 +793,7 @@ def scaffold_run(
             leaf_set=chromosome_leaves,
             auto=auto,
             threads=threads,
+            db_dir=db_dir,
         )
         _ensure_binned(
             r,
@@ -795,6 +803,7 @@ def scaffold_run(
             leaf_set=region_leaves,
             auto=auto,
             threads=threads,
+            db_dir=db_dir,
         )
 
     # --- build ContigInput list across all inputs --------------------
@@ -828,7 +837,12 @@ def scaffold_run(
         # its neighbour, so bin widths can rank a minority chromosome first.
         chrom_mass = _load_label_mass(
             _annotation_bed_path(
-                r.out_dir, r.stem, db_id_resolved, chromosome_fs, variant=annotation_variant
+                r.out_dir,
+                r.stem,
+                db_id_resolved,
+                chromosome_fs,
+                variant=annotation_variant,
+                db_dir=db_dir,
             )
         )
         region_bins = _load_binned_bed(
@@ -914,6 +928,7 @@ def scaffold_run(
                 bgzip=bgzip,
                 threads=threads,
                 true_lengths=lengths_per_input[r.spec.path.name],
+                db_dir=db_dir,
             )
             continue
 
@@ -921,7 +936,7 @@ def scaffold_run(
         if mode in ("bed", "both") and write_scaffolded_beds:
             for fs in requested:
                 src = _annotation_bed_path(
-                    r.out_dir, r.stem, db_id_resolved, fs, variant=annotation_variant
+                    r.out_dir, r.stem, db_id_resolved, fs, variant=annotation_variant, db_dir=db_dir
                 )
                 if not src.is_file():
                     logger.warning(

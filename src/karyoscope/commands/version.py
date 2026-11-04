@@ -37,6 +37,7 @@ _EXTERNAL_TOOLS: tuple[tuple[str, str, str], ...] = (
     # "Running hks version X" banner it prints (like seqtk below).
     ("HKS", "hks", ""),
     ("bgzip", "bgzip", "--version"),
+    ("karyozip", "karyozip", "--version"),
     ("tabix", "tabix", "--version"),
     ("seqtk", "seqtk", ""),
 )

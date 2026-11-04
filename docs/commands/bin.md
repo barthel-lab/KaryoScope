@@ -16,13 +16,14 @@ karyoscope bin -i INPUT -o OUTPUT -b BIN_SIZE [OPTIONS]
 
 | Option | Description |
 | --- | --- |
-| `-i, --input FILE` | Input BED file (sorted by chrom then start). Use `-` for stdin. `.gz` supported. **[required]** |
+| `-i, --input FILE` | Input BED file (sorted by chrom then start). Use `-` for stdin. `.gz` supported, and so is a `.kst` from [`annotate --format kst`](annotate.md#compact-output---format-kst). **[required]** |
 | `-o, --output FILE` | Output BED file. Use `-` for stdout. Output is bgzipped iff the path ends in `.gz`. **[required]** |
 | `-b, --bin-size INTEGER` | Bin size in base pairs (e.g. `1000000` for 1 Mb). **[required]** |
 | `--db TEXT` | Database id whose `hierarchy.tsv` defines the leaf-feature set. Default: the unique installed database if exactly one is installed and `--feature-set` is given. |
 | `--db-root DIRECTORY` | Override the database root directory (default: `$KARYOSCOPE_DB` or `~/.karyoscope/db/`). |
 | `--feature-set TEXT` | Feature set to use for leaf prioritisation. Required when `--db` is given (or implied). |
 | `-t, --threads INTEGER` | Per-sequence-chunk parallelism. `0` = auto (the CPUs this process may actually use: a SLURM allocation or CPU affinity, not the machine's core count). `1` = single-threaded. Stdin/stdout I/O is always single-threaded regardless of this flag. **[default: 1]** |
+| `--kst-track [smoothed\|presmoothed]` | For a `.kst` input: bin the smoothed track (derived on read with `karyozip --smooth`; the default) or the stored presmoothed one. Smoothing, and a merged `.kst`, need the database: pass `--feature-set` (and `--db` unless exactly one is installed). |
 | `-h, --help` | Show this message and exit. |
 
 Passing `--db` without `--feature-set` is an error: the leaf set is per-feature-set, so one without the other is ambiguous. A bare invocation with no `--db`/`--feature-set` skips leaf prioritisation entirely.
@@ -35,6 +36,9 @@ karyoscope bin -i sample.region.smoothed.bed.gz -o sample.region.binned.bed.gz -
 
 # With leaf prioritisation for a specific feature set
 karyoscope bin -i sample.region.smoothed.bed -o sample.region.binned.bed -b 1000000 --db KS_human_CHM13_v2 --feature-set region
+
+# The smoothed region track of an `annotate --format kst` output
+karyoscope bin -i sample.HKS_human_CHM13_v2.kst -o sample.region.binned.bed.gz -b 1000000 --db HKS_human_CHM13_v2 --feature-set region
 
 # Stream via stdin/stdout
 cat sample.bed | karyoscope bin -i - -o - -b 100000 > binned.bed

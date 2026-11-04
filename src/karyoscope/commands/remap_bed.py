@@ -25,6 +25,8 @@ from pathlib import Path
 import click
 
 from karyoscope import paths
+from karyoscope.core.io.karyozip import is_kst, kst_holds_feature_ids
+from karyoscope.core.io.track import Track
 from karyoscope.core.scaffold import remap_bed_with_map
 from karyoscope.exceptions import KaryoscopeError, ScaffoldError
 from karyoscope.installed import resolve_database
@@ -43,7 +45,8 @@ logger = logging.getLogger(__name__)
     "bed_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
-    help="Annotation BED in original (unscaffolded) contig coordinates. .gz supported.",
+    help="Annotation BED in original (unscaffolded) contig coordinates. .gz supported, "
+    "and so is a .kst from `annotate --format kst` (see --kst-track).",
 )
 @click.option(
     "--map",
@@ -69,18 +72,29 @@ logger = logging.getLogger(__name__)
     "records in the BED) from warnings to hard errors.",
 )
 @click.option(
+    "--kst-track",
+    type=click.Choice(["smoothed", "presmoothed"]),
+    default=None,
+    help="For a .kst --bed: remap the smoothed track (derived on read with karyozip "
+    "--smooth; the default) or the stored presmoothed one.",
+)
+@click.option(
     "--db",
     "db_id",
     default=None,
     help="Database the BED was annotated against. With --feature-set, its manifest "
     "says how labels change on a flipped (reverse-complemented) contig -- required "
-    "for a strand feature set, whose plus/minus must swap.",
+    "for a strand feature set, whose plus/minus must swap. For a .kst --bed it also "
+    "supplies hierarchy.tsv (smoothing) and features.tsv (merged .kst); there it "
+    "defaults to the unique installed database.",
 )
 @click.option(
     "--feature-set",
     "feature_set",
     default=None,
-    help="Feature set the BED holds (looked up in --db's manifest feature_set_options).",
+    help="Feature set the BED holds (looked up in --db's manifest feature_set_options). "
+    "For a .kst --bed, the feature set to read: required for a merged .kst (one "
+    "holding every feature set of its database).",
 )
 @click.option(
     "--db-root",
@@ -94,6 +108,7 @@ def cmd(
     map_path: Path,
     output_path: Path,
     strict: bool,
+    kst_track: str | None,
     db_id: str | None,
     feature_set: str | None,
     db_root_arg: Path | None,
@@ -109,20 +124,39 @@ def cmd(
             -m hap1.KS_human_CHM13_v2.scaffold_map.tsv \\
             -o hap1.cytoband.scaffolded.bed.gz
     """
-    flip_labels: dict[str, str] | None = None
-    if (db_id is None) != (feature_set is None):
-        raise click.UsageError("--db and --feature-set go together")
+    source: Path | Track = bed_path
+    db_dir: Path | None = None
+    if not is_kst(bed_path):
+        if kst_track is not None:
+            raise click.UsageError("--kst-track only applies to a .kst --bed")
+        if (db_id is None) != (feature_set is None):
+            raise click.UsageError("--db and --feature-set go together")
     try:
-        if db_id is not None:
+        if is_kst(bed_path):
+            smoothed = (kst_track or "smoothed") == "smoothed"
+            merged = kst_holds_feature_ids(bed_path)
+            if merged and feature_set is None:
+                raise click.UsageError(
+                    f"{bed_path.name} holds every feature set of its database; pass --feature-set"
+                )
+            # The database is needed to smooth or to decode a merged track, and to
+            # look up flip_labels; for a .kst it defaults to the unique installed one.
+            if smoothed or merged or db_id is not None or feature_set is not None:
+                _, db_dir = resolve_database(paths.ensure_db_root(db_root_arg), db_id)
+            source = Track(bed_path, smoothed=smoothed, feature_set=feature_set, db_dir=db_dir)
+        elif db_id is not None:
             _, db_dir = resolve_database(paths.ensure_db_root(db_root_arg), db_id)
+        flip_labels: dict[str, str] | None = None
+        if db_dir is not None and feature_set is not None:
             manifest = validate_database_layout(db_dir)
             if feature_set not in manifest.feature_sets:
                 raise click.UsageError(
-                    f"feature set {feature_set!r} is not in {db_id!r}: {manifest.feature_sets!r}"
+                    f"feature set {feature_set!r} is not in {manifest.id!r}: "
+                    f"{manifest.feature_sets!r}"
                 )
             flip_labels = manifest.flip_labels.get(feature_set)
         stats = remap_bed_with_map(
-            bed_path, output_path, map_path, strict=strict, flip_labels=flip_labels
+            source, output_path, map_path, strict=strict, flip_labels=flip_labels
         )
     except ScaffoldError as e:
         raise click.ClickException(str(e)) from e

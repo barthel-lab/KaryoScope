@@ -1,0 +1,8 @@
+acrocentric	categorized
+array	acrocentric
+DJ	array
+PJ	array
+rDNA	array
+SST1	acrocentric
+PHR	acrocentric
+nonacrocentric	categorized

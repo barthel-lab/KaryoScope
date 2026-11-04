@@ -598,3 +598,52 @@ def test_materialised_queries_does_not_scan_fastq_without_a_sidecar(
     fq.write_bytes(b"")
     with materialised_queries([fq]) as resolved:
         assert resolved[fq] == fq
+
+
+# --- lookup --format kst ------------------------------------------------
+
+
+def test_batch_lookup_kst_format_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``output_format="kst"`` asks hks for a .kst at the given effort, indexed on request."""
+    from karyoscope.core.io.hks import run_hks_lookup_batch
+
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr("karyoscope.core.io.hks.get_hks_binary", lambda: "hks")
+    monkeypatch.setattr(
+        "karyoscope.core.io.hks.run_tool",
+        lambda cmd, capture=False, **kw: captured.__setitem__("cmd", cmd),
+    )
+    pairs = [(tmp_path / "in.fa", tmp_path / "out.kst")]
+    common = dict(base_path=tmp_path / "b.hksb", feature_set_file=tmp_path / "f.x.hksf", k=31)
+    run_hks_lookup_batch(**common, io_pairs=pairs, output_format="kst", kst_effort="medium")
+    cmd = captured["cmd"]
+    assert _flag_value(cmd, "--format") == "kst"
+    assert _flag_value(cmd, "--kst-effort") == "medium"
+    assert "--kst-index" not in cmd
+    assert "--report-misses" in cmd  # a .kst holds gapless runs
+    run_hks_lookup_batch(**common, io_pairs=pairs, output_format="kst", kst_index=True)
+    assert "--kst-index" in captured["cmd"]
+    run_hks_lookup_batch(**common, io_pairs=pairs)
+    assert "--format" not in captured["cmd"]
+
+
+@pytest.mark.parametrize(
+    ("help_text", "expected"),
+    [
+        (
+            "  --format <FORMAT>\n  [possible values: bed, kst]\n  --kst-effort\n  --kst-index\n",
+            True,
+        ),
+        ("  -o, --output <OUTPUT>\n  --no-header\n", False),
+    ],
+)
+def test_hks_supports_kst_reads_lookup_help(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, help_text: str, expected: bool
+) -> None:
+    from karyoscope.core.io import hks as hks_mod
+
+    fake = tmp_path / f"hks-{expected}"
+    fake.write_text(f"#!/bin/sh\ncat <<'X'\n{help_text}X\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(hks_mod, "_KST_SUPPORT", {})
+    assert hks_mod.hks_supports_kst(str(fake)) is expected

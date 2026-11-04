@@ -1,0 +1,6 @@
+canonical_telomere	categorized
+telomere_like	categorized
+ITS	telomere_like
+noncanonical_telomere	telomere_like
+TAR1	telomere_like
+nonsubtelomeric	categorized

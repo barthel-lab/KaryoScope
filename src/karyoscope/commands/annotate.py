@@ -26,6 +26,12 @@ Two sentinel feature names that may appear in the output:
 
 The intermediate combined BED produced by the C++ helper is deleted by
 default; pass ``--keep-intermediates`` to keep it for debugging.
+
+``--format kst`` (opt-in; BED stays the default) stores the presmoothed
+tracks as compressed ``.kst`` instead -- one merged ``<input>.<dbid>.kst``
+when every feature set is annotated, else one ``<input>.<dbid>.<fs>.kst``
+per set -- and writes no smoothed BED unless ``--smoothed-bed`` is given:
+the smoothed track is derived on read with ``karyozip decompress --smooth``.
 """
 
 from __future__ import annotations
@@ -192,6 +198,40 @@ logger = logging.getLogger(__name__)
     "after every BED has been written in full.",
 )
 @click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["bed", "kst"]),
+    default="bed",
+    show_default=True,
+    help="Output format. bed: per-feature-set presmoothed and smoothed BEDs, "
+    "unchanged. kst: the presmoothed tracks as compressed .kst (12-44x smaller "
+    "than the bgzipped BEDs), for cohorts where disk space matters; the "
+    "smoothed track is not stored but derived on read with "
+    "`karyozip decompress --smooth`, and every KaryoScope command that reads "
+    "annotate output accepts .kst. When every feature set of the database's "
+    "features.tsv is annotated, those sets go into one <input>.<db>.kst; any "
+    "other set (one with no features.tsv column, or every set of a database "
+    "without one) gets <input>.<db>.<set>.kst. Requires karyozip >= 0.3.0 on PATH.",
+)
+@click.option(
+    "--kst-effort",
+    type=click.Choice(["low", "medium"]),
+    default="low",
+    show_default=True,
+    help="karyozip compression effort for --format kst. low compresses as fast as "
+    "bgzip and keeps single-read queries at ~0.02 s; medium is about half the size "
+    "but takes ~10x longer to write and ~1.4 s per single-read query. Use medium "
+    "for archives.",
+)
+@click.option(
+    "--smoothed-bed",
+    is_flag=True,
+    default=False,
+    help="With --format kst, also write each feature set's smoothed BED "
+    "(<input>.<db>.<set>.smoothed.bed[.gz], bgzipped unless --no-bgzip), derived "
+    "from the .kst with `karyozip decompress --smooth`.",
+)
+@click.option(
     "--no-resource-check",
     is_flag=True,
     default=False,
@@ -244,6 +284,9 @@ def cmd(
     no_space_check: bool,
     preserve_input_order: bool,
     force: bool,
+    output_format: str,
+    kst_effort: str,
+    smoothed_bed: bool,
 ) -> None:
     """Run the annotate pipeline for one or more ``--input`` files.
 
@@ -264,6 +307,9 @@ def cmd(
         # Pick a specific database and only the chromosome set
         karyoscope annotate -i reads.fa.gz --db KS_human_CHM13_v2 \\
                             --feature-set chromosome
+
+        # Compact output for a large cohort: one .kst per input
+        karyoscope annotate -i reads.fa.gz --db HKS_human_CHM13_v2 --format kst
     """
     skip_checks = resolve_resource_check_flag(no_resource_check, no_space_check, command="annotate")
     db_root = paths.ensure_db_root(db_root_arg)
@@ -312,6 +358,9 @@ def cmd(
         query_names=query_names,
         query_names_sidecar=query_names_sidecar,
         progress=_progress.from_context(),
+        output_format=output_format,
+        kst_effort=kst_effort,
+        smoothed_bed=smoothed_bed,
     )
 
     try:
@@ -327,6 +376,12 @@ def cmd(
             click.echo(f"Wrote ({input_path.name}):")
         else:
             click.echo("Wrote:")
+        by_file: dict[Path, list[str]] = {}
+        for fs, path in result.kst_paths.items():
+            by_file.setdefault(path, []).append(fs)
+        for path, sets in by_file.items():
+            what = sets[0] if len(sets) == 1 else f"{len(sets)} sets ({', '.join(sets)})"
+            click.echo(f"  {what} (presmoothed .kst): {path}")
         for fs, path in result.presmoothed_paths.items():
             click.echo(f"  {fs} (presmoothed): {path}")
         for fs, path in result.smoothed_paths.items():
@@ -335,3 +390,5 @@ def cmd(
             click.echo(f"  (intermediate: {result.combined_intermediate})")
         if result.query_names_sidecar is not None:
             click.echo(f"  query names:            {result.query_names_sidecar}")
+        if result.manifest_path is not None:
+            click.echo(f"  manifest:               {result.manifest_path}")
