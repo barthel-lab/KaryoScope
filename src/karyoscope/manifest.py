@@ -71,6 +71,52 @@ class Manifest:
     roles: dict[str, str] = field(default_factory=dict)
     smoothing: dict[str, object] = field(default_factory=dict)
     directory: Path | None = None
+    #: Per feature set: how each label changes when a contig is reverse-complemented
+    #: (``feature_set_options.<fs>.flip_labels`` in the manifest). Empty for every set
+    #: whose labels are strand-independent -- all of them except a strand set, where
+    #: ``plus`` and ``minus`` must swap or a flipped contig reads as inverted.
+    flip_labels: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+def _parse_flip_labels(
+    options: object, feature_sets: list[str], where: str
+) -> dict[str, dict[str, str]]:
+    """``feature_set_options`` -> ``{feature set: {label: label after a flip}}``.
+
+    Only ``flip_labels`` is understood today. The mapping must be a swap (``a -> b``
+    implies ``b -> a``): reverse-complementing twice is the identity, so a map that
+    is not its own inverse would corrupt a contig flipped back.
+    """
+    if not isinstance(options, dict):
+        raise ManifestError(f"'feature_set_options' in {where} must be a mapping if present")
+    out: dict[str, dict[str, str]] = {}
+    for fs, opts in options.items():
+        if fs not in feature_sets:
+            raise ManifestError(
+                f"'feature_set_options' in {where} names {fs!r}, which is not in feature_sets"
+            )
+        if not isinstance(opts, dict):
+            raise ManifestError(f"'feature_set_options.{fs}' in {where} must be a mapping")
+        unknown = set(opts) - {"flip_labels"}
+        if unknown:
+            raise ManifestError(
+                f"'feature_set_options.{fs}' in {where} has unknown key(s) {sorted(unknown)!r}"
+            )
+        mapping = opts.get("flip_labels", {})
+        if not isinstance(mapping, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()
+        ):
+            raise ManifestError(
+                f"'feature_set_options.{fs}.flip_labels' in {where} must map label -> label"
+            )
+        if any(mapping.get(v, v) != k for k, v in mapping.items()):
+            raise ManifestError(
+                f"'feature_set_options.{fs}.flip_labels' in {where} must be a swap "
+                f"(a -> b requires b -> a): {mapping!r}"
+            )
+        if mapping:
+            out[fs] = dict(mapping)
+    return out
 
 
 def _require(d: dict, key: str, where: str) -> object:
@@ -180,6 +226,8 @@ def parse_manifest(manifest_path: Path) -> Manifest:
     if not isinstance(smoothing, dict):
         raise ManifestError(f"'smoothing' in {where} must be a mapping if present")
 
+    flip_labels = _parse_flip_labels(data.get("feature_set_options", {}), feature_sets, where)
+
     return Manifest(
         id=db_id,
         version=version,
@@ -193,6 +241,7 @@ def parse_manifest(manifest_path: Path) -> Manifest:
         roles=dict(roles),
         smoothing=dict(smoothing),
         directory=manifest_path.parent,
+        flip_labels=flip_labels,
     )
 
 

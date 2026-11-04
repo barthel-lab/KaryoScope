@@ -1529,11 +1529,12 @@ def annotate(
     t_annotate_start = time.perf_counter()
 
     # Parse features.tsv up front so we fail fast if it's malformed. It maps
-    # integer feature ids to names for the KMC backend; the HKS backend reads
-    # names from the index and omits features.tsv entirely (manifest.features is
-    # then None), so parse it only when present.
+    # integer feature ids to names for the KMC backend only: the HKS backend reads
+    # names from the index, so an HKS manifest that still lists features.tsv (older
+    # databases do) must not require a column per feature set -- a set layered onto
+    # an existing index with ``hks add-feature-set`` (e.g. ``strand``) has none.
     features: Features | None = None
-    if manifest.features is not None:
+    if manifest.features is not None and manifest.index.type == "kmc":
         features = parse_features(db_dir / manifest.features)
         missing_from_table = [fs for fs in requested if fs not in features.feature_sets]
         if missing_from_table:

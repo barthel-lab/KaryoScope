@@ -596,6 +596,30 @@ class TestRewriteBed:
             "chr1_hap1_ctgA_rc\t400\t500\tP\n"
         )
 
+    def test_flip_swaps_strand_labels_when_given_a_flip_map(self, tmp_path: Path) -> None:
+        # SPEC T7 acceptance: the remapped strand BED of a flipped contig equals the
+        # strand BED of the reverse-complemented contig. A k-mer reading plus on the
+        # original reads minus on its reverse complement; both (an inverted repeat)
+        # and novel are unchanged.
+        src = tmp_path / "in.bed"
+        src.write_text("ctgA\t0\t100\tplus\nctgA\t100\t300\tminus\nctgA\t300\t500\tboth\n")
+        dst = tmp_path / "out.bed"
+        rows = [MapRow("chr1_hap1_ctgA_rc", "ctgA", "in.fa", "hap1", "chr1", True, 500, "QCP")]
+        rewrite_bed(src, dst, map_rows=rows, flip_labels={"plus": "minus", "minus": "plus"})
+        assert dst.read_text() == (
+            "chr1_hap1_ctgA_rc\t0\t200\tboth\n"
+            "chr1_hap1_ctgA_rc\t200\t400\tplus\n"
+            "chr1_hap1_ctgA_rc\t400\t500\tminus\n"
+        )
+
+    def test_flip_map_leaves_unflipped_contigs_alone(self, tmp_path: Path) -> None:
+        src = tmp_path / "in.bed"
+        src.write_text("ctgA\t0\t100\tplus\n")
+        dst = tmp_path / "out.bed"
+        rows = [MapRow("chr1_hap1_ctgA", "ctgA", "in.fa", "hap1", "chr1", False, 100, "P")]
+        rewrite_bed(src, dst, map_rows=rows, flip_labels={"plus": "minus", "minus": "plus"})
+        assert dst.read_text() == "chr1_hap1_ctgA\t0\t100\tplus\n"
+
     def test_contigs_not_in_map_are_dropped(self, tmp_path: Path) -> None:
         src = tmp_path / "in.bed"
         src.write_text("ctgA\t0\t100\tX\nctgUnmapped\t0\t50\tZ\n")

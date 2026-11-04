@@ -505,6 +505,7 @@ def _write_combined_outputs(
     bgzip: bool,
     threads: int,
     true_lengths: dict[str, int],
+    flip_labels: dict[str, dict[str, str]] | None = None,
 ) -> ScaffoldResult:
     """Write combined-chromosome FASTA, AGP, and (mode 'both') BEDs for one input.
 
@@ -553,7 +554,13 @@ def _write_combined_outputs(
                 out_plain.name,
             )
             t_rb = time.perf_counter()
-            rewrite_bed_combined(src, out_plain, objects=layout, gzip_out=False)
+            rewrite_bed_combined(
+                src,
+                out_plain,
+                objects=layout,
+                gzip_out=False,
+                flip_labels=(flip_labels or {}).get(fs),
+            )
             logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
             scaffolded_beds[fs] = bgzip_file(out_plain, threads=threads) if bgzip else out_plain
 
@@ -894,6 +901,7 @@ def scaffold_run(
         if combine_chromosomes:
             results[r.spec.path.name] = _write_combined_outputs(
                 r,
+                flip_labels=manifest.flip_labels,
                 per_input_rows=per_input_rows,
                 db_id=db_id_resolved,
                 requested=requested,
@@ -935,7 +943,13 @@ def scaffold_run(
                     out_plain.name,
                 )
                 t_rb = time.perf_counter()
-                rewrite_bed(src, out_plain, map_rows=per_input_rows, gzip_out=False)
+                rewrite_bed(
+                    src,
+                    out_plain,
+                    map_rows=per_input_rows,
+                    gzip_out=False,
+                    flip_labels=manifest.flip_labels.get(fs),
+                )
                 logger.info("wrote %s in %.1fs", out_plain.name, time.perf_counter() - t_rb)
                 out_final = bgzip_file(out_plain, threads=threads) if bgzip else out_plain
                 scaffolded_beds[fs] = out_final

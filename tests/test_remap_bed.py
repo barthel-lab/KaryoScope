@@ -179,3 +179,73 @@ def test_cli_remap_bed_mismatch_errors(tmp_path: Path) -> None:
     )
     assert result.exit_code != 0
     assert "same assembly" in result.output
+
+
+def _strand_db(db_root: Path) -> None:
+    """A minimal installed HKS database declaring a strand set with a flip map."""
+    from karyoscope.installed import InstalledRecord, now_iso, record_install
+
+    db = db_root / "HKS_strand_test"
+    (db / "index").mkdir(parents=True)
+    (db / "manifest.yaml").write_text(
+        "id: HKS_strand_test\nversion: 1.0.0\nkaryoscope_min_version: 0.1.0\n"
+        "index:\n  type: hks\n  basename: index/features\n"
+        "hierarchy: hierarchy.tsv\ncolors: colors.tsv\n"
+        "kmer:\n  size: 31\n  type: fixed\n  max_size: 31\n"
+        "feature_sets:\n  - strand\n"
+        "feature_set_options:\n  strand:\n    flip_labels:\n      plus: minus\n      minus: plus\n"
+    )
+    (db / "hierarchy.tsv").write_text(
+        "feature_set\tchild\tparent\nstrand\tplus\tboth\nstrand\tminus\tboth\n"
+        "strand\tboth\tcategorized\n"
+    )
+    (db / "colors.tsv").write_text("feature_set\tfeature\tcolor\n")
+    (db / "index" / "features.hksb").write_bytes(b"\x00" * 8)
+    (db / "index" / "features.strand.hksf").write_bytes(b"\x00" * 8)
+    (db / "index" / "features.strand.hierarchy.txt").write_text("plus both\n")
+    record_install(
+        db_root,
+        "HKS_strand_test",
+        InstalledRecord(
+            version="1.0.0",
+            installed_at=now_iso(),
+            source_url="local",
+            source_sha256="",
+            directory="HKS_strand_test",
+        ),
+    )
+
+
+def test_cli_db_feature_set_swaps_strand_labels_on_flipped_contig(tmp_path: Path) -> None:
+    db_root = tmp_path / "db"
+    _strand_db(db_root)
+    bed = tmp_path / "hap1.x.bed"
+    _write_bed(bed, [("ctg1", 0, 400_000, "plus"), ("ctg1", 400_000, 1_000_000, "minus")])
+    mp = tmp_path / "hap1.scaffold_map.tsv"
+    _write_map(mp, [_row(flipped=True, new_name="chr1_hap1_ctg1_rc")])
+    out = tmp_path / "out.bed"
+    args = ["remap-bed", "-b", str(bed), "-m", str(mp), "-o", str(out)]
+    result = CliRunner().invoke(
+        main,
+        [*args, "--db", "HKS_strand_test", "--feature-set", "strand", "--db-root", str(db_root)],
+    )
+    assert result.exit_code == 0, result.output
+    assert out.read_text() == (
+        "chr1_hap1_ctg1_rc\t0\t600000\tplus\nchr1_hap1_ctg1_rc\t600000\t1000000\tminus\n"
+    )
+    # without the database the labels are copied verbatim (every other feature set)
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    assert out.read_text().split("\n")[0].endswith("\tminus")
+
+
+def test_cli_db_and_feature_set_go_together(tmp_path: Path) -> None:
+    bed = tmp_path / "hap1.x.bed"
+    _write_bed(bed, [("ctg1", 0, 100, "plus")])
+    mp = tmp_path / "hap1.scaffold_map.tsv"
+    _write_map(mp, [_row()])
+    result = CliRunner().invoke(
+        main,
+        ["remap-bed", "-b", str(bed), "-m", str(mp), "-o", str(tmp_path / "o.bed"), "--db", "X"],
+    )
+    assert result.exit_code != 0 and "go together" in result.output

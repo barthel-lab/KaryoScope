@@ -310,3 +310,44 @@ def test_kmc_manifest_still_requires_features(tmp_path: Path) -> None:
     )
     with pytest.raises(ManifestError, match="features"):
         parse_manifest(db / "manifest.yaml")
+
+
+# --- feature_set_options.flip_labels (strand feature sets) ---------------
+
+
+def _with_options(tmp_path: Path, options_yaml: str) -> Path:
+    db = _write_minimal_hks_db(tmp_path / "db", feature_sets=("chromosome", "strand"))
+    manifest = db / "manifest.yaml"
+    manifest.write_text(manifest.read_text() + options_yaml)
+    return manifest
+
+
+def test_flip_labels_parsed_per_feature_set(tmp_path: Path) -> None:
+    m = parse_manifest(
+        _with_options(
+            tmp_path,
+            "feature_set_options:\n  strand:\n    flip_labels:\n      plus: minus\n      minus: plus\n",
+        )
+    )
+    assert m.flip_labels == {"strand": {"plus": "minus", "minus": "plus"}}
+
+
+def test_flip_labels_default_to_none(tmp_path: Path) -> None:
+    assert (
+        parse_manifest(_write_minimal_hks_db(tmp_path / "db") / "manifest.yaml").flip_labels == {}
+    )
+
+
+def test_flip_labels_must_be_a_swap(tmp_path: Path) -> None:
+    # flipping twice must restore every label
+    m = _with_options(
+        tmp_path, "feature_set_options:\n  strand:\n    flip_labels:\n      plus: minus\n"
+    )
+    with pytest.raises(ManifestError, match="must be a swap"):
+        parse_manifest(m)
+
+
+def test_feature_set_options_must_name_a_declared_set(tmp_path: Path) -> None:
+    m = _with_options(tmp_path, "feature_set_options:\n  nope:\n    flip_labels: {}\n")
+    with pytest.raises(ManifestError, match="not in feature_sets"):
+        parse_manifest(m)

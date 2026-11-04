@@ -24,8 +24,11 @@ from pathlib import Path
 
 import click
 
+from karyoscope import paths
 from karyoscope.core.scaffold import remap_bed_with_map
 from karyoscope.exceptions import KaryoscopeError, ScaffoldError
+from karyoscope.installed import resolve_database
+from karyoscope.manifest import validate_database_layout
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +68,36 @@ logger = logging.getLogger(__name__)
     help="Promote advisory checks (filename-stem mismatch; map contigs with no "
     "records in the BED) from warnings to hard errors.",
 )
-def cmd(bed_path: Path, map_path: Path, output_path: Path, strict: bool) -> None:
+@click.option(
+    "--db",
+    "db_id",
+    default=None,
+    help="Database the BED was annotated against. With --feature-set, its manifest "
+    "says how labels change on a flipped (reverse-complemented) contig -- required "
+    "for a strand feature set, whose plus/minus must swap.",
+)
+@click.option(
+    "--feature-set",
+    "feature_set",
+    default=None,
+    help="Feature set the BED holds (looked up in --db's manifest feature_set_options).",
+)
+@click.option(
+    "--db-root",
+    "db_root_arg",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Override the database root directory (default: $KARYOSCOPE_DB or ~/.karyoscope/db/).",
+)
+def cmd(
+    bed_path: Path,
+    map_path: Path,
+    output_path: Path,
+    strict: bool,
+    db_id: str | None,
+    feature_set: str | None,
+    db_root_arg: Path | None,
+) -> None:
     """Rewrite ``--bed`` into scaffold coordinates using ``--map``.
 
     \b
@@ -77,8 +109,21 @@ def cmd(bed_path: Path, map_path: Path, output_path: Path, strict: bool) -> None
             -m hap1.KS_human_CHM13_v2.scaffold_map.tsv \\
             -o hap1.cytoband.scaffolded.bed.gz
     """
+    flip_labels: dict[str, str] | None = None
+    if (db_id is None) != (feature_set is None):
+        raise click.UsageError("--db and --feature-set go together")
     try:
-        stats = remap_bed_with_map(bed_path, output_path, map_path, strict=strict)
+        if db_id is not None:
+            _, db_dir = resolve_database(paths.ensure_db_root(db_root_arg), db_id)
+            manifest = validate_database_layout(db_dir)
+            if feature_set not in manifest.feature_sets:
+                raise click.UsageError(
+                    f"feature set {feature_set!r} is not in {db_id!r}: {manifest.feature_sets!r}"
+                )
+            flip_labels = manifest.flip_labels.get(feature_set)
+        stats = remap_bed_with_map(
+            bed_path, output_path, map_path, strict=strict, flip_labels=flip_labels
+        )
     except ScaffoldError as e:
         raise click.ClickException(str(e)) from e
     except KaryoscopeError as e:
