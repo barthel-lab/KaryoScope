@@ -41,9 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backends write the presmoothed BEDs first and karyozip compresses them; the
   manifest's `kst.written_by` says which. The minimum karyozip is 0.3.0.
 - **Every reader of annotate output accepts `.kst`.** `bin` and `remap-bed`
-  take a `.kst` input (`--kst-track smoothed|presmoothed`, and `--feature-set`
-  / `--db` to name the set of a merged track and the hierarchy to smooth
-  with); `scaffold`, `centromeres` and `karyotype` find `<input>.<db>.kst`
+  take a `.kst` input (`--kst-track smoothed|presmoothed`; remap-bed's
+  `--feature-set` / `--db` also name the set of a merged track and the
+  hierarchy to smooth with, and `flip_labels` applies as for a BED); `scaffold`, `centromeres` and `karyotype` find `<input>.<db>.kst`
   where they look for the BEDs. They all read through one new reader,
   `karyoscope.core.io.track.open_track`, which streams `karyozip decompress`
   through a pipe, so no BED is written.

@@ -31,8 +31,8 @@ A BED contig that is *absent* from the map is not an error: the map only lists c
 | `-o, --output FILE` | Output BED in scaffolded coordinates. bgzipped iff the path ends in `.gz`. [required] |
 | `--strict` | Promote advisory checks (filename-stem mismatch; map contigs with no records in the BED) from warnings to hard errors. |
 | `--kst-track [smoothed\|presmoothed]` | For a `.kst` `--bed`: remap the smoothed track (derived on read with `karyozip --smooth`; the default) or the stored presmoothed one. |
-| `--feature-set TEXT` | For a `.kst` `--bed`: the feature set to read. Required for a merged `.kst` (one holding every set of its database). |
-| `--db TEXT`, `--db-root DIRECTORY` | For a `.kst` `--bed`: the database it was annotated against (its `hierarchy.tsv` smooths, its `features.tsv` decodes a merged track). Default: the unique installed database. |
+| `--feature-set TEXT` | The feature set the BED (or `.kst`) holds. With `--db`, its `feature_set_options.<set>.flip_labels` relabels flipped contigs (required for a strand set, whose `plus`/`minus` must swap). For a `.kst` `--bed` it is the set to read, required for a merged `.kst`. |
+| `--db TEXT`, `--db-root DIRECTORY` | The database the BED was annotated against; goes with `--feature-set` for a BED. For a `.kst` `--bed` it also supplies `hierarchy.tsv` (smoothing) and `features.tsv` (merged track), and defaults to the unique installed database. |
 
 ## Example
 

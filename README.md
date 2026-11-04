@@ -184,6 +184,23 @@ it automatically. See [`native/README.md`](native/README.md) for build-system de
 `-Wl,-rpath,$CONDA_PREFIX/lib` shim). The `KMC` tool itself is only needed to *build*
 a KMC database, not to query one.
 
+### Optional: karyozip, for `annotate --format kst`
+
+[karyozip](https://github.com/AndreaGuarracino/karyozip) writes and reads the
+compact `.kst` tracks of `annotate --format kst` (BED, the default, does not need
+it). Install release 0.3.0 or newer onto `PATH`; it needs cargo, a C and a C++
+compiler and libgomp, and builds on Linux:
+
+```bash
+git clone --branch v0.3.0 https://github.com/AndreaGuarracino/karyozip
+cargo install --path karyozip/rust --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/karyozip
+```
+
+With an `hks` built against karyozip 0.3.0 (its `lookup --format kst`, not yet in
+the pinned HKS commit above), `annotate --format kst` has `hks` write the tracks
+directly and no BED is written at all; with the pinned `hks` it writes the BEDs and
+compresses them, with the same result.
+
 **Typical install time.** On a normal desktop with a good network connection, creating the conda environment is the bulk of the time — usually ~5–10 minutes to resolve and download the bioinformatics tools. `pip install -e .` then takes under a minute, building the C++ helper takes a few seconds, and cloning and building HKS (`git clone` plus `cargo install`) takes about 1.5 minutes. Reinstalls into an existing environment are much faster.
 
 ## Demo

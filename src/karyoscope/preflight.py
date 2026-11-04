@@ -104,7 +104,7 @@ DEPENDENCIES: dict[str, Dependency] = {
         purpose="writing and reading .kst tracks (annotate --format kst)",
         install_hint=(
             "Build it from source and put it on PATH:\n"
-            "    git clone https://github.com/AndreaGuarracino/karyozip\n"
+            "    git clone --branch v0.3.0 https://github.com/AndreaGuarracino/karyozip\n"
             '    cargo install --path karyozip/rust --root "$CONDA_PREFIX"\n'
             "  or re-run with --format bed (the default)."
         ),
