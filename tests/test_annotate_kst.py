@@ -773,3 +773,148 @@ def test_centromeres_and_karyotype_from_kst_match_bed(
     assert any(n.endswith(".svg") for n in produced["kst"])
     assert any("centromeres" in n for n in produced["kst"])
     assert produced["kst"] == produced["bed"]
+
+
+# --- strand-dependent feature sets (flip_labels) on a .kst -----------------
+
+_STRAND_FLIP = {"plus": "minus", "minus": "plus"}
+#: A strand track as annotate writes it: gapless runs from 0, novel included.
+_STRAND_ROWS = (
+    "ctgA\t0\t100\tplus\nctgA\t100\t130\tnovel\nctgA\t130\t300\tminus\n"
+    "ctgA\t300\t500\tboth\nctgB\t0\t250\tminus\nctgB\t250\t400\tplus\n"
+)
+
+
+def _strand_db(db_root: Path) -> Path:
+    """An installed HKS database with a strand set that declares flip_labels."""
+    from karyoscope.installed import InstalledRecord, now_iso, record_install
+
+    db = db_root / "HKS_strand_kst"
+    (db / "index").mkdir(parents=True)
+    (db / "manifest.yaml").write_text(
+        "id: HKS_strand_kst\nversion: 1.0.0\nkaryoscope_min_version: 0.1.0\n"
+        "index:\n  type: hks\n  basename: index/features\n"
+        "hierarchy: hierarchy.tsv\ncolors: colors.tsv\n"
+        "kmer:\n  size: 31\n  type: fixed\n  max_size: 31\n"
+        "feature_sets:\n  - strand\n"
+        "feature_set_options:\n  strand:\n    flip_labels:\n      plus: minus\n      minus: plus\n"
+    )
+    (db / "hierarchy.tsv").write_text(
+        "feature_set\tchild\tparent\nstrand\tplus\tboth\nstrand\tminus\tboth\n"
+        "strand\tboth\tcategorized\n"
+    )
+    (db / "colors.tsv").write_text("feature_set\tfeature\tcolor\n")
+    (db / "index" / "features.hksb").write_bytes(b"\x00" * 8)
+    (db / "index" / "features.strand.hksf").write_bytes(b"\x00" * 8)
+    (db / "index" / "features.strand.hierarchy.txt").write_text("plus both\n")
+    record_install(
+        db_root,
+        "HKS_strand_kst",
+        InstalledRecord(
+            version="1.0.0",
+            installed_at=now_iso(),
+            source_url="local",
+            source_sha256="",
+            directory="HKS_strand_kst",
+        ),
+    )
+    return db
+
+
+@pytest.fixture
+def strand_tracks(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """The same strand track as a smoothed BED, a presmoothed BED and a per-set .kst.
+
+    The smoothed BED is karyozip's own smoothing of the track, so the BED
+    side of each comparison is exactly what a BED run would have on disk.
+    """
+    from karyoscope.core.io import karyozip as kmz
+
+    db = _strand_db(tmp_path / "db")
+    pre = tmp_path / "hap1.HKS_strand_kst.strand.presmoothed.bed"
+    pre.write_text(_STRAND_ROWS)
+    kst = tmp_path / "hap1.HKS_strand_kst.strand.kst"
+    kmz.compress(inputs=[pre], output=kst)
+    smo = tmp_path / "hap1.HKS_strand_kst.strand.smoothed.bed"
+    kmz.decompress_to_file(kst, smo, smoothed=True, hierarchy=db / "hierarchy.tsv", merged=False)
+    return pre, smo, kst
+
+
+def _rows(*specs: tuple[str, str, bool, int]):
+    from karyoscope.core.io.scaffold_map import MapRow
+
+    return [
+        MapRow(new, orig, "hap1.fa", "hap1", "chr1", flipped, length, "TPCQT")
+        for new, orig, flipped, length in specs
+    ]
+
+
+@pytest.mark.integration
+@requires_karyozip
+@pytest.mark.parametrize("variant", ["presmoothed", "smoothed"])
+def test_rewrite_bed_flips_strand_labels_on_a_kst_as_on_a_bed(
+    strand_tracks, tmp_path: Path, variant: str
+) -> None:
+    from karyoscope.core.scaffold import rewrite_bed
+
+    pre, smo, kst = strand_tracks
+    db = tmp_path / "db" / "HKS_strand_kst"
+    bed = smo if variant == "smoothed" else pre
+    src = Track(kst, smoothed=variant == "smoothed", feature_set="strand", db_dir=db)
+    rows = _rows(("chr1_hap1_ctgA_rc", "ctgA", True, 500), ("chr2_hap1_ctgB", "ctgB", False, 400))
+    a, b = tmp_path / "from_bed.bed", tmp_path / "from_kst.bed"
+    rewrite_bed(bed, a, map_rows=rows, flip_labels=_STRAND_FLIP)
+    rewrite_bed(src, b, map_rows=rows, flip_labels=_STRAND_FLIP)
+    assert b.read_bytes() == a.read_bytes()
+    # And the flip really happened, on the flipped contig only: ctgA's first run
+    # (plus) is its last after the mirror and reads minus; ctgB is untouched.
+    lines = b.read_text().splitlines()
+    ctg_a = [ln for ln in lines if ln.startswith("chr1_hap1_ctgA_rc\t")]
+    assert ctg_a[-1].endswith("\tminus")
+    assert lines[-1] == "chr2_hap1_ctgB\t250\t400\tplus"
+
+
+@pytest.mark.integration
+@requires_karyozip
+def test_rewrite_bed_combined_flips_strand_labels_on_a_kst_as_on_a_bed(
+    strand_tracks, tmp_path: Path
+) -> None:
+    from karyoscope.core.scaffold import plan_combined_layout, rewrite_bed_combined
+
+    _, smo, kst = strand_tracks
+    db = tmp_path / "db" / "HKS_strand_kst"
+    rows = _rows(("chr1_hap1_ctgA_rc", "ctgA", True, 500), ("chr1_hap1_ctgB", "ctgB", False, 400))
+    layout = plan_combined_layout(rows, {"ctgA": 500, "ctgB": 400}, gap_size=50, acrocentrics=set())
+    a, b = tmp_path / "from_bed.bed", tmp_path / "from_kst.bed"
+    rewrite_bed_combined(smo, a, objects=layout, gzip_out=False, flip_labels=_STRAND_FLIP)
+    src = Track(kst, smoothed=True, feature_set="strand", db_dir=db)
+    rewrite_bed_combined(src, b, objects=layout, gzip_out=False, flip_labels=_STRAND_FLIP)
+    assert b.read_bytes() == a.read_bytes() != b""
+
+
+@pytest.mark.integration
+@requires_karyozip
+@pytest.mark.parametrize("track", [None, "presmoothed"], ids=["smoothed", "presmoothed"])
+def test_remap_bed_cli_flips_strand_labels_on_a_kst_as_on_a_bed(
+    strand_tracks, tmp_path: Path, track: str | None
+) -> None:
+    """`remap-bed --db --feature-set strand`: a .kst input swaps plus/minus exactly as a BED."""
+    from karyoscope.core.io.scaffold_map import write_map
+
+    pre, smo, kst = strand_tracks
+    mp = tmp_path / "hap1.HKS_strand_kst.scaffold_map.tsv"
+    write_map(_rows(("chr1_hap1_ctgA_rc", "ctgA", True, 500)), mp)
+    db = ["--db", "HKS_strand_kst", "--feature-set", "strand", "--db-root", str(tmp_path / "db")]
+    runner = CliRunner()
+    bed = pre if track == "presmoothed" else smo
+    want, got = tmp_path / "want.bed", tmp_path / "got.bed"
+    r1 = runner.invoke(main, ["remap-bed", "-b", str(bed), "-m", str(mp), "-o", str(want), *db])
+    extra = ["--kst-track", track] if track else []
+    r2 = runner.invoke(
+        main, ["remap-bed", "-b", str(kst), "-m", str(mp), "-o", str(got), *db, *extra]
+    )
+    assert r1.exit_code == 0, r1.output
+    assert r2.exit_code == 0, r2.output
+    assert got.read_bytes() == want.read_bytes()
+    # ctgA's first run (plus) ends the flipped contig, swapped to minus.
+    assert got.read_text().splitlines()[-1].endswith("\tminus")
