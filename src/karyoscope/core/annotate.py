@@ -584,12 +584,14 @@ OUTPUT_FORMATS: tuple[str, ...] = ("bed", "kst")
 class _KstPlan:
     """How this run writes its ``.kst`` output.
 
-    ``merged`` is one ``<prefix>.kst`` holding every feature set as
-    ``features.tsv`` featureIDs (``karyozip compress -d``), possible only when
-    every set of the database is requested and its ``features.tsv`` has
-    exactly those columns. ``columns`` is then that file's column order, the
-    order ``compress -d`` takes one BED per set in. Otherwise each set gets
-    its own ``<prefix>.<set>.kst``.
+    ``merged`` is one ``<prefix>.kst`` holding the sets of the database's
+    ``features.tsv`` as featureIDs (``karyozip compress -d``), possible when
+    every column of that file is requested. ``columns`` is then that file's
+    column order, the order ``compress -d`` takes one track per set in. Any
+    other requested set (one layered onto an HKS index with ``hks
+    add-feature-set``, such as ``strand``, has no column) gets its own
+    ``<prefix>.<set>.kst``, as does every set when nothing is merged; see
+    :meth:`in_merged`.
 
     ``via_hks`` (step 2 of the plan): the HKS backend's ``hks lookup --format
     kst`` writes each set's track itself, so no presmoothed BED is ever
@@ -607,6 +609,10 @@ class _KstPlan:
     smoothed_bed: bool
     bgzip: bool
     via_hks: bool = False
+
+    def in_merged(self, fs: str) -> bool:
+        """Whether set ``fs`` goes into the merged track (else its own ``.kst``)."""
+        return self.merged and fs in self.columns
 
 
 def _features_columns(path: Path) -> list[str]:
@@ -659,17 +665,22 @@ def _plan_kst(
     columns: list[str] = []
     if features is not None and features.is_file():
         columns = _features_columns(features)
-    merged = (
-        bool(columns)
-        and set(requested) == set(manifest.feature_sets)
-        and sorted(columns) == sorted(requested)
-    )
+    # Every features.tsv column requested -> those sets share one merged track.
+    # A requested set with no column (one layered onto an HKS index with
+    # `hks add-feature-set`, e.g. strand) still gets a per-set track beside it.
+    merged = bool(columns) and set(columns) <= set(requested)
     if not merged:
         logger.info(
             "writing one .kst per feature set (%s)",
-            "a merged track needs every feature set and the database's features.tsv"
+            "a merged track needs the database's features.tsv"
             if features is None or not columns
             else "a merged track needs every feature set of features.tsv",
+        )
+    elif set(requested) - set(columns):
+        logger.info(
+            "merging the features.tsv sets into one .kst; %s get one .kst each "
+            "(no features.tsv column)",
+            sorted(set(requested) - set(columns)),
         )
     return _KstPlan(
         effort=effort,
@@ -740,7 +751,7 @@ def _kst_backend_output(plan: _KstPlan, output_dir: Path, prefix: str, fs: str) 
     """
     if not plan.via_hks:
         return _kst_tmp_bed(output_dir, prefix, fs)
-    if plan.merged:
+    if plan.in_merged(fs):
         return _kst_sets_dir(output_dir, prefix) / f"{fs}.kst"
     return kst_path(output_dir, prefix, fs)
 
@@ -805,7 +816,7 @@ def _finish_kst(
     BED paths (bgzipped unless ``--no-bgzip``).
     """
     try:
-        if plan.merged and not kst_paths:
+        if plan.merged and not any(fs in kst_paths for fs in plan.columns):
             merged = _compress_kst(
                 inputs=[pre_beds[fs] for fs in plan.columns],
                 output=kst_path(output_dir, prefix),
@@ -813,7 +824,7 @@ def _finish_kst(
                 threads=threads,
                 merged=True,
             )
-            kst_paths.update({fs: merged for fs in requested})
+            kst_paths.update({fs: merged for fs in plan.columns})
         missing = [fs for fs in requested if fs not in kst_paths]
         for fs in missing:
             kst_paths[fs] = _compress_kst(
@@ -839,9 +850,9 @@ def _finish_kst(
                 out,
                 smoothed=True,
                 feature_set=fs,
-                features=plan.features,
+                features=plan.features if plan.in_merged(fs) else None,
                 hierarchy=plan.hierarchy,
-                merged=plan.merged,
+                merged=plan.in_merged(fs),
                 threads=threads,
             )
             smoothed[fs] = bgzip_file(out, threads=threads) if plan.bgzip else out
@@ -1733,7 +1744,7 @@ def _run_hks_feature_sets(
                         "kst_effort": kst.effort,
                         # A per-set track is final as written; merge inputs
                         # are temporary and need no index.
-                        "kst_index": not kst.merged,
+                        "kst_index": not kst.in_merged(fs),
                     }
                     if kst is not None and kst.via_hks
                     else {}
@@ -1762,12 +1773,12 @@ def _run_hks_feature_sets(
             dt_lookup,
         )
 
-        if kst is not None and kst.via_hks and not kst.merged:
+        if kst is not None and kst.via_hks and not kst.in_merged(fs):
             # hks wrote (and indexed) the final per-set track itself.
             assert kst_by_input is not None
             for p in input_paths:
                 kst_by_input[p][fs] = lookup_by_input[p]
-        elif kst is not None and not kst.merged:
+        elif kst is not None and not kst.in_merged(fs):
             assert kst_by_input is not None
             try:
                 for p in input_paths:
@@ -2399,7 +2410,7 @@ def _annotate_backend(
                 threads=threads,
                 merged=True,
             )
-            kst_paths.update({fs: merged for fs in requested})
+            kst_paths.update({fs: merged for fs in kst_plan.columns})
             progress.stage("karyozip", time.perf_counter() - t_kst)
         elif kst_plan is not None:
             assert features is not None  # a KMC database always has features.tsv

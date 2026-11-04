@@ -22,9 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`annotate --format kst`: compact `.kst` output, opt-in.** BED stays the
   default. With `--format kst` the presmoothed tracks are compressed with
   [karyozip](https://github.com/AndreaGuarracino/karyozip) (which must be on
-  `PATH`): one merged `<input>.<db>.kst` holding every feature set when the
-  whole database is annotated and it has a `features.tsv`, otherwise one
-  `<input>.<db>.<set>.kst` per set; each is indexed (`.kzi`). No smoothing pass
+  `PATH`): one merged `<input>.<db>.kst` holding the sets of the database's
+  `features.tsv` when all of them are annotated, and one `<input>.<db>.<set>.kst`
+  for every other set (e.g. `strand`, which has no `features.tsv` column); each is indexed (`.kzi`). No smoothing pass
   and no bgzip pass run: the smoothed track is derived on read with
   `karyozip decompress --smooth`, and `--smoothed-bed` also writes it as BED.
   `--kst-effort low|medium` (default `low`) trades write and query time for

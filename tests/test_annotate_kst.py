@@ -295,6 +295,7 @@ _HIERARCHY = (
 _LOOKUP = {
     "chromosome": [(0, 10, "chr1"), (10, 14, "novel"), (14, 40, "chr1")],
     "region": [(0, 10, "rA"), (10, 14, "novel"), (14, 30, "rA"), (30, 40, "rB")],
+    "strand": [(0, 10, "plus"), (10, 14, "novel"), (14, 40, "minus")],
 }
 
 
@@ -918,3 +919,69 @@ def test_remap_bed_cli_flips_strand_labels_on_a_kst_as_on_a_bed(
     assert got.read_bytes() == want.read_bytes()
     # ctgA's first run (plus) ends the flipped contig, swapped to minus.
     assert got.read_text().splitlines()[-1].endswith("\tminus")
+
+
+@pytest.fixture
+def hks_strand_db_root(hks_db_root: Path) -> Path:
+    """The two-set HKS database plus a ``strand`` set with no features.tsv column."""
+    db = hks_db_root / HKS_DB_ID
+    manifest = db / "manifest.yaml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "  - region\n",
+            "  - region\n  - strand\n"
+            "feature_set_options:\n  strand:\n    flip_labels:\n      plus: minus\n"
+            "      minus: plus\n",
+        )
+    )
+    with (db / "hierarchy.tsv").open("a") as h:
+        h.write("strand\tplus\tboth\nstrand\tminus\tboth\nstrand\tboth\tcategorized\n")
+    (db / "index" / "features.strand.hksf").write_bytes(b"hksf")
+    (db / "index" / "features.strand.hierarchy.txt").write_text("x\ty\n")
+    return hks_db_root
+
+
+@pytest.mark.integration
+@requires_karyozip
+@pytest.mark.parametrize("via_hks", [False, True], ids=["bed-then-compress", "hks-writes-kst"])
+def test_set_without_features_column_gets_its_own_kst_beside_the_merged_one(
+    hks_strand_db_root: Path,
+    query_fasta: Path,
+    tmp_path: Path,
+    stub_hks: list,
+    monkeypatch: pytest.MonkeyPatch,
+    via_hks: bool,
+) -> None:
+    """A database whose features.tsv lacks a set (strand) still gets a merged track."""
+    monkeypatch.setattr(ann, "_hks_writes_kst", lambda: via_hks)
+    out = tmp_path / "out"
+    result = annotate(
+        input_path=query_fasta,
+        output_dir=out,
+        db_root=hks_strand_db_root,
+        threads=1,
+        output_format="kst",
+        smoothed_bed=True,
+        bgzip=False,
+    )
+    merged = out / f"q.{HKS_DB_ID}.kst"
+    strand = out / f"q.{HKS_DB_ID}.strand.kst"
+    assert result.kst_paths == {"chromosome": merged, "region": merged, "strand": strand}
+    assert (out / f"q.{HKS_DB_ID}.strand.kst.kzi").is_file()
+    db_dir = hks_strand_db_root / HKS_DB_ID
+    for fs in ("chromosome", "region", "strand"):
+        from karyoscope.core.io.track import annotation_track
+
+        found = annotation_track(out, "q", HKS_DB_ID, fs, "presmoothed", db_dir=db_dir)
+        with open_track_text(found) as h:
+            assert h.read() == _expected(fs, "q"), fs
+        # --smoothed-bed wrote what a reader derives from the track on read.
+        smo = annotation_track(out, "q", HKS_DB_ID, fs, "smoothed", db_dir=db_dir)
+        assert smo == result.smoothed_paths[fs]  # the BED is found before the .kst
+        with open_track_text(
+            Track(result.kst_paths[fs], smoothed=True, feature_set=fs, db_dir=db_dir)
+        ) as h:
+            assert h.read() == _text(result.smoothed_paths[fs]), fs
+    assert not list(out.glob("*.kst-sets.tmp")) and not list(out.glob("*.presmoothed*"))
+    doc = json.loads(result.manifest_path.read_text())
+    assert {o["path"] for o in doc["outputs"] if o["kind"] == "kst"} == {merged.name, strand.name}

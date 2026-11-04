@@ -208,9 +208,10 @@ logger = logging.getLogger(__name__)
     "than the bgzipped BEDs), for cohorts where disk space matters; the "
     "smoothed track is not stored but derived on read with "
     "`karyozip decompress --smooth`, and every KaryoScope command that reads "
-    "annotate output accepts .kst. When every feature set of a database with "
-    "a features.tsv is annotated, all sets go into one <input>.<db>.kst; "
-    "otherwise each set gets <input>.<db>.<set>.kst. Requires karyozip on PATH.",
+    "annotate output accepts .kst. When every feature set of the database's "
+    "features.tsv is annotated, those sets go into one <input>.<db>.kst; any "
+    "other set (one with no features.tsv column, or every set of a database "
+    "without one) gets <input>.<db>.<set>.kst. Requires karyozip >= 0.3.0 on PATH.",
 )
 @click.option(
     "--kst-effort",
@@ -375,12 +376,12 @@ def cmd(
             click.echo(f"Wrote ({input_path.name}):")
         else:
             click.echo("Wrote:")
-        if result.kst_merged:
-            kst = next(iter(result.kst_paths.values()))
-            click.echo(f"  all sets (presmoothed .kst): {kst}")
-        else:
-            for fs, path in result.kst_paths.items():
-                click.echo(f"  {fs} (presmoothed .kst): {path}")
+        by_file: dict[Path, list[str]] = {}
+        for fs, path in result.kst_paths.items():
+            by_file.setdefault(path, []).append(fs)
+        for path, sets in by_file.items():
+            what = sets[0] if len(sets) == 1 else f"{len(sets)} sets ({', '.join(sets)})"
+            click.echo(f"  {what} (presmoothed .kst): {path}")
         for fs, path in result.presmoothed_paths.items():
             click.echo(f"  {fs} (presmoothed): {path}")
         for fs, path in result.smoothed_paths.items():

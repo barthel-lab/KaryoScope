@@ -168,8 +168,8 @@ For human-scale inputs, use at least 16 threads. Memory to request depends on th
 
 BED stays the default, because most downstream processing wants it. `--format kst` is for groups annotating many samples who need to minimise disk space. It writes the presmoothed tracks as [karyozip](https://github.com/AndreaGuarracino/karyozip) `.kst` files and nothing else. It needs karyozip 0.3.0 or newer on `PATH` (`git clone --branch v0.3.0 https://github.com/AndreaGuarracino/karyozip && cargo install --path karyozip/rust`; see the README's Installation section).
 
-- **One merged `<input>.<dbid>.kst`** when every feature set of the database is annotated and the database has a `features.tsv` (e.g. `HKS_human_CHM13_v2`, and every KMC database). It holds all sets as `features.tsv` featureIDs.
-- **One `<input>.<dbid>.<set>.kst` per set** otherwise: a `--feature-set` subset, or a database without `features.tsv` (e.g. `HKS_hpv_PaVE`).
+- **One merged `<input>.<dbid>.kst`** holding the sets of the database's `features.tsv` (as featureIDs), when every one of them is annotated (e.g. `HKS_human_CHM13_v2`, and every KMC database).
+- **One `<input>.<dbid>.<set>.kst` per set** for every other set: a set with no `features.tsv` column (such as `strand`, layered onto an HKS index with `hks add-feature-set`), every set of a `--feature-set` subset that leaves out a `features.tsv` set, and every set of a database without `features.tsv` (e.g. `HKS_hpv_PaVE`). Readers find a set's per-set file first, then the merged one.
 - Each `.kst` is indexed (`<file>.kzi`), so single-read queries stay fast.
 - `<input>.<dbid>.annotate_manifest.json` records the karyozip version, the effort, and each output's size and SHA-256.
 
