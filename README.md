@@ -188,15 +188,16 @@ a KMC database, not to query one.
 
 [karyozip](https://github.com/AndreaGuarracino/karyozip) writes and reads the
 compact `.kst` tracks of `annotate --format kst` (BED, the default, does not need
-it). Install release 0.3.0 or newer onto `PATH`; it needs cargo, a C and a C++
+it). Install release 0.3.1 or newer onto `PATH` (0.3.0's Rust binary cannot read
+some tracks past 2^32 rows); it needs cargo, a C and a C++
 compiler and libgomp, and builds on Linux:
 
 ```bash
-git clone --branch v0.3.0 https://github.com/AndreaGuarracino/karyozip
+git clone --branch v0.3.1 https://github.com/AndreaGuarracino/karyozip
 cargo install --path karyozip/rust --root "$CONDA_PREFIX"   # installs $CONDA_PREFIX/bin/karyozip
 ```
 
-With an `hks` built against karyozip 0.3.0 (its `lookup --format kst`, not yet in
+With an `hks` built against karyozip 0.3.1 (its `lookup --format kst`, not yet in
 the pinned HKS commit above), `annotate --format kst` has `hks` write the tracks
 directly and no BED is written at all; with the pinned `hks` it writes the BEDs and
 compresses them, with the same result.

@@ -104,14 +104,16 @@ DEPENDENCIES: dict[str, Dependency] = {
         purpose="writing and reading .kst tracks (annotate --format kst)",
         install_hint=(
             "Build it from source and put it on PATH:\n"
-            "    git clone --branch v0.3.0 https://github.com/AndreaGuarracino/karyozip\n"
+            "    git clone --branch v0.3.1 https://github.com/AndreaGuarracino/karyozip\n"
             '    cargo install --path karyozip/rust --root "$CONDA_PREFIX"\n'
             "  or re-run with --format bed (the default)."
         ),
         # 0.3.0: merged tracks (compress -d) from per-set .kst inputs, which
         # annotate needs when hks writes the per-set tracks itself, on top of
         # what 0.2.0 already had (-d from BEDs, --hier, --smooth, index).
-        min_version="0.3.0",
+        # 0.3.1: the Rust reader reads tracks past 2^32 rows written with run
+        # counts heading each read (an -e medium layout); 0.3.0's refused them.
+        min_version="0.3.1",
     ),
     "tabix": Dependency(
         name="tabix",

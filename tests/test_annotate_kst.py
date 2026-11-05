@@ -696,12 +696,13 @@ def test_direct_kst_disk_estimate_has_no_presmoothed_bed() -> None:
     assert direct < est(**common, index_type="hks", output_format="kst", kst_merged=True) / 5
 
 
-def test_hks_writes_kst_needs_hks_support_and_karyozip_0_3(monkeypatch) -> None:
+def test_hks_writes_kst_needs_hks_support_and_karyozip_0_3_1(monkeypatch) -> None:
     monkeypatch.setattr(ann, "hks_supports_kst", lambda: False)
     assert not ann._hks_writes_kst()
     monkeypatch.setattr(ann, "hks_supports_kst", lambda: True)
     for line, want in (
-        ("karyozip 0.3.0, format KST00001", True),
+        ("karyozip 0.3.1, format KST00001", True),
+        ("karyozip 0.3.0, format KST00001", False),
         ("karyozip 0.2.0, format KST00001", False),
         (None, False),
     ):

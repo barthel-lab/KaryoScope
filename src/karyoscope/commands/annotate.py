@@ -211,7 +211,7 @@ logger = logging.getLogger(__name__)
     "annotate output accepts .kst. When every feature set of the database's "
     "features.tsv is annotated, those sets go into one <input>.<db>.kst; any "
     "other set (one with no features.tsv column, or every set of a database "
-    "without one) gets <input>.<db>.<set>.kst. Requires karyozip >= 0.3.0 on PATH.",
+    "without one) gets <input>.<db>.<set>.kst. Requires karyozip >= 0.3.1 on PATH.",
 )
 @click.option(
     "--kst-effort",

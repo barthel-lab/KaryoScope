@@ -597,7 +597,7 @@ class _KstPlan:
     kst`` writes each set's track itself, so no presmoothed BED is ever
     written. Per-set tracks land at their final name (indexed by hks); a
     merged track is then ``karyozip compress -d`` over those per-set ``.kst``
-    files, which karyozip >= 0.3.0 merges to the same bytes as from BEDs.
+    files, which karyozip >= 0.3.1 merges to the same bytes as from BEDs.
     Without it, the backend writes BEDs and karyozip compresses them.
     """
 
@@ -624,7 +624,7 @@ def _features_columns(path: Path) -> list[str]:
 
 #: The oldest karyozip that merges per-set ``.kst`` inputs with ``compress -d``,
 #: which the ``hks lookup --format kst`` path relies on.
-KARYOZIP_MIN_FOR_HKS_KST = "0.3.0"
+KARYOZIP_MIN_FOR_HKS_KST = "0.3.1"
 
 
 def _hks_writes_kst() -> bool:
