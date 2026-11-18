@@ -986,3 +986,47 @@ def test_set_without_features_column_gets_its_own_kst_beside_the_merged_one(
     assert not list(out.glob("*.kst-sets.tmp")) and not list(out.glob("*.presmoothed*"))
     doc = json.loads(result.manifest_path.read_text())
     assert {o["path"] for o in doc["outputs"] if o["kind"] == "kst"} == {merged.name, strand.name}
+
+
+@pytest.mark.integration
+@requires_karyozip
+@pytest.mark.parametrize("via_hks", [False, True], ids=["bed-then-compress", "hks-writes-kst"])
+def test_read_level_tracks_get_no_kzi_index(
+    hks_strand_db_root: Path,
+    tmp_path: Path,
+    stub_hks: list,
+    monkeypatch: pytest.MonkeyPatch,
+    via_hks: bool,
+) -> None:
+    """Reads are named by rank, so a .kzi adds nothing, and building one costs ~30 B/read in
+    memory (hks did it in-process on top of its own index and OOM-killed a 30x WGS sample at 32 GB).
+    Neither the per-set strand track nor the merged track of a FASTQ input is indexed."""
+    monkeypatch.setattr(ann, "_hks_writes_kst", lambda: via_hks)
+    fq = tmp_path / "q.fastq"
+    fq.write_text(
+        "@r1/1\n"
+        + "A" * 40
+        + "\n+\n"
+        + "I" * 40
+        + "\n@r1/2\n"
+        + "C" * 20
+        + "\n+\n"
+        + "I" * 20
+        + "\n"
+    )
+    out = tmp_path / "out"
+    result = annotate(
+        input_path=fq,
+        output_dir=out,
+        db_root=hks_strand_db_root,
+        threads=1,
+        output_format="kst",
+        bgzip=False,
+    )
+    assert {p.name for p in set(result.kst_paths.values())} == {
+        f"q.{HKS_DB_ID}.kst",
+        f"q.{HKS_DB_ID}.strand.kst",
+    }
+    assert not list(out.glob("*.kzi"))
+    doc = json.loads(result.manifest_path.read_text())
+    assert not [o for o in doc["outputs"] if o["kind"] == "kst_index"]

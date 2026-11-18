@@ -763,8 +763,15 @@ def _compress_kst(
     plan: _KstPlan,
     threads: int,
     merged: bool,
+    index: bool = True,
 ) -> Path:
-    """Compress ``inputs`` into ``output`` and index it; log what it saved."""
+    """Compress ``inputs`` into ``output``, ``.kzi``-index it unless ``index`` is False, log what it saved.
+
+    The ``.kzi`` finds one sequence by NAME. Read-level tracks name every read by its rank, which
+    already is its ordinal, so the index adds nothing for them -- and ``karyozip index`` holds about
+    30 bytes per sequence in memory: ~25 GB for the 0.8 G reads of a 30x WGS sample. Callers pass
+    ``index=not _is_reads_input(...)``.
+    """
     t0 = time.perf_counter()
     in_bytes = sum(p.stat().st_size for p in inputs)
     kmz.compress(
@@ -775,7 +782,8 @@ def _compress_kst(
         hierarchy=plan.hierarchy if merged else None,
         threads=threads,
     )
-    kmz.index(output)
+    if index:
+        kmz.index(output)
     logger.info(
         "karyozip wrote %s (%s from %s of BED, -e %s) in %.1fs",
         output.name,
@@ -806,8 +814,11 @@ def _finish_kst(
     pre_beds: dict[str, Path],
     kst_paths: dict[str, Path],
     threads: int,
+    index: bool = True,
 ) -> dict[str, Path]:
     """Write whatever ``.kst`` is still owed, then the ``--smoothed-bed`` BEDs.
+
+    ``index`` as for :func:`_compress_kst` (False for read-level input).
 
     ``kst_paths`` holds what is already written (per-set tracks compressed
     as each set finished, or KMC's merged track compressed straight from its
@@ -823,6 +834,7 @@ def _finish_kst(
                 plan=plan,
                 threads=threads,
                 merged=True,
+                index=index,
             )
             kst_paths.update({fs: merged for fs in plan.columns})
         missing = [fs for fs in requested if fs not in kst_paths]
@@ -833,6 +845,7 @@ def _finish_kst(
                 plan=plan,
                 threads=threads,
                 merged=False,
+                index=index,
             )
     finally:
         done = set(kst_paths.values())
@@ -1743,8 +1756,11 @@ def _run_hks_feature_sets(
                         "output_format": "kst",
                         "kst_effort": kst.effort,
                         # A per-set track is final as written; merge inputs
-                        # are temporary and need no index.
-                        "kst_index": not kst.in_merged(fs),
+                        # are temporary and need no index. Neither do reads:
+                        # they are named by rank, and the in-process .kzi build
+                        # (~30 B/read on top of hks' own ~10 GB index) OOM-killed
+                        # a 30x WGS sample at 32 GB (see _compress_kst).
+                        "kst_index": not kst.in_merged(fs) and not is_reads_group,
                     }
                     if kst is not None and kst.via_hks
                     else {}
@@ -1788,6 +1804,7 @@ def _run_hks_feature_sets(
                         plan=kst,
                         threads=threads,
                         merged=False,
+                        index=not _is_reads_input(p),
                     )
             finally:
                 _unlink_quietly(lookup_by_input.values())
@@ -2186,6 +2203,7 @@ def annotate(
                 pre_beds=presmoothed_paths,
                 kst_paths=kst_paths,
                 threads=threads,
+                index=not _is_reads_input(input_path),
             )
             if owed:
                 progress.stage("karyozip", time.perf_counter() - t_kst)
@@ -2409,6 +2427,7 @@ def _annotate_backend(
                 plan=kst_plan,
                 threads=threads,
                 merged=True,
+                index=not _is_reads_input(input_path),
             )
             kst_paths.update({fs: merged for fs in kst_plan.columns})
             progress.stage("karyozip", time.perf_counter() - t_kst)
@@ -2795,6 +2814,7 @@ def annotate_batch(
                     pre_beds=presmoothed_by_input[p],
                     kst_paths=kst_by_input[p],
                     threads=threads,
+                    index=not _is_reads_input(p),
                 )
             progress.stage("karyozip", time.perf_counter() - t_kst)
     except BaseException:

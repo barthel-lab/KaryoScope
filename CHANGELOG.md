@@ -56,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`annotate --format kst` no longer builds a `.kzi` name index for read-level inputs.**
+  A `.kzi` finds one sequence by name, and reads are named by their rank, which already is
+  their ordinal, so the index adds nothing. Building it held ~30 bytes per read in memory:
+  `hks lookup --kst-index` did it in-process on top of its own ~10 GB k-mer index, and a
+  30x short-read WGS sample (808 M reads) peaked at 33.3 GB and was OOM-killed at 32 GB;
+  a one-set database's merged track also ran `karyozip index` afterwards. Assemblies keep
+  their `.kzi`. The same sample now peaks at 15.1 GB (strand) and 10.4 GB (cytoband).
+
 - **`annotate` no longer requires a `features.tsv` column for HKS feature sets.**
   The HKS backend reads label names from the index; only KMC uses
   `features.tsv`. An HKS manifest that still lists the file (older databases do)
